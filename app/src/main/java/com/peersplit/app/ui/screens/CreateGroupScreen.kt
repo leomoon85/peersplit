@@ -5,15 +5,20 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.peersplit.app.ui.theme.BlockchainAccent
 
@@ -21,11 +26,14 @@ import com.peersplit.app.ui.theme.BlockchainAccent
 @Composable
 fun CreateGroupScreen(
     onBackClick: () -> Unit,
-    onCreateGroup: (name: String, currency: String) -> Unit
+    onCreateGroup: (name: String, currency: String, isSecret: Boolean, secretPin: String?, isPersonalSolo: Boolean) -> Unit
 ) {
     var groupName by remember { mutableStateOf("") }
     val currencies = listOf("USD", "EUR", "GBP", "INR", "CAD", "AUD", "JPY")
     var selectedCurrency by remember { mutableStateOf("USD") }
+    var isSecret by remember { mutableStateOf(false) }
+    var secretPin by remember { mutableStateOf("") }
+    var isPersonalSolo by remember { mutableStateOf(false) }
     var isCreating by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -34,7 +42,7 @@ fun CreateGroupScreen(
                 title = { Text("Create Group", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
             )
@@ -45,13 +53,13 @@ fun CreateGroupScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             OutlinedTextField(
                 value = groupName,
                 onValueChange = { groupName = it },
                 label = { Text("Group Name") },
-                placeholder = { Text("e.g. Summer Vacation, Flatmates, Road Trip") },
+                placeholder = { Text(if (isPersonalSolo) "e.g. My Personal Expenses" else "e.g. Summer Vacation, Flatmates") },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 singleLine = true
@@ -75,32 +83,60 @@ fun CreateGroupScreen(
                 }
             }
 
+            // Mode Selector: Group vs Solo/Personal
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                shape = RoundedCornerShape(16.dp)
+                shape = RoundedCornerShape(12.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        Icons.Default.Shield,
-                        contentDescription = null,
-                        tint = BlockchainAccent,
-                        modifier = Modifier.size(32.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            "Serverless Micro-Blockchain",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "Creating this group mints Genesis Block #0. All ledger data is encrypted with AES-256 and stored peer-to-peer on members' phones.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Personal / Solo Budget Mode", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                        Text("Track your own expenses without split debt calculations", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = isPersonalSolo, onCheckedChange = { isPersonalSolo = it })
+                }
+            }
+
+            // Secret Group Mode
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.VisibilityOff, contentDescription = null, tint = BlockchainAccent, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Secret / Hidden Group", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                            }
+                            Text("Hidden from the main dashboard. Unlocked with a secret PIN.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = isSecret, onCheckedChange = { isSecret = it })
+                    }
+
+                    if (isSecret) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = secretPin,
+                            onValueChange = { if (it.length <= 6) secretPin = it },
+                            label = { Text("4-6 Digit Unlock PIN") },
+                            placeholder = { Text("1234") },
+                            modifier = Modifier.fillMaxWidth(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp)
                         )
                     }
                 }
@@ -112,13 +148,19 @@ fun CreateGroupScreen(
                 onClick = {
                     if (groupName.isNotBlank() && !isCreating) {
                         isCreating = true
-                        onCreateGroup(groupName.trim(), selectedCurrency)
+                        onCreateGroup(
+                            groupName.trim(),
+                            selectedCurrency,
+                            isSecret,
+                            if (isSecret && secretPin.isNotBlank()) secretPin else null,
+                            isPersonalSolo
+                        )
                     }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
-                enabled = groupName.isNotBlank() && !isCreating,
+                enabled = groupName.isNotBlank() && (!isSecret || secretPin.length >= 4) && !isCreating,
                 shape = RoundedCornerShape(12.dp)
             ) {
                 if (isCreating) {

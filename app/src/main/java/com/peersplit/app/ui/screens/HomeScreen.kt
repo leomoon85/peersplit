@@ -1,27 +1,38 @@
 package com.peersplit.app.ui.screens
 
+import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.peersplit.app.data.model.Group
@@ -31,21 +42,50 @@ import com.peersplit.app.ui.theme.BlockchainAccent
 import com.peersplit.app.ui.viewmodel.HomeUiState
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     uiState: HomeUiState,
     onGroupClick: (String) -> Unit,
     onCreateGroupClick: () -> Unit,
     onJoinGroupClick: () -> Unit,
-    onProfileClick: () -> Unit
+    onProfileClick: () -> Unit,
+    onUnlockVault: (String) -> Boolean = { true },
+    onLockVault: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    var showPinDialog by remember { mutableStateOf(false) }
+    var enteredPin by remember { mutableStateOf("") }
+    var pinError by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text("PeerSplit", fontWeight = FontWeight.Bold)
+                    Column(
+                        modifier = Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = {
+                                if (uiState.secretGroups.isNotEmpty()) {
+                                    if (uiState.isSecretVaultUnlocked) {
+                                        onLockVault()
+                                        Toast.makeText(context, "Secret Vault Locked", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        showPinDialog = true
+                                    }
+                                } else {
+                                    Toast.makeText(context, "No secret groups created yet", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("PeerSplit", fontWeight = FontWeight.Bold)
+                            if (uiState.isSecretVaultUnlocked) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(Icons.Default.LockOpen, contentDescription = "Vault Unlocked", tint = BlockchainAccent, modifier = Modifier.size(16.dp))
+                            }
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
@@ -63,6 +103,14 @@ fun HomeScreen(
                     }
                 },
                 actions = {
+                    if (uiState.isSecretVaultUnlocked) {
+                        IconButton(onClick = {
+                            onLockVault()
+                            Toast.makeText(context, "Secret Vault Locked", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(Icons.Default.Lock, contentDescription = "Lock Secret Vault", tint = BlockchainAccent)
+                        }
+                    }
                     IconButton(onClick = onProfileClick) {
                         Icon(Icons.Default.Person, contentDescription = "Profile & Identity")
                     }
@@ -99,6 +147,38 @@ fun HomeScreen(
                 TotalBalanceCard(uiState)
             }
 
+            // Secret Vault Section (Visible only when unlocked)
+            if (uiState.isSecretVaultUnlocked && uiState.secretGroups.isNotEmpty()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = BlockchainAccent.copy(alpha = 0.15f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Visibility, contentDescription = null, tint = BlockchainAccent, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("SECRET VAULT (UNLOCKED)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, color = BlockchainAccent)
+                                }
+                                TextButton(onClick = onLockVault) {
+                                    Text("Lock", color = BlockchainAccent)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                items(uiState.secretGroups) { secretGroup ->
+                    GroupCard(group = secretGroup, isSecretBadge = true, onClick = { onGroupClick(secretGroup.id) })
+                }
+            }
+
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -111,20 +191,20 @@ fun HomeScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        "${uiState.groups.size} Active",
+                        "${uiState.visibleGroups.size} Active",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            if (uiState.groups.isEmpty()) {
+            if (uiState.visibleGroups.isEmpty()) {
                 item {
                     EmptyGroupsCard(onCreateGroupClick, onJoinGroupClick)
                 }
             } else {
-                items(uiState.groups) { group ->
-                    GroupCard(group = group, onClick = { onGroupClick(group.id) })
+                items(uiState.visibleGroups) { group ->
+                    GroupCard(group = group, isSecretBadge = false, onClick = { onGroupClick(group.id) })
                 }
             }
 
@@ -132,6 +212,68 @@ fun HomeScreen(
                 Spacer(modifier = Modifier.height(80.dp))
             }
         }
+    }
+
+    // Discreet Unlock PIN Dialog
+    if (showPinDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showPinDialog = false
+                enteredPin = ""
+                pinError = false
+            },
+            title = { Text("Unlock Secret Vault") },
+            text = {
+                Column {
+                    Text("Enter your 4-6 digit Secret PIN to reveal hidden groups.", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = enteredPin,
+                        onValueChange = {
+                            if (it.length <= 6) {
+                                enteredPin = it
+                                pinError = false
+                            }
+                        },
+                        label = { Text("PIN") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        isError = pinError,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (pinError) {
+                        Text("Incorrect PIN. Please try again.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val success = onUnlockVault(enteredPin)
+                        if (success) {
+                            showPinDialog = false
+                            enteredPin = ""
+                            pinError = false
+                            Toast.makeText(context, "Secret Vault Unlocked!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            pinError = true
+                        }
+                    }
+                ) {
+                    Text("Unlock")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showPinDialog = false
+                    enteredPin = ""
+                    pinError = false
+                }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -168,7 +310,7 @@ fun TotalBalanceCard(uiState: HomeUiState) {
             )
 
             Spacer(modifier = Modifier.height(16.dp))
-            Divider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
             Spacer(modifier = Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth()) {
@@ -204,7 +346,7 @@ fun TotalBalanceCard(uiState: HomeUiState) {
 }
 
 @Composable
-fun GroupCard(group: Group, onClick: () -> Unit) {
+fun GroupCard(group: Group, isSecretBadge: Boolean = false, onClick: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -218,11 +360,17 @@ fun GroupCard(group: Group, onClick: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = group.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isSecretBadge) {
+                        Icon(Icons.Default.VisibilityOff, contentDescription = "Secret", tint = BlockchainAccent, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    Text(
+                        text = group.name,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
 
                 // User balance in this group
                 val bal = group.userNetBalance
@@ -253,7 +401,7 @@ fun GroupCard(group: Group, onClick: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "${group.memberCount} members • ${group.currency}",
+                    if (group.isPersonalSolo) "Solo Personal Mode • ${group.currency}" else "${group.memberCount} members • ${group.currency}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

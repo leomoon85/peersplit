@@ -18,10 +18,12 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.util.Collections
 import java.util.concurrent.TimeUnit
 
 /**
- * WebSocket client connecting to an individual Nostr relay.
+ * WebSocket client connecting to an individual Nostr relay with automatic
+ * reconnection, subscription replay, and offline event queuing.
  */
 class NostrClient(
     val relayUrl: String,
@@ -41,9 +43,13 @@ class NostrClient(
     }
 
     private var webSocket: WebSocket? = null
-    private var isConnected = false
+    @Volatile private var isConnected = false
     private val scope = CoroutineScope(Dispatchers.IO + Job())
-    private val activeSubscriptions = mutableSetOf<String>()
+
+    // Map of subscriptionId to raw JSON REQ message
+    private val activeSubscriptions = Collections.synchronizedMap(mutableMapOf<String, String>())
+    // Queue of pending events to send once connection is established
+    private val pendingEvents = Collections.synchronizedList(mutableListOf<NostrEvent>())
 
     private val _eventsFlow = MutableSharedFlow<NostrEvent>(replay = 0, extraBufferCapacity = 64)
     val eventsFlow: SharedFlow<NostrEvent> = _eventsFlow.asSharedFlow()
@@ -58,6 +64,26 @@ class NostrClient(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "Connected to relay: $relayUrl")
                 isConnected = true
+
+                // Re-send all active subscriptions to the relay
+                synchronized(activeSubscriptions) {
+                    for ((subId, reqMsg) in activeSubscriptions) {
+                        webSocket.send(reqMsg)
+                        Log.d(TAG, "Sent subscription $subId to $relayUrl")
+                    }
+                }
+
+                // Flush pending outgoing events
+                synchronized(pendingEvents) {
+                    val iterator = pendingEvents.iterator()
+                    while (iterator.hasNext()) {
+                        val event = iterator.next()
+                        val eventJson = json.encodeToString(NostrEvent.serializer(), event)
+                        webSocket.send("[\"EVENT\",$eventJson]")
+                        Log.d(TAG, "Flushed queued event ${event.id.take(8)} to $relayUrl")
+                        iterator.remove()
+                    }
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -81,7 +107,7 @@ class NostrClient(
     private fun reconnect() {
         webSocket = null
         scope.launch {
-            delay(5000)
+            delay(4000)
             Log.d(TAG, "Attempting reconnect to $relayUrl")
             connect()
         }
@@ -90,13 +116,32 @@ class NostrClient(
     private fun handleMessage(text: String) {
         try {
             val element = json.parseToJsonElement(text)
-            if (element is JsonArray && element.size >= 3) {
+            if (element is JsonArray && element.size >= 2) {
                 val messageType = element[0].jsonPrimitive.content
-                if (messageType == "EVENT") {
-                    val eventElement = element[2]
-                    val event = json.decodeFromJsonElement(NostrEvent.serializer(), eventElement)
-                    scope.launch {
-                        _eventsFlow.emit(event)
+                when (messageType) {
+                    "EVENT" -> {
+                        if (element.size >= 3) {
+                            val eventElement = element[2]
+                            val event = json.decodeFromJsonElement(NostrEvent.serializer(), eventElement)
+                            Log.d(TAG, "Received EVENT ${event.id.take(8)} from $relayUrl")
+                            scope.launch {
+                                _eventsFlow.emit(event)
+                            }
+                        }
+                    }
+                    "OK" -> {
+                        val eventId = element.getOrNull(1)?.jsonPrimitive?.content
+                        val accepted = element.getOrNull(2)?.jsonPrimitive?.content
+                        val msg = element.getOrNull(3)?.jsonPrimitive?.content
+                        Log.d(TAG, "Relay $relayUrl OK for ${eventId?.take(8)}: accepted=$accepted msg=$msg")
+                    }
+                    "NOTICE" -> {
+                        val notice = element.getOrNull(1)?.jsonPrimitive?.content
+                        Log.d(TAG, "Relay $relayUrl NOTICE: $notice")
+                    }
+                    "EOSE" -> {
+                        val subId = element.getOrNull(1)?.jsonPrimitive?.content
+                        Log.d(TAG, "Relay $relayUrl EOSE for $subId (stored history received)")
                     }
                 }
             }
@@ -107,23 +152,36 @@ class NostrClient(
 
     /**
      * Subscribes to events for a specific group ID tag.
+     * Persists subscription so it will automatically be sent whenever the socket opens/reconnects.
      */
     fun subscribeGroup(groupId: String, subscriptionId: String = "sub_$groupId") {
-        if (activeSubscriptions.contains(subscriptionId)) return
-        activeSubscriptions.add(subscriptionId)
-
-        // Nostr REQ format: ["REQ", subscription_id, {"#g": [groupId], "kinds": [21042]}]
+        // Nostr REQ format: ["REQ", subscription_id, {"#g": [groupId], "kinds": [1]}]
         val reqMsg = "[\"REQ\",\"$subscriptionId\",{\"#g\":[\"$groupId\"],\"kinds\":[${NostrEvent.KIND_PEERSPLIT_BLOCK}]}]"
-        webSocket?.send(reqMsg)
+        activeSubscriptions[subscriptionId] = reqMsg
+
+        if (isConnected) {
+            webSocket?.send(reqMsg)
+            Log.d(TAG, "Directly sent subscription $subscriptionId to $relayUrl")
+        }
     }
 
     /**
      * Publishes a signed NostrEvent to the relay.
+     * If not connected yet, queues the event to send immediately on connection.
      */
     fun publishEvent(event: NostrEvent): Boolean {
-        val eventJson = json.encodeToString(NostrEvent.serializer(), event)
-        val msg = "[\"EVENT\",$eventJson]"
-        return webSocket?.send(msg) ?: false
+        if (isConnected && webSocket != null) {
+            val eventJson = json.encodeToString(NostrEvent.serializer(), event)
+            val msg = "[\"EVENT\",$eventJson]"
+            val sent = webSocket?.send(msg) ?: false
+            Log.d(TAG, "Published event ${event.id.take(8)} to $relayUrl (sent=$sent)")
+            return sent
+        } else {
+            // Queue for when socket connects
+            pendingEvents.add(event)
+            Log.d(TAG, "Queued event ${event.id.take(8)} for $relayUrl (waiting for connection)")
+            return true
+        }
     }
 
     fun disconnect() {

@@ -22,7 +22,7 @@ data class NostrEvent(
     val sig: String
 ) {
     companion object {
-        const val KIND_PEERSPLIT_BLOCK = 21042 // Custom application-specific event kind
+        const val KIND_PEERSPLIT_BLOCK = 1 // Persistent Nostr event kind, stored and replayed by all relays
 
         val json = Json {
             ignoreUnknownKeys = true

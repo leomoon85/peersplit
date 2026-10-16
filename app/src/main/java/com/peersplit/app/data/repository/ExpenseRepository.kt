@@ -13,6 +13,7 @@ import com.peersplit.app.blockchain.SettlementSuggestion
 import com.peersplit.app.blockchain.SplitItem
 import com.peersplit.app.blockchain.ValidationResult
 import com.peersplit.app.crypto.EncryptionUtil
+import com.peersplit.app.crypto.HashUtil
 import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.data.local.AppDatabase
 import com.peersplit.app.data.local.entity.BlockEntity
@@ -44,7 +45,9 @@ data class GroupInviteData(
     val groupName: String,
     val currency: String,
     val groupKeyBase64: String,
-    val creatorPubkey: String
+    val creatorPubkey: String,
+    val creatorDisplayName: String = "Creator",
+    val genesisBlockJson: String? = null
 )
 
 class ExpenseRepository(
@@ -85,6 +88,9 @@ class ExpenseRepository(
                     userNetBalance = userBalance,
                     blockCount = blocks.size.toLong(),
                     isLedgerValid = validation is ValidationResult.Valid,
+                    isSecret = entity.isSecret,
+                    secretPinHash = entity.secretPinHash,
+                    isPersonalSolo = entity.isPersonalSolo,
                     createdAt = entity.createdAt
                 )
             }
@@ -153,6 +159,9 @@ class ExpenseRepository(
                 userNetBalance = netBalances[identity.publicKeyHex] ?: 0.0,
                 blockCount = domainBlocks.size.toLong(),
                 isLedgerValid = validation is ValidationResult.Valid,
+                isSecret = groupEntity.isSecret,
+                secretPinHash = groupEntity.secretPinHash,
+                isPersonalSolo = groupEntity.isPersonalSolo,
                 createdAt = groupEntity.createdAt
             )
 
@@ -170,7 +179,13 @@ class ExpenseRepository(
     /**
      * Creates a new Group with its Genesis block and broadcasts to Nostr.
      */
-    suspend fun createGroup(name: String, currency: String = "USD"): String {
+    suspend fun createGroup(
+        name: String,
+        currency: String = "USD",
+        isSecret: Boolean = false,
+        secretPin: String? = null,
+        isPersonalSolo: Boolean = false
+    ): String {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
 
@@ -186,6 +201,8 @@ class ExpenseRepository(
             privateKeyHex = privKeyHex
         )
 
+        val pinHash = if (!secretPin.isNullOrBlank()) HashUtil.sha256Hex(secretPin) else null
+
         // Store Group and Genesis Block locally
         database.groupDao().insertGroup(
             GroupEntity(
@@ -193,7 +210,10 @@ class ExpenseRepository(
                 name = name.trim(),
                 currency = currency.trim(),
                 creatorPubkey = identity.publicKeyHex,
-                groupKeyBase64 = groupKeyBase64
+                groupKeyBase64 = groupKeyBase64,
+                isSecret = isSecret,
+                secretPinHash = pinHash,
+                isPersonalSolo = isPersonalSolo
             )
         )
 
@@ -288,12 +308,20 @@ class ExpenseRepository(
      */
     suspend fun generateInviteCode(groupId: String): String {
         val group = database.groupDao().getGroupByIdSync(groupId) ?: return ""
+        val blocks = database.blockDao().getBlocksForGroupSync(groupId)
+        val genesisBlock = blocks.firstOrNull { it.index == 0L }?.toDomainBlock()
+        val genesisJson = genesisBlock?.let { json.encodeToString(Block.serializer(), it) }
+        val members = database.memberDao().getMembersForGroupSync(groupId)
+        val creatorName = members.firstOrNull { it.pubkey == group.creatorPubkey }?.displayName ?: "Creator"
+
         val inviteData = GroupInviteData(
             groupId = group.id,
             groupName = group.name,
             currency = group.currency,
             groupKeyBase64 = group.groupKeyBase64,
-            creatorPubkey = group.creatorPubkey
+            creatorPubkey = group.creatorPubkey,
+            creatorDisplayName = creatorName,
+            genesisBlockJson = genesisJson
         )
         val jsonStr = json.encodeToString(inviteData)
         return "peersplit://" + Base64.encodeToString(jsonStr.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_WRAP)
@@ -321,7 +349,26 @@ class ExpenseRepository(
                 )
             }
 
+            // 1. Insert Genesis Block if available
+            var genesisBlock: Block? = null
+            if (!inviteData.genesisBlockJson.isNullOrBlank()) {
+                val block = json.decodeFromString(Block.serializer(), inviteData.genesisBlockJson)
+                database.blockDao().insertBlock(BlockEntity.fromDomainBlock(block, isVerified = true))
+                genesisBlock = block
+            }
+
+            // 2. Insert Creator Member
+            database.memberDao().insertMember(
+                MemberEntity(
+                    groupId = inviteData.groupId,
+                    pubkey = inviteData.creatorPubkey,
+                    displayName = inviteData.creatorDisplayName
+                )
+            )
+
+            // 3. Insert Current User Member
             val identity = KeyManager.getOrCreateIdentity(context)
+            val privKeyHex = KeyManager.getPrivateKeyHex(context)
             database.memberDao().insertMember(
                 MemberEntity(
                     groupId = inviteData.groupId,
@@ -330,8 +377,25 @@ class ExpenseRepository(
                 )
             )
 
-            // Start monitoring Nostr relays for the group's ledger blocks
+            // 4. Start monitoring Nostr relays for the group's ledger blocks
             syncManager.monitorGroup(inviteData.groupId)
+
+            // 5. Broadcast Member Joined block if joining a group created by someone else
+            val currentTip = database.blockDao().getLatestBlockForGroup(inviteData.groupId)?.toDomainBlock()
+                ?: genesisBlock
+
+            if (currentTip != null && identity.publicKeyHex != inviteData.creatorPubkey) {
+                val joinBlock = BlockchainEngine.createMemberJoinBlock(
+                    groupId = inviteData.groupId,
+                    prevBlock = currentTip,
+                    newMemberPubkey = identity.publicKeyHex,
+                    newMemberName = identity.displayName,
+                    authorPubkey = identity.publicKeyHex,
+                    authorPrivateKeyHex = privKeyHex
+                )
+                database.blockDao().insertBlock(BlockEntity.fromDomainBlock(joinBlock, isVerified = true))
+                syncManager.broadcastBlock(joinBlock, inviteData.groupKeyBase64)
+            }
 
             Result.success(inviteData.groupId)
         } catch (e: Exception) {

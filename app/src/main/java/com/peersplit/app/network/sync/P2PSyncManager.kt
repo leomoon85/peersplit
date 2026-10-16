@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.peersplit.app.blockchain.Block
 import com.peersplit.app.blockchain.BlockType
-import com.peersplit.app.blockchain.BlockchainEngine
 import com.peersplit.app.blockchain.GroupGenesisPayload
 import com.peersplit.app.blockchain.MemberJoinedPayload
 import com.peersplit.app.crypto.EncryptionUtil
@@ -20,10 +19,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import java.util.Collections
 
 /**
  * Orchestrates zero-server P2P synchronization.
  * Handles End-to-End Encryption of blocks and propagates them via decentralized Nostr relays.
+ * Features automatic out-of-order block buffering and replay.
  */
 class P2PSyncManager(
     private val context: Context,
@@ -36,6 +37,7 @@ class P2PSyncManager(
 
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private val json = Json { ignoreUnknownKeys = true }
+    private val pendingBlocks = Collections.synchronizedMap(mutableMapOf<String, MutableList<Block>>())
 
     fun initialize() {
         relayPool.connectAll()
@@ -49,9 +51,14 @@ class P2PSyncManager(
 
         // Subscribe to all currently stored groups
         scope.launch {
-            val groups = database.groupDao().getAllGroups().first()
-            groups.forEach { group ->
-                relayPool.subscribeGroup(group.id)
+            try {
+                val groups = database.groupDao().getAllGroups().first()
+                groups.forEach { group ->
+                    Log.d(TAG, "Subscribing to existing group ${group.id}")
+                    relayPool.subscribeGroup(group.id)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error subscribing to groups: ${e.message}")
             }
         }
     }
@@ -60,6 +67,7 @@ class P2PSyncManager(
      * Subscribes to updates for a newly created or joined group.
      */
     fun monitorGroup(groupId: String) {
+        Log.d(TAG, "Monitoring group: $groupId")
         relayPool.subscribeGroup(groupId)
     }
 
@@ -92,7 +100,7 @@ class P2PSyncManager(
                 )
 
                 relayPool.broadcast(event)
-                Log.d(TAG, "Broadcasted block #${block.index} for group ${block.groupId}")
+                Log.d(TAG, "Broadcasted block #${block.index} (${block.blockType}) for group ${block.groupId}")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to broadcast block: ${e.message}", e)
             }
@@ -119,29 +127,51 @@ class P2PSyncManager(
                 return
             }
 
-            // Check if already in DB
-            val existingBlocks = database.blockDao().getBlocksForGroupSync(groupId)
-            if (existingBlocks.any { it.blockHash == block.blockHash }) {
-                return // Already have this block
+            // Buffer block and drain chain
+            synchronized(pendingBlocks) {
+                val list = pendingBlocks.getOrPut(groupId) { mutableListOf() }
+                if (list.none { it.blockHash == block.blockHash }) {
+                    list.add(block)
+                }
             }
 
-            // Validate hash link to preceding block
-            if (existingBlocks.isNotEmpty()) {
-                val latest = existingBlocks.last().toDomainBlock()
-                if (block.index == latest.index + 1 && block.prevHash == latest.blockHash) {
-                    database.blockDao().insertBlock(BlockEntity.fromDomainBlock(block, isVerified = true))
-                    processBlockSideEffects(groupId, block)
-                    Log.d(TAG, "Successfully appended peer block #${block.index} to group $groupId")
-                } else {
-                    Log.w(TAG, "Fork or out-of-order block received: index ${block.index}, expected ${latest.index + 1}")
-                }
-            } else if (block.index == 0L) {
-                // First block (Genesis)
-                database.blockDao().insertBlock(BlockEntity.fromDomainBlock(block, isVerified = true))
-                processBlockSideEffects(groupId, block)
-            }
+            drainPendingBlocks(groupId)
         } catch (e: Exception) {
             Log.e(TAG, "Error handling incoming peer event: ${e.message}", e)
+        }
+    }
+
+    private suspend fun drainPendingBlocks(groupId: String) {
+        var progress = true
+        while (progress) {
+            progress = false
+            val existingBlocks = database.blockDao().getBlocksForGroupSync(groupId)
+            val existingHashes = existingBlocks.map { it.blockHash }.toSet()
+
+            val candidates = synchronized(pendingBlocks) {
+                pendingBlocks[groupId]?.filter { it.blockHash !in existingHashes }?.sortedBy { it.index } ?: emptyList()
+            }
+
+            for (candidate in candidates) {
+                val latest = existingBlocks.lastOrNull()?.toDomainBlock()
+
+                val canAppend = when {
+                    existingBlocks.isEmpty() && candidate.index == 0L -> true
+                    latest != null && candidate.index == latest.index + 1 && candidate.prevHash == latest.blockHash -> true
+                    else -> false
+                }
+
+                if (canAppend) {
+                    database.blockDao().insertBlock(BlockEntity.fromDomainBlock(candidate, isVerified = true))
+                    processBlockSideEffects(groupId, candidate)
+                    Log.d(TAG, "Successfully committed block #${candidate.index} (${candidate.blockType}) to group $groupId")
+                    synchronized(pendingBlocks) {
+                        pendingBlocks[groupId]?.removeIf { it.blockHash == candidate.blockHash }
+                    }
+                    progress = true
+                    break // break inner loop to re-fetch latest from DB
+                }
+            }
         }
     }
 
@@ -154,15 +184,17 @@ class P2PSyncManager(
                         MemberEntity(groupId = groupId, pubkey = member.pubkey, displayName = member.displayName)
                     )
                 }
+                Log.d(TAG, "Processed Genesis side effects for group $groupId (${payload.initialMembers.size} members)")
             }
             BlockType.MEMBER_JOIN -> {
                 val payload = json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson)
                 database.memberDao().insertMember(
                     MemberEntity(groupId = groupId, pubkey = payload.pubkey, displayName = payload.displayName)
                 )
+                Log.d(TAG, "Processed Member Join: ${payload.displayName} joined group $groupId")
             }
             else -> {
-                // Expenses and settlements are reflected dynamically from the block ledger
+                // Expenses and settlements are reflected dynamically from the block ledger queries
             }
         }
     }

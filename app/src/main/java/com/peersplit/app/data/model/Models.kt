@@ -10,6 +10,9 @@ data class Group(
     val userNetBalance: Double = 0.0,
     val blockCount: Long = 0,
     val isLedgerValid: Boolean = true,
+    val isSecret: Boolean = false,
+    val secretPinHash: String? = null,
+    val isPersonalSolo: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 )
 

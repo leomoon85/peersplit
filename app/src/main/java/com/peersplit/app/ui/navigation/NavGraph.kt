@@ -45,6 +45,12 @@ fun NavGraph(
                 },
                 onProfileClick = {
                     navController.navigate(Screen.Profile.route)
+                },
+                onUnlockVault = { pin ->
+                    homeViewModel.unlockVault(pin)
+                },
+                onLockVault = {
+                    homeViewModel.lockVault()
                 }
             )
         }
@@ -52,9 +58,9 @@ fun NavGraph(
         composable(Screen.CreateGroup.route) {
             CreateGroupScreen(
                 onBackClick = { navController.popBackStack() },
-                onCreateGroup = { name, currency ->
+                onCreateGroup = { name, currency, isSecret, secretPin, isPersonalSolo ->
                     scope.launch {
-                        val groupId = repository.createGroup(name, currency)
+                        val groupId = repository.createGroup(name, currency, isSecret, secretPin, isPersonalSolo)
                         navController.popBackStack()
                         navController.navigate(Screen.GroupDetail.createRoute(groupId))
                     }

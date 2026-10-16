@@ -22,14 +22,16 @@ class RelayPool(
         val DEFAULT_RELAYS = listOf(
             "wss://relay.damus.io",
             "wss://nos.lol",
-            "wss://relay.snort.social",
-            "wss://relay.primal.net"
+            "wss://relay.primal.net",
+            "wss://nostr.mom",
+            "wss://relay.snort.social"
         )
     }
 
     private val clients = mutableListOf<NostrClient>()
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private val seenEventIds = Collections.synchronizedSet(mutableSetOf<String>())
+    private val subscribedGroups = Collections.synchronizedSet(mutableSetOf<String>())
 
     private val _incomingEvents = MutableSharedFlow<NostrEvent>(replay = 0, extraBufferCapacity = 128)
     val incomingEvents: SharedFlow<NostrEvent> = _incomingEvents.asSharedFlow()
@@ -44,6 +46,7 @@ class RelayPool(
                 client.eventsFlow.collect { event ->
                     // Deduplicate across relays
                     if (seenEventIds.add(event.id)) {
+                        Log.d(TAG, "RelayPool emitting unique event ${event.id.take(8)}")
                         _incomingEvents.emit(event)
                     }
                 }
@@ -52,9 +55,10 @@ class RelayPool(
     }
 
     /**
-     * Subscribes all relays to a specific group's updates.
+     * Subscribes all relays in the pool to a specific group's updates.
      */
     fun subscribeGroup(groupId: String) {
+        subscribedGroups.add(groupId)
         clients.forEach { client ->
             client.subscribeGroup(groupId)
         }

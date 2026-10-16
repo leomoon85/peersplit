@@ -13,6 +13,9 @@ data class GroupEntity(
     val currency: String,
     val creatorPubkey: String,
     val groupKeyBase64: String, // AES-256 group encryption key
+    val isSecret: Boolean = false,
+    val secretPinHash: String? = null,
+    val isPersonalSolo: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 )
 
