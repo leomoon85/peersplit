@@ -29,6 +29,9 @@ interface GroupDao {
     @Query("UPDATE groups SET monthlyBudget = :budget WHERE id = :groupId")
     suspend fun updateGroupBudget(groupId: String, budget: Double)
 
+    @Query("UPDATE groups SET isArchived = :isArchived WHERE id = :groupId")
+    suspend fun setGroupArchived(groupId: String, isArchived: Boolean)
+
     @Query("DELETE FROM groups WHERE id = :groupId")
     suspend fun deleteGroup(groupId: String)
 }
@@ -52,6 +55,9 @@ interface MemberDao {
 
     @Query("UPDATE members SET upiId = :upiId WHERE groupId = :groupId AND pubkey = :pubkey")
     suspend fun updateMemberUpiId(groupId: String, pubkey: String, upiId: String)
+
+    @Query("DELETE FROM members WHERE groupId = :groupId")
+    suspend fun deleteMembersForGroup(groupId: String)
 }
 
 @Dao

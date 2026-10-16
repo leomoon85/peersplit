@@ -1,6 +1,9 @@
 package com.peersplit.app.ui.screens
 
 import android.widget.Toast
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -13,13 +16,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -27,9 +35,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -51,6 +59,8 @@ fun HomeScreen(
     onCreateGroupClick: () -> Unit,
     onJoinGroupClick: () -> Unit,
     onProfileClick: () -> Unit,
+    onArchiveGroup: (groupId: String, isArchived: Boolean) -> Unit = { _, _ -> },
+    onDeleteGroup: (groupId: String) -> Unit = {},
     onUnlockVault: (String) -> Boolean = { true },
     onLockVault: () -> Unit = {}
 ) {
@@ -58,6 +68,15 @@ fun HomeScreen(
     var showPinDialog by remember { mutableStateOf(false) }
     var enteredPin by remember { mutableStateOf("") }
     var pinError by remember { mutableStateOf(false) }
+
+    var groupToDelete by remember { mutableStateOf<Group?>(null) }
+    var showArchivedSection by remember { mutableStateOf(false) }
+
+    // Start-up enter animation trigger
+    var isVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        isVisible = true
+    }
 
     Scaffold(
         topBar = {
@@ -70,18 +89,18 @@ fun HomeScreen(
                                 if (uiState.secretGroups.isNotEmpty()) {
                                     if (uiState.isSecretVaultUnlocked) {
                                         onLockVault()
-                                        Toast.makeText(context, "Secret Vault Locked", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Private Vault Locked", Toast.LENGTH_SHORT).show()
                                     } else {
                                         showPinDialog = true
                                     }
                                 } else {
-                                    Toast.makeText(context, "No secret groups created yet", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "No private groups created yet", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         )
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("PeerSplit", fontWeight = FontWeight.Bold)
+                            Text("PeerSplit", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
                             if (uiState.isSecretVaultUnlocked) {
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Icon(Icons.Default.LockOpen, contentDescription = "Vault Unlocked", tint = BlockchainAccent, modifier = Modifier.size(16.dp))
@@ -90,13 +109,13 @@ fun HomeScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(8.dp)
+                                    .size(7.dp)
                                     .clip(CircleShape)
                                     .background(BalancePositive)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                "${uiState.connectedRelaysCount} Decentralized Relays Active",
+                                "Private & Synced",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -107,13 +126,13 @@ fun HomeScreen(
                     if (uiState.isSecretVaultUnlocked) {
                         IconButton(onClick = {
                             onLockVault()
-                            Toast.makeText(context, "Secret Vault Locked", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Private Vault Locked", Toast.LENGTH_SHORT).show()
                         }) {
-                            Icon(Icons.Default.Lock, contentDescription = "Lock Secret Vault", tint = BlockchainAccent)
+                            Icon(Icons.Default.Lock, contentDescription = "Lock Private Vault", tint = BlockchainAccent)
                         }
                     }
                     IconButton(onClick = onProfileClick) {
-                        Icon(Icons.Default.Person, contentDescription = "Profile & Identity")
+                        Icon(Icons.Default.Person, contentDescription = "Profile & Settings")
                     }
                 }
             )
@@ -125,7 +144,7 @@ fun HomeScreen(
                     containerColor = MaterialTheme.colorScheme.secondaryContainer,
                     contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                 ) {
-                    Icon(Icons.Default.QrCodeScanner, contentDescription = "Join Group")
+                    Icon(Icons.Default.QrCodeScanner, contentDescription = "Join via QR / Code")
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 ExtendedFloatingActionButton(
@@ -136,81 +155,152 @@ fun HomeScreen(
             }
         }
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+        AnimatedVisibility(
+            visible = isVisible,
+            enter = fadeIn(animationSpec = tween(500)) + slideInVertically(
+                initialOffsetY = { 60 },
+                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
+            )
         ) {
-            item {
-                Spacer(modifier = Modifier.height(4.dp))
-                TotalBalanceCard(uiState)
-            }
-
-            // Secret Vault Section (Visible only when unlocked)
-            if (uiState.isSecretVaultUnlocked && uiState.secretGroups.isNotEmpty()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
                 item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = BlockchainAccent.copy(alpha = 0.15f)),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Visibility, contentDescription = null, tint = BlockchainAccent, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("SECRET VAULT (UNLOCKED)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, color = BlockchainAccent)
-                                }
-                                TextButton(onClick = onLockVault) {
-                                    Text("Lock", color = BlockchainAccent)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    TotalBalanceCard(uiState)
+                }
+
+                // Secret Vault Section (Visible only when unlocked)
+                if (uiState.isSecretVaultUnlocked && uiState.secretGroups.isNotEmpty()) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = BlockchainAccent.copy(alpha = 0.12f)),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Visibility, contentDescription = null, tint = BlockchainAccent, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("PRIVATE VAULT (UNLOCKED)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, color = BlockchainAccent)
+                                    }
+                                    TextButton(onClick = onLockVault) {
+                                        Text("Lock", color = BlockchainAccent)
+                                    }
                                 }
                             }
                         }
                     }
+
+                    items(uiState.secretGroups, key = { "sec_${it.id}" }) { secretGroup ->
+                        GroupCard(
+                            group = secretGroup,
+                            isSecretBadge = true,
+                            onClick = { onGroupClick(secretGroup.id) },
+                            onArchive = { onArchiveGroup(secretGroup.id, !secretGroup.isArchived) },
+                            onDelete = { groupToDelete = secretGroup }
+                        )
+                    }
                 }
 
-                items(uiState.secretGroups) { secretGroup ->
-                    GroupCard(group = secretGroup, isSecretBadge = true, onClick = { onGroupClick(secretGroup.id) })
-                }
-            }
-
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Your Groups",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "${uiState.visibleGroups.size} Active",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            if (uiState.visibleGroups.isEmpty()) {
                 item {
-                    EmptyGroupsCard(onCreateGroupClick, onJoinGroupClick)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Your Groups",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "${uiState.visibleGroups.size} Active",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
-            } else {
-                items(uiState.visibleGroups) { group ->
-                    GroupCard(group = group, isSecretBadge = false, onClick = { onGroupClick(group.id) })
-                }
-            }
 
-            item {
-                Spacer(modifier = Modifier.height(80.dp))
+                if (uiState.visibleGroups.isEmpty()) {
+                    item {
+                        EmptyGroupsCard(onCreateGroupClick, onJoinGroupClick)
+                    }
+                } else {
+                    items(uiState.visibleGroups, key = { it.id }) { group ->
+                        GroupCard(
+                            group = group,
+                            isSecretBadge = false,
+                            onClick = { onGroupClick(group.id) },
+                            onArchive = { onArchiveGroup(group.id, true) },
+                            onDelete = { groupToDelete = group }
+                        )
+                    }
+                }
+
+                // Archived Groups Section
+                if (uiState.archivedGroups.isNotEmpty()) {
+                    item {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showArchivedSection = !showArchivedSection },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Archive, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        "Archived Groups (${uiState.archivedGroups.size})",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Icon(
+                                    if (showArchivedSection) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    if (showArchivedSection) {
+                        items(uiState.archivedGroups, key = { "arch_${it.id}" }) { archivedGroup ->
+                            GroupCard(
+                                group = archivedGroup,
+                                isSecretBadge = false,
+                                isArchived = true,
+                                onClick = { onGroupClick(archivedGroup.id) },
+                                onArchive = { onArchiveGroup(archivedGroup.id, false) },
+                                onDelete = { groupToDelete = archivedGroup }
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    Spacer(modifier = Modifier.height(80.dp))
+                }
             }
         }
     }
@@ -223,10 +313,10 @@ fun HomeScreen(
                 enteredPin = ""
                 pinError = false
             },
-            title = { Text("Unlock Secret Vault") },
+            title = { Text("Unlock Private Vault") },
             text = {
                 Column {
-                    Text("Enter your 4-6 digit Secret PIN to reveal hidden groups.", style = MaterialTheme.typography.bodyMedium)
+                    Text("Enter your 4-6 digit PIN to reveal hidden groups.", style = MaterialTheme.typography.bodyMedium)
                     Spacer(modifier = Modifier.height(12.dp))
                     OutlinedTextField(
                         value = enteredPin,
@@ -256,7 +346,7 @@ fun HomeScreen(
                             showPinDialog = false
                             enteredPin = ""
                             pinError = false
-                            Toast.makeText(context, "Secret Vault Unlocked!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Private Vault Unlocked!", Toast.LENGTH_SHORT).show()
                         } else {
                             pinError = true
                         }
@@ -276,33 +366,75 @@ fun HomeScreen(
             }
         )
     }
+
+    // Delete Confirmation Dialog
+    if (groupToDelete != null) {
+        val g = groupToDelete!!
+        AlertDialog(
+            onDismissRequest = { groupToDelete = null },
+            title = { Text("Delete '${g.name}'?") },
+            text = {
+                Text(
+                    "Are you sure you want to permanently delete this group? All expenses and balances for this group will be wiped from your device.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteGroup(g.id)
+                        Toast.makeText(context, "'${g.name}' deleted", Toast.LENGTH_SHORT).show()
+                        groupToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { groupToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @Composable
 fun TotalBalanceCard(uiState: HomeUiState) {
+    val balance = uiState.totalNetBalance
+    val balanceColor = when {
+        balance > 0.01 -> BalancePositive
+        balance < -0.01 -> BalanceNegative
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    val balanceSign = if (balance > 0.01) "+" else if (balance < -0.01) "-" else ""
+    val currSym = CurrencyUtil.getSymbol(uiState.primaryCurrency)
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+        ),
+        border = BorderStroke(
+            1.dp,
+            Brush.verticalGradient(
+                listOf(
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f),
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f)
+                )
+            )
         )
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
+        Column(modifier = Modifier.padding(22.dp)) {
             Text(
                 "TOTAL BALANCE",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                letterSpacing = 1.sp
             )
             Spacer(modifier = Modifier.height(6.dp))
-
-            val balance = uiState.totalNetBalance
-            val balanceColor = when {
-                balance > 0.01 -> BalancePositive
-                balance < -0.01 -> BalanceNegative
-                else -> MaterialTheme.colorScheme.onSurface
-            }
-            val balanceSign = if (balance > 0.01) "+" else if (balance < -0.01) "-" else ""
-            val currSym = CurrencyUtil.getSymbol(uiState.primaryCurrency)
 
             Text(
                 text = "$balanceSign$currSym${String.format(Locale.US, "%.2f", if (balance < 0) -balance else balance)}",
@@ -312,7 +444,7 @@ fun TotalBalanceCard(uiState: HomeUiState) {
             )
 
             Spacer(modifier = Modifier.height(16.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
             Spacer(modifier = Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth()) {
@@ -348,23 +480,51 @@ fun TotalBalanceCard(uiState: HomeUiState) {
 }
 
 @Composable
-fun GroupCard(group: Group, isSecretBadge: Boolean = false, onClick: () -> Unit) {
+fun GroupCard(
+    group: Group,
+    isSecretBadge: Boolean = false,
+    isArchived: Boolean = false,
+    onClick: () -> Unit,
+    onArchive: () -> Unit = {},
+    onDelete: () -> Unit = {}
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    val bal = group.userNetBalance
+    val balText = CurrencyUtil.formatBalance(bal, group.currency)
+    val balColor = when {
+        bal > 0.01 -> BalancePositive
+        bal < -0.01 -> BalanceNegative
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    // Subtle translucent background tinting
+    val cardBg = if (isArchived) {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.onSurface.copy(alpha = if (isArchived) 0.04f else 0.08f)
+        )
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(18.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                     if (isSecretBadge) {
-                        Icon(Icons.Default.VisibilityOff, contentDescription = "Secret", tint = BlockchainAccent, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.VisibilityOff, contentDescription = "Private", tint = BlockchainAccent, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                     }
                     Text(
@@ -374,21 +534,52 @@ fun GroupCard(group: Group, isSecretBadge: Boolean = false, onClick: () -> Unit)
                     )
                 }
 
-                // User balance in this group
-                val bal = group.userNetBalance
-                val balText = CurrencyUtil.formatBalance(bal, group.currency)
-                val balColor = when {
-                    bal > 0.01 -> BalancePositive
-                    bal < -0.01 -> BalanceNegative
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = balText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = balColor
+                    )
+                    Box {
+                        IconButton(
+                            onClick = { showMenu = true },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = "Group actions",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(if (isArchived) "Unarchive Group" else "Archive Group") },
+                                onClick = {
+                                    showMenu = false
+                                    onArchive()
+                                },
+                                leadingIcon = {
+                                    Icon(if (isArchived) Icons.Default.Unarchive else Icons.Default.Archive, contentDescription = null)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete Group", color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showMenu = false
+                                    onDelete()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                }
+                            )
+                        }
+                    }
                 }
-
-                Text(
-                    text = balText,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = balColor
-                )
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -399,33 +590,33 @@ fun GroupCard(group: Group, isSecretBadge: Boolean = false, onClick: () -> Unit)
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    if (group.isPersonalSolo) "Solo Personal Mode • ${group.currency}" else "${group.memberCount} members • ${group.currency}",
+                    if (group.isPersonalSolo) "Personal Expenses • ${group.currency}" else "${group.memberCount} members • ${group.currency}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                // Blockchain verification pill
+                // Clean status indicator (simplified, non-technical)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .background(
-                            color = BlockchainAccent.copy(alpha = 0.12f),
-                            shape = RoundedCornerShape(12.dp)
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(10.dp)
                         )
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
                 ) {
                     Icon(
-                        Icons.Default.Shield,
-                        contentDescription = "Verified Ledger",
-                        tint = BlockchainAccent,
-                        modifier = Modifier.size(14.dp)
+                        Icons.Default.CheckCircle,
+                        contentDescription = "Synced",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(13.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        "${group.blockCount} Blocks",
+                        if (isArchived) "Archived" else "Up to date",
                         style = MaterialTheme.typography.labelSmall,
-                        color = BlockchainAccent,
-                        fontFamily = FontFamily.Monospace
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
@@ -437,13 +628,14 @@ fun GroupCard(group: Group, isSecretBadge: Boolean = false, onClick: () -> Unit)
 fun EmptyGroupsCard(onCreateGroup: () -> Unit, onJoinGroup: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(24.dp),
+                .padding(28.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
@@ -452,26 +644,26 @@ fun EmptyGroupsCard(onCreateGroup: () -> Unit, onJoinGroup: () -> Unit) {
                 modifier = Modifier.size(48.dp),
                 tint = MaterialTheme.colorScheme.primary
             )
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(14.dp))
             Text(
-                "No Expense Groups Yet",
+                "No Groups Yet",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                "Create a group to start tracking shared expenses with friends using serverless peer-to-peer micro-blockchains.",
+                "Create a group to easily split expenses with friends or roommates without ads or subscription fees.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(18.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = onCreateGroup) {
                     Text("Create Group")
                 }
                 OutlinedButton(onClick = onJoinGroup) {
-                    Text("Join via Code")
+                    Text("Join Group")
                 }
             }
         }

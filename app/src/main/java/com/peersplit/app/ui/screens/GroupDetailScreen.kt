@@ -63,7 +63,9 @@ fun GroupDetailScreen(
     onDismissInvite: () -> Unit,
     onAddOfflineMember: (displayName: String, upiId: String?) -> Unit = { _, _ -> },
     onVoidExpense: (expenseId: String, description: String) -> Unit = { _, _ -> },
-    onUpdateBudget: (budget: Double) -> Unit = {}
+    onUpdateBudget: (budget: Double) -> Unit = {},
+    onArchiveGroup: (isArchived: Boolean) -> Unit = {},
+    onDeleteGroup: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(0) }
@@ -98,14 +100,14 @@ fun GroupDetailScreen(
                         Text(groupDetail.group.name, fontWeight = FontWeight.Bold)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                Icons.Default.Shield,
+                                Icons.Default.CheckCircle,
                                 contentDescription = null,
                                 tint = if (groupDetail.isLedgerIntact) BalancePositive else BalanceNegative,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(13.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                if (groupDetail.isLedgerIntact) "Ledger Validated" else "Tamper Warning",
+                                if (groupDetail.isLedgerIntact) "Synced & Secured" else "Sync Conflict",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (groupDetail.isLedgerIntact) BalancePositive else BalanceNegative
                             )
@@ -170,6 +172,23 @@ fun GroupDetailScreen(
                                     ExportUtil.shareStatement(context, groupDetail, asCsv = true)
                                 },
                                 leadingIcon = { Icon(Icons.Default.TableChart, contentDescription = null) }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text(if (groupDetail.group.isArchived) "Unarchive Group" else "Archive Group") },
+                                onClick = {
+                                    showExportMenu = false
+                                    onArchiveGroup(!groupDetail.group.isArchived)
+                                },
+                                leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete Group", color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showExportMenu = false
+                                    onDeleteGroup()
+                                },
+                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) }
                             )
                         }
                     }
@@ -457,30 +476,29 @@ fun GroupDetailScreen(
 
                 HorizontalDivider()
 
-                // Blockchain Metadata
+                // Audit verification badge
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("⛓️ Block #${exp.blockIndex} • ${dateFormat.format(Date(exp.timestamp))}", style = MaterialTheme.typography.labelSmall, color = BlockchainAccent, fontWeight = FontWeight.Bold)
-                        if (exp.blockHash.isNotBlank()) {
-                            Text("SHA-256: ${exp.blockHash.take(24)}...", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-                        }
-                        if (exp.signature.isNotBlank()) {
-                            Text("Ed25519 Sig: ${exp.signature.take(24)}...", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-                        }
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = BalancePositive, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Verified • ${dateFormat.format(Date(exp.timestamp))}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
 
-                // Void / Reverse Expense Action
+                // Void / Delete Expense Action
                 if (!exp.isVoided) {
                     Spacer(modifier = Modifier.height(4.dp))
                     OutlinedButton(
                         onClick = {
                             onVoidExpense(exp.id, exp.description)
-                            Toast.makeText(context, "Expense voided via signed reversal block!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Expense removed!", Toast.LENGTH_SHORT).show()
                             selectedExpenseForDetail = null
                         },
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
@@ -489,7 +507,7 @@ fun GroupDetailScreen(
                     ) {
                         Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Void / Reverse Expense on Blockchain")
+                        Text("Remove / Void Expense")
                     }
                 }
             }

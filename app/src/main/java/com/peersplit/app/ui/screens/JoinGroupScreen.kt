@@ -130,7 +130,7 @@ fun JoinGroupScreen(
             }
 
             Text(
-                "Ask a friend who is already in the group to tap 'Share Invite' and paste their code or show their QR code. Once joined, your device will automatically sync all cryptographic blocks over decentralized relays.",
+                "Ask a friend who is already in the group to share their invite link or QR code. Once joined, your group expenses will sync automatically with all members.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -158,7 +158,7 @@ fun JoinGroupScreen(
                 } else {
                     Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Join Group & Sync Ledger")
+                    Text("Join Group")
                 }
             }
         }

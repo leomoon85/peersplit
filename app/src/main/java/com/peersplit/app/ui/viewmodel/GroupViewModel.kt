@@ -59,6 +59,20 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
             repository.updateMemberUpiId(groupId, pubkey, upiId)
         }
     }
+
+    fun archiveGroup(isArchived: Boolean = true, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            repository.archiveGroup(groupId, isArchived)
+            onDone()
+        }
+    }
+
+    fun deleteGroup(onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            repository.deleteGroup(groupId)
+            onDone()
+        }
+    }
 }
 
 class AddExpenseViewModel(private val groupId: String) : ViewModel() {

@@ -11,16 +11,18 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 data class HomeUiState(
     val visibleGroups: List<Group> = emptyList(),
+    val archivedGroups: List<Group> = emptyList(),
     val secretGroups: List<Group> = emptyList(),
     val isSecretVaultUnlocked: Boolean = false,
     val totalNetBalance: Double = 0.0,
     val totalOwedToUser: Double = 0.0,
     val totalUserOwes: Double = 0.0,
     val primaryCurrency: String = "USD",
-    val connectedRelaysCount: Int = 4
+    val isOnline: Boolean = true
 )
 
 class HomeViewModel : ViewModel() {
@@ -32,7 +34,8 @@ class HomeViewModel : ViewModel() {
         repository.getGroups(),
         unlockedPin.asStateFlow()
     ) { allGroups, pin ->
-        val regular = allGroups.filter { !it.isSecret }
+        val activeRegular = allGroups.filter { !it.isSecret && !it.isArchived }
+        val archived = allGroups.filter { !it.isSecret && it.isArchived }
         val allSecret = allGroups.filter { it.isSecret }
         val unlocked = pin != null
         val unlockedSecrets = if (pin != null) {
@@ -41,8 +44,8 @@ class HomeViewModel : ViewModel() {
             emptyList()
         }
 
-        // Only calculate dashboard balance for visible + unlocked secret groups
-        val countedGroups = if (unlocked) (regular + unlockedSecrets) else regular
+        // Only calculate dashboard balance for active visible + unlocked secret groups
+        val countedGroups = if (unlocked) (activeRegular + unlockedSecrets) else activeRegular
 
         // Determine dominant currency across counted groups so we don't sum incompatible currencies directly
         val primaryCurrency = countedGroups
@@ -66,20 +69,33 @@ class HomeViewModel : ViewModel() {
         }
 
         HomeUiState(
-            visibleGroups = regular,
+            visibleGroups = activeRegular,
+            archivedGroups = archived,
             secretGroups = if (unlocked) unlockedSecrets else allSecret,
             isSecretVaultUnlocked = unlocked,
             totalNetBalance = totalBalance,
             totalOwedToUser = owedToUser,
             totalUserOwes = userOwes,
             primaryCurrency = primaryCurrency,
-            connectedRelaysCount = 4
+            isOnline = true
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = HomeUiState()
     )
+
+    fun archiveGroup(groupId: String, isArchived: Boolean = true) {
+        viewModelScope.launch {
+            repository.archiveGroup(groupId, isArchived)
+        }
+    }
+
+    fun deleteGroup(groupId: String) {
+        viewModelScope.launch {
+            repository.deleteGroup(groupId)
+        }
+    }
 
     fun unlockVault(pin: String): Boolean {
         val allSecret = uiState.value.secretGroups

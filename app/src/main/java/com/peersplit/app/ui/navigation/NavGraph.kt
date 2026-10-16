@@ -58,6 +58,12 @@ fun NavGraph(
                 onProfileClick = {
                     navController.navigate(Screen.Profile.route)
                 },
+                onArchiveGroup = { targetGroupId, isArchived ->
+                    homeViewModel.archiveGroup(targetGroupId, isArchived)
+                },
+                onDeleteGroup = { targetGroupId ->
+                    homeViewModel.deleteGroup(targetGroupId)
+                },
                 onUnlockVault = { pin ->
                     homeViewModel.unlockVault(pin)
                 },
@@ -135,6 +141,16 @@ fun NavGraph(
                 },
                 onUpdateBudget = { budget ->
                     groupViewModel.updateBudget(budget)
+                },
+                onArchiveGroup = { isArchived ->
+                    groupViewModel.archiveGroup(isArchived) {
+                        navController.popBackStack()
+                    }
+                },
+                onDeleteGroup = {
+                    groupViewModel.deleteGroup {
+                        navController.popBackStack()
+                    }
                 }
             )
         }

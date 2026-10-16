@@ -92,6 +92,7 @@ class ExpenseRepository(
                     secretPinHash = entity.secretPinHash,
                     isPersonalSolo = entity.isPersonalSolo,
                     monthlyBudget = entity.monthlyBudget,
+                    isArchived = entity.isArchived,
                     createdAt = entity.createdAt
                 )
             }
@@ -187,6 +188,7 @@ class ExpenseRepository(
                 secretPinHash = groupEntity.secretPinHash,
                 isPersonalSolo = groupEntity.isPersonalSolo,
                 monthlyBudget = groupEntity.monthlyBudget,
+                isArchived = groupEntity.isArchived,
                 createdAt = groupEntity.createdAt
             )
 
@@ -309,6 +311,22 @@ class ExpenseRepository(
      */
     suspend fun updateGroupBudget(groupId: String, budget: Double) {
         database.groupDao().updateGroupBudget(groupId, budget.coerceAtLeast(0.0))
+    }
+
+    /**
+     * Archives or unarchives a group.
+     */
+    suspend fun archiveGroup(groupId: String, isArchived: Boolean = true) {
+        database.groupDao().setGroupArchived(groupId, isArchived)
+    }
+
+    /**
+     * Completely deletes a group, its members, and all its transaction blocks.
+     */
+    suspend fun deleteGroup(groupId: String) {
+        database.blockDao().deleteBlocksForGroup(groupId)
+        database.memberDao().deleteMembersForGroup(groupId)
+        database.groupDao().deleteGroup(groupId)
     }
 
     /**
