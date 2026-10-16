@@ -33,6 +33,7 @@ import com.peersplit.app.data.repository.GroupDetail
 import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
+import com.peersplit.app.util.CurrencyUtil
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -290,7 +291,7 @@ fun BalancesAndDebtsTab(
                                     )
                                 }
                                 Text(
-                                    "$${String.format(Locale.US, "%.2f", stl.amount)}",
+                                    CurrencyUtil.formatAmount(stl.amount, groupDetail.group.currency),
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
@@ -312,7 +313,7 @@ fun BalancesAndDebtsTab(
         }
 
         items(groupDetail.members) { member ->
-            MemberBalanceRow(member)
+            MemberBalanceRow(member, groupDetail.group.currency)
         }
 
         item {
@@ -322,7 +323,7 @@ fun BalancesAndDebtsTab(
 }
 
 @Composable
-fun MemberBalanceRow(member: Member) {
+fun MemberBalanceRow(member: Member, currency: String = "USD") {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp)
@@ -365,11 +366,7 @@ fun MemberBalanceRow(member: Member) {
             }
 
             val bal = member.netBalance
-            val balText = when {
-                bal > 0.01 -> "+$${String.format(Locale.US, "%.2f", bal)}"
-                bal < -0.01 -> "-$${String.format(Locale.US, "%.2f", -bal)}"
-                else -> "settled"
-            }
+            val balText = CurrencyUtil.formatBalance(bal, currency)
             val balColor = when {
                 bal > 0.01 -> BalancePositive
                 bal < -0.01 -> BalanceNegative
@@ -442,7 +439,7 @@ fun ExpenseItemRow(expense: ExpenseItem, currency: String) {
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "${expense.payerName} paid $currency ${String.format(Locale.US, "%.2f", expense.totalAmount)} • ${dateFormat.format(Date(expense.timestamp))}",
+                    text = "${expense.payerName} paid ${CurrencyUtil.formatAmount(expense.totalAmount, currency)} • ${dateFormat.format(Date(expense.timestamp))}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -457,11 +454,7 @@ fun ExpenseItemRow(expense: ExpenseItem, currency: String) {
 
             Column(horizontalAlignment = Alignment.End) {
                 val share = expense.userShare
-                val shareText = when {
-                    share > 0.01 -> "+$${String.format(Locale.US, "%.2f", share)}"
-                    share < -0.01 -> "-$${String.format(Locale.US, "%.2f", -share)}"
-                    else -> "not involved"
-                }
+                val shareText = CurrencyUtil.formatShare(share, currency)
                 val shareColor = when {
                     share > 0.01 -> BalancePositive
                     share < -0.01 -> BalanceNegative

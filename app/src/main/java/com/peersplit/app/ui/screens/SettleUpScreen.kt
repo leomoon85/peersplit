@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.peersplit.app.data.repository.GroupDetail
+import com.peersplit.app.util.CurrencyUtil
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -155,6 +156,7 @@ fun SettleUpScreen(
                     value = amountText,
                     onValueChange = { amountText = it },
                     label = { Text("Settlement Amount (${groupDetail.group.currency})") },
+                    prefix = { Text(CurrencyUtil.getSymbol(groupDetail.group.currency) + " ") },
                     placeholder = { Text("0.00") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),

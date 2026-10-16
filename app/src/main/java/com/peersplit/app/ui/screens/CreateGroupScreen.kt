@@ -21,6 +21,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.peersplit.app.ui.theme.BlockchainAccent
+import com.peersplit.app.util.CurrencyUtil
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,7 +78,7 @@ fun CreateGroupScreen(
                         FilterChip(
                             selected = selectedCurrency == curr,
                             onClick = { selectedCurrency = curr },
-                            label = { Text(curr) }
+                            label = { Text("$curr (${CurrencyUtil.getSymbol(curr)})") }
                         )
                     }
                 }

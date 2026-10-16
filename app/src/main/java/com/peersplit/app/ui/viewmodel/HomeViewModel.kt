@@ -19,6 +19,7 @@ data class HomeUiState(
     val totalNetBalance: Double = 0.0,
     val totalOwedToUser: Double = 0.0,
     val totalUserOwes: Double = 0.0,
+    val primaryCurrency: String = "USD",
     val connectedRelaysCount: Int = 4
 )
 
@@ -50,6 +51,10 @@ class HomeViewModel : ViewModel() {
             }
         }
 
+        val primaryCurrency = countedGroups.firstOrNull()?.currency
+            ?: allGroups.firstOrNull()?.currency
+            ?: "USD"
+
         HomeUiState(
             visibleGroups = regular,
             secretGroups = secret,
@@ -57,6 +62,7 @@ class HomeViewModel : ViewModel() {
             totalNetBalance = totalBalance,
             totalOwedToUser = owedToUser,
             totalUserOwes = userOwes,
+            primaryCurrency = primaryCurrency,
             connectedRelaysCount = 4
         )
     }.stateIn(

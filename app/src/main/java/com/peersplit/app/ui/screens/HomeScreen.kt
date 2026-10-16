@@ -40,6 +40,7 @@ import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
 import com.peersplit.app.ui.viewmodel.HomeUiState
+import com.peersplit.app.util.CurrencyUtil
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -300,10 +301,11 @@ fun TotalBalanceCard(uiState: HomeUiState) {
                 balance < -0.01 -> BalanceNegative
                 else -> MaterialTheme.colorScheme.onSurface
             }
-            val balanceSign = if (balance > 0.01) "+" else ""
+            val balanceSign = if (balance > 0.01) "+" else if (balance < -0.01) "-" else ""
+            val currSym = CurrencyUtil.getSymbol(uiState.primaryCurrency)
 
             Text(
-                text = "$balanceSign$${String.format(Locale.US, "%.2f", balance)}",
+                text = "$balanceSign$currSym${String.format(Locale.US, "%.2f", if (balance < 0) -balance else balance)}",
                 style = MaterialTheme.typography.headlineLarge,
                 color = balanceColor,
                 fontWeight = FontWeight.Bold
@@ -321,7 +323,7 @@ fun TotalBalanceCard(uiState: HomeUiState) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        "+$${String.format(Locale.US, "%.2f", uiState.totalOwedToUser)}",
+                        "+${CurrencyUtil.formatAmount(uiState.totalOwedToUser, uiState.primaryCurrency)}",
                         style = MaterialTheme.typography.titleMedium,
                         color = BalancePositive,
                         fontWeight = FontWeight.SemiBold
@@ -334,7 +336,7 @@ fun TotalBalanceCard(uiState: HomeUiState) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        "-$${String.format(Locale.US, "%.2f", uiState.totalUserOwes)}",
+                        "-${CurrencyUtil.formatAmount(uiState.totalUserOwes, uiState.primaryCurrency)}",
                         style = MaterialTheme.typography.titleMedium,
                         color = BalanceNegative,
                         fontWeight = FontWeight.SemiBold
@@ -374,11 +376,7 @@ fun GroupCard(group: Group, isSecretBadge: Boolean = false, onClick: () -> Unit)
 
                 // User balance in this group
                 val bal = group.userNetBalance
-                val balText = when {
-                    bal > 0.01 -> "+$${String.format(Locale.US, "%.2f", bal)}"
-                    bal < -0.01 -> "-$${String.format(Locale.US, "%.2f", -bal)}"
-                    else -> "settled"
-                }
+                val balText = CurrencyUtil.formatBalance(bal, group.currency)
                 val balColor = when {
                     bal > 0.01 -> BalancePositive
                     bal < -0.01 -> BalanceNegative

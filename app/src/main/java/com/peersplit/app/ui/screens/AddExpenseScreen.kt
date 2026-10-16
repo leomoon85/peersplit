@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.peersplit.app.data.repository.GroupDetail
+import com.peersplit.app.util.CurrencyUtil
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -90,6 +91,7 @@ fun AddExpenseScreen(
                     value = amountText,
                     onValueChange = { amountText = it },
                     label = { Text("Amount (${groupDetail.group.currency})") },
+                    prefix = { Text(CurrencyUtil.getSymbol(groupDetail.group.currency) + " ") },
                     placeholder = { Text("0.00") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
@@ -151,7 +153,7 @@ fun AddExpenseScreen(
                     )
                     if (splitAmountPerPerson > 0) {
                         Text(
-                            "$${String.format(Locale.US, "%.2f", splitAmountPerPerson)}/person",
+                            "${CurrencyUtil.formatAmount(splitAmountPerPerson, groupDetail.group.currency)}/person",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.SemiBold
