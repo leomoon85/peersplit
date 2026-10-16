@@ -29,16 +29,26 @@ object DebtSettlementEngine {
      */
     fun calculateNetBalances(
         expenses: List<ExpensePayload>,
-        settlements: List<SettlementPayload>
+        settlements: List<SettlementPayload>,
+        voidedExpenseIds: Set<String> = emptySet()
     ): Map<String, Double> {
         // Use integer cents to eliminate floating-point drift
         val balanceCents = mutableMapOf<String, Long>()
 
-        // 1. Process Expenses
+        // 1. Process Active (Non-Voided) Expenses
         for (exp in expenses) {
-            val payer = exp.payerPubkey
-            val totalCents = (exp.totalAmount * CENTS_FACTOR).roundToLong()
-            balanceCents[payer] = (balanceCents[payer] ?: 0L) + totalCents
+            if (exp.expenseId in voidedExpenseIds) continue
+
+            if (exp.payers.size > 1) {
+                for (payerItem in exp.payers) {
+                    val paidCents = (payerItem.amount * CENTS_FACTOR).roundToLong()
+                    balanceCents[payerItem.userPubkey] = (balanceCents[payerItem.userPubkey] ?: 0L) + paidCents
+                }
+            } else {
+                val payer = exp.payerPubkey
+                val totalCents = (exp.totalAmount * CENTS_FACTOR).roundToLong()
+                balanceCents[payer] = (balanceCents[payer] ?: 0L) + totalCents
+            }
 
             for (split in exp.splits) {
                 val owedCents = (split.amount * CENTS_FACTOR).roundToLong()

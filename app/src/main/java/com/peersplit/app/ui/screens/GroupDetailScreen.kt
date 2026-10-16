@@ -4,12 +4,17 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -17,19 +22,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.Image
-import androidx.compose.ui.graphics.asImageBitmap
-import com.peersplit.app.crypto.QrCodeUtil
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.peersplit.app.blockchain.SettlementSuggestion
-import androidx.compose.foundation.Canvas
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import com.peersplit.app.crypto.QrCodeUtil
 import com.peersplit.app.data.model.ExpenseCategory
 import com.peersplit.app.data.model.ExpenseItem
 import com.peersplit.app.data.model.Member
@@ -39,6 +43,7 @@ import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
 import com.peersplit.app.util.CurrencyUtil
 import com.peersplit.app.util.ExportUtil
+import com.peersplit.app.util.UpiUtil
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -53,11 +58,26 @@ fun GroupDetailScreen(
     onSettleUpClick: () -> Unit,
     onAuditLedgerClick: () -> Unit,
     onGenerateInvite: () -> Unit,
-    onDismissInvite: () -> Unit
+    onDismissInvite: () -> Unit,
+    onAddOfflineMember: (displayName: String, upiId: String?) -> Unit = { _, _ -> },
+    onVoidExpense: (expenseId: String, description: String) -> Unit = { _, _ -> },
+    onUpdateBudget: (budget: Double) -> Unit = {}
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(0) }
     var showExportMenu by remember { mutableStateOf(false) }
+
+    // Add Offline Member Dialog state
+    var showAddMemberDialog by remember { mutableStateOf(false) }
+    var newMemberName by remember { mutableStateOf("") }
+    var newMemberUpi by remember { mutableStateOf("") }
+
+    // Budget Target Dialog state
+    var showBudgetDialog by remember { mutableStateOf(false) }
+    var budgetInputText by remember { mutableStateOf("") }
+
+    // Expense Detail Bottom Sheet state
+    var selectedExpenseForDetail by remember { mutableStateOf<ExpenseItem?>(null) }
 
     if (groupDetail == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -65,6 +85,8 @@ fun GroupDetailScreen(
         }
         return
     }
+
+    val activeExpensesCount = groupDetail.expenses.count { !it.isVoided }
 
     Scaffold(
         topBar = {
@@ -94,6 +116,9 @@ fun GroupDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showAddMemberDialog = true }) {
+                        Icon(Icons.Default.PersonAdd, contentDescription = "Add Member")
+                    }
                     IconButton(onClick = onAuditLedgerClick) {
                         Icon(Icons.Default.Analytics, contentDescription = "Audit Blockchain Ledger")
                     }
@@ -102,12 +127,32 @@ fun GroupDetailScreen(
                     }
                     Box {
                         IconButton(onClick = { showExportMenu = true }) {
-                            Icon(Icons.Default.FileDownload, contentDescription = "Export Ledger")
+                            Icon(Icons.Default.MoreVert, contentDescription = "More Options")
                         }
                         DropdownMenu(
                             expanded = showExportMenu,
                             onDismissRequest = { showExportMenu = false }
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Add Offline Member") },
+                                onClick = {
+                                    showExportMenu = false
+                                    showAddMemberDialog = true
+                                },
+                                leadingIcon = { Icon(Icons.Default.PersonAdd, contentDescription = null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Set Group / Monthly Budget") },
+                                onClick = {
+                                    showExportMenu = false
+                                    budgetInputText = if (groupDetail.group.monthlyBudget > 0) {
+                                        String.format(Locale.US, "%.0f", groupDetail.group.monthlyBudget)
+                                    } else ""
+                                    showBudgetDialog = true
+                                },
+                                leadingIcon = { Icon(Icons.Default.AccountBalanceWallet, contentDescription = null) }
+                            )
+                            HorizontalDivider()
                             DropdownMenuItem(
                                 text = { Text("Share Formatted Statement") },
                                 onClick = {
@@ -146,12 +191,12 @@ fun GroupDetailScreen(
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    text = { Text("Debts") }
+                    text = { Text(if (groupDetail.group.isPersonalSolo) "Overview" else "Debts") }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text("Ledger (${groupDetail.expenses.size})") }
+                    text = { Text("Ledger ($activeExpensesCount)") }
                 )
                 Tab(
                     selected = selectedTab == 2,
@@ -163,10 +208,288 @@ fun GroupDetailScreen(
             when (selectedTab) {
                 0 -> BalancesAndDebtsTab(
                     groupDetail = groupDetail,
-                    onSettleUpClick = onSettleUpClick
+                    onSettleUpClick = onSettleUpClick,
+                    onAddMemberClick = { showAddMemberDialog = true },
+                    onSetBudgetClick = {
+                        budgetInputText = if (groupDetail.group.monthlyBudget > 0) {
+                            String.format(Locale.US, "%.0f", groupDetail.group.monthlyBudget)
+                        } else ""
+                        showBudgetDialog = true
+                    }
                 )
-                1 -> ExpensesTab(groupDetail = groupDetail)
-                2 -> AnalyticsTab(groupDetail = groupDetail)
+                1 -> ExpensesTab(
+                    groupDetail = groupDetail,
+                    onExpenseClick = { selectedExpenseForDetail = it }
+                )
+                2 -> AnalyticsTab(
+                    groupDetail = groupDetail,
+                    onSetBudgetClick = {
+                        budgetInputText = if (groupDetail.group.monthlyBudget > 0) {
+                            String.format(Locale.US, "%.0f", groupDetail.group.monthlyBudget)
+                        } else ""
+                        showBudgetDialog = true
+                    }
+                )
+            }
+        }
+    }
+
+    // Add Offline / Ghost Member Dialog
+    if (showAddMemberDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddMemberDialog = false },
+            title = { Text("Add Group Member") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Add a friend by name so you can split expenses with them immediately—even before they install PeerSplit.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = newMemberName,
+                        onValueChange = { newMemberName = it },
+                        label = { Text("Member Name") },
+                        placeholder = { Text("e.g. Rahul, Priya") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newMemberUpi,
+                        onValueChange = { newMemberUpi = it },
+                        label = { Text("UPI ID (Optional)") },
+                        placeholder = { Text("e.g. rahul@upi") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = newMemberName.isNotBlank(),
+                    onClick = {
+                        onAddOfflineMember(newMemberName.trim(), newMemberUpi.trim().takeIf { it.isNotBlank() })
+                        Toast.makeText(context, "${newMemberName.trim()} added to group ledger!", Toast.LENGTH_SHORT).show()
+                        newMemberName = ""
+                        newMemberUpi = ""
+                        showAddMemberDialog = false
+                    }
+                ) {
+                    Text("Add to Ledger")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddMemberDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Set Budget Target Dialog
+    if (showBudgetDialog) {
+        val sym = CurrencyUtil.getSymbol(groupDetail.group.currency)
+        AlertDialog(
+            onDismissRequest = { showBudgetDialog = false },
+            title = { Text("Set Spending Budget") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Set a target budget for ${groupDetail.group.name} to track spending progress (enter 0 to remove budget).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = budgetInputText,
+                        onValueChange = { budgetInputText = it },
+                        label = { Text("Budget Limit (${groupDetail.group.currency})") },
+                        prefix = { Text("$sym ") },
+                        placeholder = { Text("e.g. 25000") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val b = budgetInputText.toDoubleOrNull() ?: 0.0
+                        onUpdateBudget(b)
+                        Toast.makeText(
+                            context,
+                            if (b > 0) "Budget updated to ${CurrencyUtil.formatAmount(b, groupDetail.group.currency)}" else "Budget cleared",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        showBudgetDialog = false
+                    }
+                ) {
+                    Text("Save Budget")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBudgetDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Expense Detail & Void Bottom Sheet / Dialog
+    if (selectedExpenseForDetail != null) {
+        val exp = selectedExpenseForDetail!!
+        val memberMap = groupDetail.members.associate { it.pubkey to it.displayName }
+        val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy • hh:mm a", Locale.getDefault()) }
+        val category = ExpenseCategory.fromName(exp.category)
+
+        ModalBottomSheet(
+            onDismissRequest = { selectedExpenseForDetail = null }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(category.composeColor().copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(category.iconEmoji, fontSize = 22.sp)
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = exp.description,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                textDecoration = if (exp.isVoided) TextDecoration.LineThrough else TextDecoration.None
+                            )
+                            Text(
+                                text = "${category.displayName} • ${exp.splitType} Split",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Text(
+                        text = CurrencyUtil.formatAmount(exp.totalAmount, exp.currency),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (exp.isVoided) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                if (exp.isVoided) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            "⚠️ This expense was voided on the blockchain ledger and is excluded from balances.",
+                            modifier = Modifier.padding(10.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                if (exp.note.isNotBlank()) {
+                    Text(
+                        "Note: “${exp.note}”",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                HorizontalDivider()
+
+                // Paid By Breakdown
+                Text("PAID BY", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (exp.payers.size > 1) {
+                    exp.payers.forEach { p ->
+                        val pName = memberMap[p.userPubkey] ?: "Member (${p.userPubkey.take(6)})"
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(pName, style = MaterialTheme.typography.bodyMedium)
+                            Text(CurrencyUtil.formatAmount(p.amount, exp.currency), fontWeight = FontWeight.SemiBold, color = BalancePositive)
+                        }
+                    }
+                } else {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(exp.payerName, style = MaterialTheme.typography.bodyMedium)
+                        Text(CurrencyUtil.formatAmount(exp.totalAmount, exp.currency), fontWeight = FontWeight.SemiBold, color = BalancePositive)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Split Breakdown
+                Text("ITEMIZED SPLIT BREAKDOWN", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                exp.splits.forEach { split ->
+                    val sName = memberMap[split.userPubkey] ?: "Member (${split.userPubkey.take(6)})"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(sName, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            CurrencyUtil.formatAmount(split.amount, exp.currency),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+
+                // Blockchain Metadata
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("⛓️ Block #${exp.blockIndex} • ${dateFormat.format(Date(exp.timestamp))}", style = MaterialTheme.typography.labelSmall, color = BlockchainAccent, fontWeight = FontWeight.Bold)
+                        if (exp.blockHash.isNotBlank()) {
+                            Text("SHA-256: ${exp.blockHash.take(24)}...", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                        }
+                        if (exp.signature.isNotBlank()) {
+                            Text("Ed25519 Sig: ${exp.signature.take(24)}...", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                }
+
+                // Void / Reverse Expense Action
+                if (!exp.isVoided) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = {
+                            onVoidExpense(exp.id, exp.description)
+                            Toast.makeText(context, "Expense voided via signed reversal block!", Toast.LENGTH_SHORT).show()
+                            selectedExpenseForDetail = null
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Void / Reverse Expense on Blockchain")
+                    }
+                }
             }
         }
     }
@@ -250,90 +573,211 @@ fun GroupDetailScreen(
 }
 
 @Composable
+fun BudgetProgressCard(
+    totalSpent: Double,
+    budgetLimit: Double,
+    currency: String,
+    onEditBudgetClick: () -> Unit
+) {
+    val ratio = if (budgetLimit > 0) (totalSpent / budgetLimit).toFloat() else 0f
+    val progressColor = when {
+        ratio >= 1.0f -> BalanceNegative
+        ratio >= 0.8f -> Color(0xFFF59E0B) // Amber warning
+        else -> BalancePositive
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onEditBudgetClick() },
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = progressColor, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("BUDGET TRACKER", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                }
+                Text(
+                    if (budgetLimit > 0) "${String.format(Locale.US, "%.0f", ratio * 100)}% used" else "Tap to set budget",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (budgetLimit > 0) progressColor else MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            if (budgetLimit > 0) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    Text(
+                        "${CurrencyUtil.formatAmount(totalSpent, currency)} spent",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "of ${CurrencyUtil.formatAmount(budgetLimit, currency)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { ratio.coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    color = progressColor,
+                )
+            } else {
+                Text(
+                    "Total Spent: ${CurrencyUtil.formatAmount(totalSpent, currency)} • Tap to set a monthly or trip budget target.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun BalancesAndDebtsTab(
     groupDetail: GroupDetail,
-    onSettleUpClick: () -> Unit
+    onSettleUpClick: () -> Unit,
+    onAddMemberClick: () -> Unit = {},
+    onSetBudgetClick: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    val totalSpent = groupDetail.expenses.filter { !it.isVoided }.sumOf { it.totalAmount }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Budget Progress Bar Card (Always shown in Solo mode or when budget > 0)
+        if (groupDetail.group.isPersonalSolo || groupDetail.group.monthlyBudget > 0) {
+            item {
+                BudgetProgressCard(
+                    totalSpent = totalSpent,
+                    budgetLimit = groupDetail.group.monthlyBudget,
+                    currency = groupDetail.group.currency,
+                    onEditBudgetClick = onSetBudgetClick
+                )
+            }
+        }
+
         // Simplified Settlements Card
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                "SIMPLIFIED SETTLEMENTS",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                "Min-Cash-Flow Plan",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Button(
-                            onClick = onSettleUpClick,
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+        if (!groupDetail.group.isPersonalSolo) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Settle Up")
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    if (groupDetail.settlements.isEmpty()) {
-                        Text(
-                            "All balances are squared up! No debts pending.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = BalancePositive
-                        )
-                    } else {
-                        val memberMap = groupDetail.members.associate { it.pubkey to it.displayName }
-                        groupDetail.settlements.forEach { stl ->
-                            val debtor = memberMap[stl.fromPubkey] ?: "Member (${stl.fromPubkey.take(4)})"
-                            val creditor = memberMap[stl.toPubkey] ?: "Member (${stl.toPubkey.take(4)})"
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.ArrowForward,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        "$debtor pays $creditor",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
+                            Column {
                                 Text(
-                                    CurrencyUtil.formatAmount(stl.amount, groupDetail.group.currency),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
+                                    "SIMPLIFIED SETTLEMENTS",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                Text(
+                                    "Min-Cash-Flow Plan",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Button(
+                                onClick = onSettleUpClick,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text("Settle Up")
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        if (groupDetail.settlements.isEmpty()) {
+                            Text(
+                                "All balances are squared up! No debts pending.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = BalancePositive
+                            )
+                        } else {
+                            val memberMap = groupDetail.members.associateBy { it.pubkey }
+                            groupDetail.settlements.forEach { stl ->
+                                val debtorMember = memberMap[stl.fromPubkey]
+                                val creditorMember = memberMap[stl.toPubkey]
+                                val debtor = debtorMember?.displayName ?: "Member (${stl.fromPubkey.take(4)})"
+                                val creditor = creditorMember?.displayName ?: "Member (${stl.toPubkey.take(4)})"
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            Icons.Default.ArrowForward,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column {
+                                            Text(
+                                                "$debtor pays $creditor",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                            Text(
+                                                CurrencyUtil.formatAmount(stl.amount, groupDetail.group.currency),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                    // 1-Tap Remind Button
+                                    IconButton(
+                                        onClick = {
+                                            UpiUtil.sharePaymentReminder(
+                                                context = context,
+                                                debtorName = debtor,
+                                                creditorName = creditor,
+                                                groupName = groupDetail.group.name,
+                                                amount = stl.amount,
+                                                currency = groupDetail.group.currency,
+                                                creditorUpiId = creditorMember?.upiId
+                                            )
+                                        }
+                                    ) {
+                                        Icon(
+                                            Icons.Default.NotificationsActive,
+                                            contentDescription = "Send Payment Reminder",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -343,11 +787,22 @@ fun BalancesAndDebtsTab(
 
         // Member Balances Header
         item {
-            Text(
-                "Group Members (${groupDetail.members.size})",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Group Members (${groupDetail.members.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                TextButton(onClick = onAddMemberClick) {
+                    Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add Member")
+                }
+            }
         }
 
         items(groupDetail.members) { member ->
@@ -422,7 +877,25 @@ fun MemberBalanceRow(member: Member, currency: String = "USD") {
 }
 
 @Composable
-fun ExpensesTab(groupDetail: GroupDetail) {
+fun ExpensesTab(
+    groupDetail: GroupDetail,
+    onExpenseClick: (ExpenseItem) -> Unit = {}
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedCategoryFilter by remember { mutableStateOf<ExpenseCategory?>(null) }
+
+    val filteredExpenses = remember(groupDetail.expenses, searchQuery, selectedCategoryFilter) {
+        groupDetail.expenses.filter { exp ->
+            val matchesQuery = searchQuery.isBlank() ||
+                    exp.description.contains(searchQuery, ignoreCase = true) ||
+                    exp.note.contains(searchQuery, ignoreCase = true) ||
+                    exp.payerName.contains(searchQuery, ignoreCase = true)
+            val matchesCategory = selectedCategoryFilter == null ||
+                    ExpenseCategory.fromName(exp.category) == selectedCategoryFilter
+            matchesQuery && matchesCategory
+        }
+    }
+
     if (groupDetail.expenses.isEmpty()) {
         Box(
             modifier = Modifier
@@ -438,30 +911,106 @@ fun ExpensesTab(groupDetail: GroupDetail) {
             )
         }
     } else {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(groupDetail.expenses) { expense ->
-                ExpenseItemRow(expense, groupDetail.group.currency)
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Search & Category Filter Header
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search expenses, notes, or payer...") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear")
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item {
+                        FilterChip(
+                            selected = selectedCategoryFilter == null,
+                            onClick = { selectedCategoryFilter = null },
+                            label = { Text("All") }
+                        )
+                    }
+                    items(ExpenseCategory.entries) { cat ->
+                        FilterChip(
+                            selected = selectedCategoryFilter == cat,
+                            onClick = {
+                                selectedCategoryFilter = if (selectedCategoryFilter == cat) null else cat
+                            },
+                            label = { Text("${cat.iconEmoji} ${cat.displayName}") }
+                        )
+                    }
+                }
             }
-            item {
-                Spacer(modifier = Modifier.height(80.dp))
+
+            if (filteredExpenses.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "No expenses match your filter.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(filteredExpenses) { expense ->
+                        ExpenseItemRow(
+                            expense = expense,
+                            currency = groupDetail.group.currency,
+                            onClick = { onExpenseClick(expense) }
+                        )
+                    }
+                    item {
+                        Spacer(modifier = Modifier.height(80.dp))
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-fun ExpenseItemRow(expense: ExpenseItem, currency: String) {
+fun ExpenseItemRow(
+    expense: ExpenseItem,
+    currency: String,
+    onClick: () -> Unit = {}
+) {
     val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
     val category = ExpenseCategory.fromName(expense.category)
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (expense.isVoided) {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+            } else MaterialTheme.colorScheme.surface
+        )
     ) {
         Row(
             modifier = Modifier
@@ -485,7 +1034,8 @@ fun ExpenseItemRow(expense: ExpenseItem, currency: String) {
                     Text(
                         text = expense.description,
                         style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        textDecoration = if (expense.isVoided) TextDecoration.LineThrough else TextDecoration.None
                     )
                     if (expense.note.isNotBlank()) {
                         Text(
@@ -501,43 +1051,55 @@ fun ExpenseItemRow(expense: ExpenseItem, currency: String) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "⛓️ Block #${expense.blockIndex}",
+                        text = if (expense.isVoided) "⛓️ Block #${expense.blockIndex} • VOIDED" else "⛓️ Block #${expense.blockIndex} • Tap for details",
                         style = MaterialTheme.typography.labelSmall,
-                        color = BlockchainAccent,
+                        color = if (expense.isVoided) MaterialTheme.colorScheme.error else BlockchainAccent,
                         fontFamily = FontFamily.Monospace
                     )
                 }
             }
 
             Column(horizontalAlignment = Alignment.End) {
-                val share = expense.userShare
-                val shareText = CurrencyUtil.formatShare(share, currency)
-                val shareColor = when {
-                    share > 0.01 -> BalancePositive
-                    share < -0.01 -> BalanceNegative
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                }
+                if (expense.isVoided) {
+                    Text(
+                        text = "VOIDED",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else {
+                    val share = expense.userShare
+                    val shareText = CurrencyUtil.formatShare(share, currency)
+                    val shareColor = when {
+                        share > 0.01 -> BalancePositive
+                        share < -0.01 -> BalanceNegative
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
 
-                Text(
-                    text = shareText,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = shareColor
-                )
-                Text(
-                    text = if (share > 0.01) "you lent" else if (share < -0.01) "you borrowed" else "",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                    Text(
+                        text = shareText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = shareColor
+                    )
+                    Text(
+                        text = if (share > 0.01) "you lent" else if (share < -0.01) "you borrowed" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-fun AnalyticsTab(groupDetail: GroupDetail) {
+fun AnalyticsTab(
+    groupDetail: GroupDetail,
+    onSetBudgetClick: () -> Unit = {}
+) {
     val currency = groupDetail.group.currency
-    val expenses = groupDetail.expenses
+    val expenses = groupDetail.expenses.filter { !it.isVoided }
     val totalSpend = expenses.sumOf { it.totalAmount }
 
     if (expenses.isEmpty()) {
@@ -565,6 +1127,16 @@ fun AnalyticsTab(groupDetail: GroupDetail) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Budget Progress Bar Card
+        item {
+            BudgetProgressCard(
+                totalSpent = totalSpend,
+                budgetLimit = groupDetail.group.monthlyBudget,
+                currency = currency,
+                onEditBudgetClick = onSetBudgetClick
+            )
+        }
+
         // Visual Donut Chart Card
         item {
             Card(

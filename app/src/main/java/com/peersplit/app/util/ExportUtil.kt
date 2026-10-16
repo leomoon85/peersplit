@@ -25,7 +25,7 @@ object ExportUtil {
      */
     fun generateCsv(groupDetail: GroupDetail): String {
         val sb = StringBuilder()
-        sb.append("Block Index,Date,Category,Description,Payer,Total Amount,Currency,Your Share\n")
+        sb.append("Block Index,Date,Category,Description,Payer,Total Amount,Currency,Your Share,Status\n")
 
         for (exp in groupDetail.expenses) {
             val dateStr = dateFormat.format(Date(exp.timestamp))
@@ -34,8 +34,9 @@ object ExportUtil {
             val safePayer = sanitizeCsvField(exp.payerName)
             val totalStr = String.format(Locale.US, "%.2f", exp.totalAmount)
             val shareStr = String.format(Locale.US, "%.2f", exp.userShare)
+            val statusStr = if (exp.isVoided) "VOIDED" else "ACTIVE"
 
-            sb.append("${exp.blockIndex},\"$dateStr\",\"$safeCat\",\"$safeDesc\",\"$safePayer\",$totalStr,${exp.currency},$shareStr\n")
+            sb.append("${exp.blockIndex},\"$dateStr\",\"$safeCat\",\"$safeDesc\",\"$safePayer\",$totalStr,${exp.currency},$shareStr,$statusStr\n")
         }
 
         return sb.toString()
@@ -75,8 +76,9 @@ object ExportUtil {
             sb.append("• ${m.displayName}: $bal\n")
         }
 
-        sb.append("\n📜 ITEMIZED EXPENSE HISTORY (${groupDetail.expenses.size} items):\n")
-        for (exp in groupDetail.expenses) {
+        val activeExpenses = groupDetail.expenses.filter { !it.isVoided }
+        sb.append("\n📜 ITEMIZED EXPENSE HISTORY (${activeExpenses.size} active items):\n")
+        for (exp in activeExpenses) {
             val date = dateFormat.format(Date(exp.timestamp))
             val amountFormatted = CurrencyUtil.formatAmount(exp.totalAmount, exp.currency)
             sb.append("[Block #${exp.blockIndex} • $date] [${exp.category}] ${exp.description}\n")

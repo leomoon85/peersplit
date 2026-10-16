@@ -44,6 +44,7 @@ data class BackupGroup(
     val isSecret: Boolean,
     val secretPinHash: String?,
     val isPersonalSolo: Boolean,
+    val monthlyBudget: Double = 0.0,
     val createdAt: Long
 )
 
@@ -97,6 +98,7 @@ object BackupManager {
                 isSecret = it.isSecret,
                 secretPinHash = it.secretPinHash,
                 isPersonalSolo = it.isPersonalSolo,
+                monthlyBudget = it.monthlyBudget,
                 createdAt = it.createdAt
             )
         }
@@ -219,6 +221,7 @@ object BackupManager {
                     isSecret = g.isSecret,
                     secretPinHash = g.secretPinHash,
                     isPersonalSolo = g.isPersonalSolo,
+                    monthlyBudget = g.monthlyBudget,
                     createdAt = g.createdAt
                 )
             )

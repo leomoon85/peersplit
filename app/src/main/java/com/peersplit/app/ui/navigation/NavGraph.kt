@@ -110,6 +110,15 @@ fun NavGraph(
                 },
                 onDismissInvite = {
                     groupViewModel.dismissInviteDialog()
+                },
+                onAddOfflineMember = { displayName, upiId ->
+                    groupViewModel.addOfflineMember(displayName, upiId)
+                },
+                onVoidExpense = { expenseId, description ->
+                    groupViewModel.voidExpense(expenseId, description)
+                },
+                onUpdateBudget = { budget ->
+                    groupViewModel.updateBudget(budget)
                 }
             )
         }
@@ -127,8 +136,8 @@ fun NavGraph(
                 groupDetail = groupDetail,
                 isSubmitting = isSubmitting,
                 onBackClick = { navController.popBackStack() },
-                onSubmitExpense = { desc, amount, currency, payer, splits, category, splitType, note ->
-                    addExpenseViewModel.submitExpense(desc, amount, currency, payer, splits, category, splitType, note)
+                onSubmitExpense = { desc, amount, currency, payer, splits, category, splitType, note, payers ->
+                    addExpenseViewModel.submitExpense(desc, amount, currency, payer, splits, category, splitType, note, payers)
                     navController.popBackStack()
                 }
             )

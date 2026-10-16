@@ -9,11 +9,12 @@ enum class BlockType {
     GENESIS,
     MEMBER_JOIN,
     EXPENSE,
-    SETTLEMENT
+    SETTLEMENT,
+    EXPENSE_VOID
 }
 
 /**
- * Data payload for an individual split in an expense.
+ * Data payload for an individual split or payer contribution in an expense.
  */
 @Serializable
 data class SplitItem(
@@ -41,7 +42,7 @@ data class MemberInfo(
 )
 
 /**
- * Payload when a new member joins the group.
+ * Payload when a new member joins the group (or is added as an offline/ghost member).
  */
 @Serializable
 data class MemberJoinedPayload(
@@ -53,6 +54,7 @@ data class MemberJoinedPayload(
 
 /**
  * Payload when an expense is recorded.
+ * Supports single payer (`payerPubkey`) as well as multiple payers (`payers`).
  */
 @Serializable
 data class ExpensePayload(
@@ -64,7 +66,19 @@ data class ExpensePayload(
     val splits: List<SplitItem>,
     val category: String = "General",
     val note: String = "",
-    val splitType: String = "EQUAL"
+    val splitType: String = "EQUAL",
+    val payers: List<SplitItem> = emptyList()
+)
+
+/**
+ * Payload when a previously recorded expense is voided/reversed on the immutable blockchain.
+ */
+@Serializable
+data class ExpenseVoidPayload(
+    val voidId: String,
+    val targetExpenseId: String,
+    val targetDescription: String,
+    val reason: String = "Voided by member"
 )
 
 /**

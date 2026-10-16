@@ -16,6 +16,7 @@ data class GroupEntity(
     val isSecret: Boolean = false,
     val secretPinHash: String? = null,
     val isPersonalSolo: Boolean = false,
+    val monthlyBudget: Double = 0.0,
     val createdAt: Long = System.currentTimeMillis()
 )
 

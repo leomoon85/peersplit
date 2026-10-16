@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.Lock
@@ -20,7 +21,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -44,6 +44,22 @@ enum class SplitMode(val label: String, val icon: String) {
     SHARES("Shares", "⚖️")
 }
 
+data class QuickExpensePreset(
+    val title: String,
+    val emoji: String,
+    val category: ExpenseCategory
+)
+
+private val defaultRecurringPresets = listOf(
+    QuickExpensePreset("Monthly Rent", "🏠", ExpenseCategory.UTILITIES),
+    QuickExpensePreset("Wi-Fi / Internet", "📶", ExpenseCategory.UTILITIES),
+    QuickExpensePreset("Electricity Bill", "⚡", ExpenseCategory.UTILITIES),
+    QuickExpensePreset("Groceries", "🛒", ExpenseCategory.GROCERIES),
+    QuickExpensePreset("Dinner / Zomato", "🍔", ExpenseCategory.FOOD),
+    QuickExpensePreset("Cab / Fuel", "🚕", ExpenseCategory.TRANSPORT),
+    QuickExpensePreset("House Help / Maid", "🧹", ExpenseCategory.UTILITIES)
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddExpenseScreen(
@@ -58,7 +74,8 @@ fun AddExpenseScreen(
         splits: List<SplitItem>,
         category: String,
         splitType: String,
-        note: String
+        note: String,
+        payers: List<SplitItem>
     ) -> Unit
 ) {
     if (groupDetail == null) {
@@ -81,10 +98,12 @@ fun AddExpenseScreen(
     var splitMode by remember { mutableStateOf(SplitMode.EQUAL) }
     var isOcrScanning by remember { mutableStateOf(false) }
 
-    // Default payer is current user or first member
+    // Single vs Multiple Payers
+    var isMultiPayer by remember { mutableStateOf(false) }
     var selectedPayerPubkey by remember {
         mutableStateOf(members.firstOrNull { it.isCurrentUser }?.pubkey ?: members.firstOrNull()?.pubkey ?: "")
     }
+    val multiPayerAmounts = remember { mutableStateMapOf<String, String>() }
 
     // Split state holders
     val equalSelected = remember { mutableStateMapOf<String, Boolean>() }
@@ -98,7 +117,16 @@ fun AddExpenseScreen(
             exactAmounts[m.pubkey] = ""
             percentageInputs[m.pubkey] = ""
             sharesInputs[m.pubkey] = "1"
+            multiPayerAmounts[m.pubkey] = ""
         }
+    }
+
+    // Recent recurring expenses from this group
+    val recentCustomTemplates = remember(groupDetail.expenses) {
+        groupDetail.expenses
+            .filter { !it.isVoided }
+            .distinctBy { it.description.lowercase() }
+            .take(4)
     }
 
     // Receipt OCR Photo Picker
@@ -126,6 +154,32 @@ fun AddExpenseScreen(
     }
 
     val totalAmount = amountText.toDoubleOrNull() ?: 0.0
+
+    // Multiple Payers validation
+    val (computedPayers, isValidPayer, payerStatusText) = remember(
+        totalAmount, isMultiPayer, selectedPayerPubkey, multiPayerAmounts.toMap()
+    ) {
+        if (!isMultiPayer) {
+            Triple(emptyList<SplitItem>(), selectedPayerPubkey.isNotBlank(), "Single payer")
+        } else {
+            var sumPaid = 0.0
+            val list = mutableListOf<SplitItem>()
+            for (m in members) {
+                val paid = multiPayerAmounts[m.pubkey]?.toDoubleOrNull() ?: 0.0
+                sumPaid += paid
+                if (paid > 0) {
+                    list.add(SplitItem(userPubkey = m.pubkey, amount = paid))
+                }
+            }
+            val diff = totalAmount - sumPaid
+            val valid = totalAmount > 0 && kotlin.math.abs(diff) < 0.05 && list.isNotEmpty()
+            val status = if (totalAmount <= 0) "Enter total bill amount first"
+            else if (valid) "Paid total matches ($sym${String.format(Locale.US, "%.2f", sumPaid)})"
+            else if (diff > 0) "Remaining to pay: $sym${String.format(Locale.US, "%.2f", diff)}"
+            else "Exceeds bill by: $sym${String.format(Locale.US, "%.2f", -diff)}"
+            Triple(list, valid, status)
+        }
+    }
 
     // Computed splits validation & generation
     val (computedSplits, isValidSplit, splitStatusText) = remember(
@@ -249,6 +303,41 @@ fun AddExpenseScreen(
                 }
             }
 
+            // Quick Recurring / Preset Templates Bar
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Bolt, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Quick Recurring & Templates", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Show group's recent expenses as 1-tap repeat chips (fills title, amount, category)
+                    items(recentCustomTemplates) { prev ->
+                        AssistChip(
+                            onClick = {
+                                description = prev.description
+                                amountText = String.format(Locale.US, "%.2f", prev.totalAmount)
+                                selectedCategory = ExpenseCategory.fromName(prev.category)
+                            },
+                            label = {
+                                Text("↻ ${prev.description} (${CurrencyUtil.formatAmount(prev.totalAmount, currency)})")
+                            }
+                        )
+                    }
+                    // Standard presets
+                    items(defaultRecurringPresets) { preset ->
+                        AssistChip(
+                            onClick = {
+                                description = preset.title
+                                selectedCategory = preset.category
+                            },
+                            label = { Text("${preset.emoji} ${preset.title}") }
+                        )
+                    }
+                }
+            }
+
             // Description & Amount
             item {
                 OutlinedTextField(
@@ -291,38 +380,86 @@ fun AddExpenseScreen(
                 }
             }
 
-            // Paid By Section
+            // Paid By Section (Single or Multiple Payers)
             item {
-                Text("Paid By", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Paid By", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    if (members.size > 1) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Multiple Payers", style = MaterialTheme.typography.bodySmall)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Switch(checked = isMultiPayer, onCheckedChange = { isMultiPayer = it })
+                        }
+                    }
+                }
+                if (isMultiPayer) {
+                    Text(
+                        text = payerStatusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (isValidPayer) BalancePositive else BalanceNegative,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
 
-            items(members) { member ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { selectedPayerPubkey = member.pubkey },
-                    shape = RoundedCornerShape(10.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (selectedPayerPubkey == member.pubkey) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else MaterialTheme.colorScheme.surface
-                    )
-                ) {
+            if (!isMultiPayer) {
+                items(members) { member ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedPayerPubkey = member.pubkey },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (selectedPayerPubkey == member.pubkey) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else MaterialTheme.colorScheme.surface
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (member.isCurrentUser) "${member.displayName} (You)" else member.displayName,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = if (selectedPayerPubkey == member.pubkey) FontWeight.Bold else FontWeight.Normal
+                            )
+                            if (selectedPayerPubkey == member.pubkey) {
+                                Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                }
+            } else {
+                items(members) { member ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                            .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = if (member.isCurrentUser) "${member.displayName} (You)" else member.displayName,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (selectedPayerPubkey == member.pubkey) FontWeight.Bold else FontWeight.Normal
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f)
                         )
-                        if (selectedPayerPubkey == member.pubkey) {
-                            Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        }
+                        OutlinedTextField(
+                            value = multiPayerAmounts[member.pubkey] ?: "",
+                            onValueChange = { multiPayerAmounts[member.pubkey] = it },
+                            placeholder = { Text("0.00") },
+                            prefix = { Text("$sym ") },
+                            modifier = Modifier.width(135.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true
+                        )
                     }
                 }
             }
@@ -516,23 +653,29 @@ fun AddExpenseScreen(
             // Submit Button
             item {
                 Spacer(modifier = Modifier.height(12.dp))
+                val primaryPayer = if (isMultiPayer) {
+                    computedPayers.maxByOrNull { it.amount }?.userPubkey ?: selectedPayerPubkey
+                } else {
+                    selectedPayerPubkey
+                }
                 Button(
                     onClick = {
                         onSubmitExpense(
                             description.trim(),
                             totalAmount,
                             currency,
-                            selectedPayerPubkey,
+                            primaryPayer,
                             computedSplits,
                             selectedCategory.name,
                             splitMode.name,
-                            note.trim()
+                            note.trim(),
+                            computedPayers
                         )
                     },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp),
-                    enabled = description.isNotBlank() && totalAmount > 0 && isValidSplit && !isSubmitting,
+                    enabled = description.isNotBlank() && totalAmount > 0 && isValidPayer && isValidSplit && !isSubmitting,
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     if (isSubmitting) {

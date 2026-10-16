@@ -35,6 +35,24 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
     fun dismissInviteDialog() {
         _inviteCode.value = null
     }
+
+    fun addOfflineMember(displayName: String, upiId: String?) {
+        viewModelScope.launch {
+            repository.addOfflineMember(groupId, displayName, upiId)
+        }
+    }
+
+    fun voidExpense(targetExpenseId: String, targetDescription: String, reason: String = "Voided by member") {
+        viewModelScope.launch {
+            repository.voidExpense(groupId, targetExpenseId, targetDescription, reason)
+        }
+    }
+
+    fun updateBudget(budget: Double) {
+        viewModelScope.launch {
+            repository.updateGroupBudget(groupId, budget)
+        }
+    }
 }
 
 class AddExpenseViewModel(private val groupId: String) : ViewModel() {
@@ -61,7 +79,8 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
         splits: List<SplitItem>,
         category: String = "General",
         splitType: String = "EQUAL",
-        note: String = ""
+        note: String = "",
+        payers: List<SplitItem> = emptyList()
     ) {
         if (amount <= 0 || description.isBlank() || splits.isEmpty()) return
 
@@ -77,7 +96,8 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
                     splits = splits,
                     category = category,
                     splitType = splitType,
-                    note = note
+                    note = note,
+                    payers = payers
                 )
                 _submissionSuccess.value = true
             } catch (e: Exception) {

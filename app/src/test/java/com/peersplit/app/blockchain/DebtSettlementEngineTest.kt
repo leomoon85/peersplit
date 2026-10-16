@@ -95,4 +95,55 @@ class DebtSettlementEngineTest {
         val simplified = DebtSettlementEngine.simplifyDebts(net)
         assertTrue("No pending debts after settlement", simplified.isEmpty())
     }
+
+    @Test
+    fun testMultiPayerAndVoidedExpenses() {
+        val alice = "alice"
+        val bob = "bob"
+        val charlie = "charlie"
+
+        // Alice paid 120, Bob paid 60 (total 180), split equally 60 each
+        val multiPayerExp = ExpensePayload(
+            expenseId = "exp_multi",
+            description = "Resort Booking",
+            totalAmount = 180.0,
+            currency = "USD",
+            payerPubkey = alice,
+            payers = listOf(
+                SplitItem(alice, 120.0),
+                SplitItem(bob, 60.0)
+            ),
+            splits = listOf(
+                SplitItem(alice, 60.0),
+                SplitItem(bob, 60.0),
+                SplitItem(charlie, 60.0)
+            )
+        )
+
+        // Mistake expense that was voided
+        val voidedExp = ExpensePayload(
+            expenseId = "exp_mistake",
+            description = "Typo 5000",
+            totalAmount = 5000.0,
+            currency = "USD",
+            payerPubkey = bob,
+            splits = listOf(
+                SplitItem(alice, 2500.0),
+                SplitItem(bob, 2500.0)
+            )
+        )
+
+        val net = DebtSettlementEngine.calculateNetBalances(
+            expenses = listOf(multiPayerExp, voidedExp),
+            settlements = emptyList(),
+            voidedExpenseIds = setOf("exp_mistake")
+        )
+
+        // Alice paid 120, owes 60 => +60
+        // Bob paid 60, owes 60 => 0
+        // Charlie paid 0, owes 60 => -60
+        assertEquals(60.0, net[alice] ?: 0.0, 0.001)
+        assertEquals(0.0, net[bob] ?: 0.0, 0.001)
+        assertEquals(-60.0, net[charlie] ?: 0.0, 0.001)
+    }
 }

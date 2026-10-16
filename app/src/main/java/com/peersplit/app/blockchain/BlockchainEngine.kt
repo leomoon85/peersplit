@@ -105,7 +105,8 @@ object BlockchainEngine {
         note: String,
         authorPubkey: String,
         authorPrivateKeyHex: String,
-        splitType: String = "EQUAL"
+        splitType: String = "EQUAL",
+        payers: List<SplitItem> = emptyList()
     ): Block {
         val payload = ExpensePayload(
             expenseId = "exp_${UUID.randomUUID().toString().take(12)}",
@@ -116,7 +117,8 @@ object BlockchainEngine {
             splits = splits,
             category = category,
             note = note,
-            splitType = splitType
+            splitType = splitType,
+            payers = payers
         )
         val payloadJson = json.encodeToString(payload)
 
@@ -127,6 +129,37 @@ object BlockchainEngine {
             creatorPubkey = authorPubkey,
             privateKeyHex = authorPrivateKeyHex,
             blockType = BlockType.EXPENSE,
+            payloadJson = payloadJson
+        )
+    }
+
+    /**
+     * Mints an Expense Void block to immutably reverse a previously recorded expense.
+     */
+    fun createExpenseVoidBlock(
+        groupId: String,
+        prevBlock: Block,
+        targetExpenseId: String,
+        targetDescription: String,
+        reason: String,
+        authorPubkey: String,
+        authorPrivateKeyHex: String
+    ): Block {
+        val payload = ExpenseVoidPayload(
+            voidId = "void_${UUID.randomUUID().toString().take(12)}",
+            targetExpenseId = targetExpenseId,
+            targetDescription = targetDescription,
+            reason = reason
+        )
+        val payloadJson = json.encodeToString(payload)
+
+        return Block.createAndSign(
+            index = prevBlock.index + 1,
+            groupId = groupId,
+            prevHash = prevBlock.blockHash,
+            creatorPubkey = authorPubkey,
+            privateKeyHex = authorPrivateKeyHex,
+            blockType = BlockType.EXPENSE_VOID,
             payloadJson = payloadJson
         )
     }

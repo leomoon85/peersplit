@@ -17,7 +17,7 @@ import com.peersplit.app.data.local.entity.MemberEntity
         MemberEntity::class,
         BlockEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

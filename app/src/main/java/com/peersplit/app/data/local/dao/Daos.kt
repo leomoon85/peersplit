@@ -26,6 +26,9 @@ interface GroupDao {
     @Query("SELECT * FROM groups WHERE id = :groupId LIMIT 1")
     suspend fun getGroupByIdSync(groupId: String): GroupEntity?
 
+    @Query("UPDATE groups SET monthlyBudget = :budget WHERE id = :groupId")
+    suspend fun updateGroupBudget(groupId: String, budget: Double)
+
     @Query("DELETE FROM groups WHERE id = :groupId")
     suspend fun deleteGroup(groupId: String)
 }

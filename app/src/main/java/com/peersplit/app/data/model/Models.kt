@@ -1,5 +1,7 @@
 package com.peersplit.app.data.model
 
+import com.peersplit.app.blockchain.SplitItem
+
 data class Group(
     val id: String,
     val name: String,
@@ -13,6 +15,7 @@ data class Group(
     val isSecret: Boolean = false,
     val secretPinHash: String? = null,
     val isPersonalSolo: Boolean = false,
+    val monthlyBudget: Double = 0.0,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -36,5 +39,10 @@ data class ExpenseItem(
     val blockIndex: Long,
     val category: String = "General",
     val note: String = "",
-    val splitType: String = "EQUAL"
+    val splitType: String = "EQUAL",
+    val splits: List<SplitItem> = emptyList(),
+    val payers: List<SplitItem> = emptyList(),
+    val blockHash: String = "",
+    val signature: String = "",
+    val isVoided: Boolean = false
 )

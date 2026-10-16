@@ -261,9 +261,34 @@ fun SettleUpScreen(
                 }
             }
 
+            // 1-Tap Payment Reminder Option (WhatsApp / SMS / Share)
+            item {
+                val payerMember = members.find { it.pubkey == selectedPayer }
+                OutlinedButton(
+                    onClick = {
+                        val debtorName = payerMember?.displayName ?: "Friend"
+                        val creditorName = payeeMember?.displayName ?: "Me"
+                        UpiUtil.sharePaymentReminder(
+                            context = context,
+                            debtorName = debtorName,
+                            creditorName = creditorName,
+                            groupName = groupDetail.group.name,
+                            amount = amount,
+                            currency = currency,
+                            creditorUpiId = payeeUpiId.takeIf { it.isNotBlank() } ?: payeeMember?.upiId
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    enabled = amount > 0 && selectedPayer != selectedPayee,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("📲 Send Payment Reminder (WhatsApp / SMS)")
+                }
+            }
+
             // Mint Settlement Block
             item {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Button(
                     onClick = {
                         isSubmitting = true

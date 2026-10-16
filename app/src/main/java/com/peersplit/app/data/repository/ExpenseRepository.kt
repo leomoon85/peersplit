@@ -7,6 +7,7 @@ import com.peersplit.app.blockchain.BlockType
 import com.peersplit.app.blockchain.BlockchainEngine
 import com.peersplit.app.blockchain.DebtSettlementEngine
 import com.peersplit.app.blockchain.ExpensePayload
+import com.peersplit.app.blockchain.ExpenseVoidPayload
 import com.peersplit.app.blockchain.GroupGenesisPayload
 import com.peersplit.app.blockchain.SettlementPayload
 import com.peersplit.app.blockchain.SettlementSuggestion
@@ -25,7 +26,6 @@ import com.peersplit.app.data.model.Member
 import com.peersplit.app.network.sync.P2PSyncManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -72,7 +72,8 @@ class ExpenseRepository(
                 val members = database.memberDao().getMembersForGroupSync(entity.id)
                 val expenses = extractExpenses(blocks)
                 val settlements = extractSettlements(blocks)
-                val netBalances = DebtSettlementEngine.calculateNetBalances(expenses, settlements)
+                val voidedIds = extractVoidedExpenseIds(blocks)
+                val netBalances = DebtSettlementEngine.calculateNetBalances(expenses, settlements, voidedIds)
 
                 val userBalance = netBalances[identity.publicKeyHex] ?: 0.0
                 val validation = BlockchainEngine.validateChain(blocks)
@@ -90,6 +91,7 @@ class ExpenseRepository(
                     isSecret = entity.isSecret,
                     secretPinHash = entity.secretPinHash,
                     isPersonalSolo = entity.isPersonalSolo,
+                    monthlyBudget = entity.monthlyBudget,
                     createdAt = entity.createdAt
                 )
             }
@@ -111,7 +113,8 @@ class ExpenseRepository(
             val domainBlocks = blockEntities.map { it.toDomainBlock() }
             val expensesPayloads = extractExpenses(domainBlocks)
             val settlementPayloads = extractSettlements(domainBlocks)
-            val netBalances = DebtSettlementEngine.calculateNetBalances(expensesPayloads, settlementPayloads)
+            val voidedIds = extractVoidedExpenseIds(domainBlocks)
+            val netBalances = DebtSettlementEngine.calculateNetBalances(expensesPayloads, settlementPayloads, voidedIds)
             val suggestions = DebtSettlementEngine.simplifyDebts(netBalances)
             val validation = BlockchainEngine.validateChain(domainBlocks)
 
@@ -129,9 +132,22 @@ class ExpenseRepository(
             val expenseItems = domainBlocks.filter { it.blockType == BlockType.EXPENSE }.mapNotNull { block ->
                 try {
                     val exp = json.decodeFromString(ExpensePayload.serializer(), block.payloadJson)
+                    val isVoided = exp.expenseId in voidedIds
                     val userSplit = exp.splits.find { it.userPubkey == identity.publicKeyHex }?.amount ?: 0.0
-                    val isPayer = exp.payerPubkey == identity.publicKeyHex
-                    val share = if (isPayer) (exp.totalAmount - userSplit) else -userSplit
+                    val userPaid = if (exp.payers.size > 1) {
+                        exp.payers.find { it.userPubkey == identity.publicKeyHex }?.amount ?: 0.0
+                    } else if (exp.payerPubkey == identity.publicKeyHex) {
+                        exp.totalAmount
+                    } else {
+                        0.0
+                    }
+                    val share = if (isVoided) 0.0 else (userPaid - userSplit)
+
+                    val resolvedPayerName = if (exp.payers.size > 1) {
+                        exp.payers.joinToString(" + ") { p -> memberMap[p.userPubkey] ?: "Member" }
+                    } else {
+                        memberMap[exp.payerPubkey] ?: "Member"
+                    }
 
                     ExpenseItem(
                         id = exp.expenseId,
@@ -139,13 +155,18 @@ class ExpenseRepository(
                         totalAmount = exp.totalAmount,
                         currency = exp.currency,
                         payerPubkey = exp.payerPubkey,
-                        payerName = memberMap[exp.payerPubkey] ?: "Member",
+                        payerName = resolvedPayerName,
                         timestamp = block.timestamp,
                         userShare = share,
                         blockIndex = block.index,
                         category = exp.category,
                         note = exp.note,
-                        splitType = exp.splitType
+                        splitType = exp.splitType,
+                        splits = exp.splits,
+                        payers = exp.payers,
+                        blockHash = block.blockHash,
+                        signature = block.signature,
+                        isVoided = isVoided
                     )
                 } catch (e: Exception) {
                     null
@@ -165,6 +186,7 @@ class ExpenseRepository(
                 isSecret = groupEntity.isSecret,
                 secretPinHash = groupEntity.secretPinHash,
                 isPersonalSolo = groupEntity.isPersonalSolo,
+                monthlyBudget = groupEntity.monthlyBudget,
                 createdAt = groupEntity.createdAt
             )
 
@@ -187,7 +209,8 @@ class ExpenseRepository(
         currency: String = "USD",
         isSecret: Boolean = false,
         secretPin: String? = null,
-        isPersonalSolo: Boolean = false
+        isPersonalSolo: Boolean = false,
+        monthlyBudget: Double = 0.0
     ): String {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
@@ -217,7 +240,8 @@ class ExpenseRepository(
                 groupKeyBase64 = groupKeyBase64,
                 isSecret = isSecret,
                 secretPinHash = pinHash,
-                isPersonalSolo = isPersonalSolo
+                isPersonalSolo = isPersonalSolo,
+                monthlyBudget = monthlyBudget
             )
         )
 
@@ -239,6 +263,55 @@ class ExpenseRepository(
     }
 
     /**
+     * Adds an offline / non-app member ("Ghost Member") directly to the group's blockchain ledger.
+     */
+    suspend fun addOfflineMember(
+        groupId: String,
+        displayName: String,
+        upiId: String? = null
+    ) {
+        if (displayName.isBlank()) return
+        val identity = KeyManager.getOrCreateIdentity(context)
+        val privKeyHex = KeyManager.getPrivateKeyHex(context)
+        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
+        val latestBlock = database.blockDao().getLatestBlockForGroup(groupId)?.toDomainBlock() ?: return
+
+        val cleanName = displayName.trim()
+        val cleanUpi = upiId?.trim()?.takeIf { it.isNotBlank() }
+        // Generate deterministic 64-char hex pubkey identifier for offline member
+        val ghostPubkey = HashUtil.sha256Hex("ghost:$groupId:${cleanName.lowercase()}")
+
+        database.memberDao().insertMember(
+            MemberEntity(
+                groupId = groupId,
+                pubkey = ghostPubkey,
+                displayName = cleanName,
+                upiId = cleanUpi
+            )
+        )
+
+        val joinBlock = BlockchainEngine.createMemberJoinBlock(
+            groupId = groupId,
+            prevBlock = latestBlock,
+            newMemberPubkey = ghostPubkey,
+            newMemberName = cleanName,
+            authorPubkey = identity.publicKeyHex,
+            authorPrivateKeyHex = privKeyHex,
+            upiId = cleanUpi
+        )
+
+        database.blockDao().insertBlock(BlockEntity.fromDomainBlock(joinBlock, isVerified = true))
+        syncManager.broadcastBlock(joinBlock, groupEntity.groupKeyBase64)
+    }
+
+    /**
+     * Updates the monthly / group spending budget target.
+     */
+    suspend fun updateGroupBudget(groupId: String, budget: Double) {
+        database.groupDao().updateGroupBudget(groupId, budget.coerceAtLeast(0.0))
+    }
+
+    /**
      * Adds an expense, signs the block, appends to local chain, and broadcasts.
      */
     suspend fun addExpense(
@@ -250,7 +323,8 @@ class ExpenseRepository(
         splits: List<SplitItem>,
         category: String = "General",
         splitType: String = "EQUAL",
-        note: String = ""
+        note: String = "",
+        payers: List<SplitItem> = emptyList()
     ) {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
@@ -271,11 +345,42 @@ class ExpenseRepository(
             note = note,
             authorPubkey = identity.publicKeyHex,
             authorPrivateKeyHex = privKeyHex,
-            splitType = splitType
+            splitType = splitType,
+            payers = payers
         )
 
         database.blockDao().insertBlock(BlockEntity.fromDomainBlock(expenseBlock, isVerified = true))
         syncManager.broadcastBlock(expenseBlock, groupEntity.groupKeyBase64)
+    }
+
+    /**
+     * Voids / reverses a previously recorded expense by appending a signed EXPENSE_VOID block.
+     */
+    suspend fun voidExpense(
+        groupId: String,
+        targetExpenseId: String,
+        targetDescription: String,
+        reason: String = "Voided by member"
+    ) {
+        val identity = KeyManager.getOrCreateIdentity(context)
+        val privKeyHex = KeyManager.getPrivateKeyHex(context)
+        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
+
+        val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return
+        val prevBlock = latestBlockEntity.toDomainBlock()
+
+        val voidBlock = BlockchainEngine.createExpenseVoidBlock(
+            groupId = groupId,
+            prevBlock = prevBlock,
+            targetExpenseId = targetExpenseId,
+            targetDescription = targetDescription,
+            reason = reason,
+            authorPubkey = identity.publicKeyHex,
+            authorPrivateKeyHex = privKeyHex
+        )
+
+        database.blockDao().insertBlock(BlockEntity.fromDomainBlock(voidBlock, isVerified = true))
+        syncManager.broadcastBlock(voidBlock, groupEntity.groupKeyBase64)
     }
 
     /**
@@ -421,6 +526,16 @@ class ExpenseRepository(
                 null
             }
         }
+    }
+
+    private fun extractVoidedExpenseIds(blocks: List<Block>): Set<String> {
+        return blocks.filter { it.blockType == BlockType.EXPENSE_VOID }.mapNotNull { block ->
+            try {
+                json.decodeFromString(ExpenseVoidPayload.serializer(), block.payloadJson).targetExpenseId
+            } catch (e: Exception) {
+                null
+            }
+        }.toSet()
     }
 
     private fun extractSettlements(blocks: List<Block>): List<SettlementPayload> {

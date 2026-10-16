@@ -74,4 +74,39 @@ object UpiUtil {
             null
         }
     }
+
+    /**
+     * Shares a polite 1-tap payment reminder via WhatsApp / SMS / Share Sheet.
+     */
+    fun sharePaymentReminder(
+        context: Context,
+        debtorName: String,
+        creditorName: String,
+        groupName: String,
+        amount: Double,
+        currency: String,
+        creditorUpiId: String? = null
+    ) {
+        val formattedAmt = CurrencyUtil.formatAmount(amount, currency)
+        val sb = StringBuilder()
+        sb.append("Hi $debtorName! 👋\n\n")
+        sb.append("Friendly reminder for our *$groupName* expenses on PeerSplit:\n")
+        sb.append("• Amount due to $creditorName: *$formattedAmt*\n")
+
+        if (!creditorUpiId.isNullOrBlank()) {
+            val upiUri = buildUpiUri(creditorUpiId, creditorName, amount, "PeerSplit: $groupName")
+            sb.append("• UPI ID: `$creditorUpiId`\n")
+            sb.append("• Quick UPI Pay Link: $upiUri\n")
+        }
+
+        sb.append("\n🔒 Verified on PeerSplit decentralized ledger.")
+
+        val sendIntent = Intent().apply {
+            action = Intent.ACTION_SEND
+            putExtra(Intent.EXTRA_TEXT, sb.toString())
+            type = "text/plain"
+        }
+        val chooser = Intent.createChooser(sendIntent, "Send Payment Reminder to $debtorName")
+        context.startActivity(chooser)
+    }
 }
