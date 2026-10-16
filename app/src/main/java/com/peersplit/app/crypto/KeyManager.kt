@@ -19,6 +19,7 @@ object KeyManager {
     private const val KEY_PRIV_HEX = "priv_key_hex"
     private const val KEY_PUB_HEX = "pub_key_hex"
     private const val KEY_USER_NAME = "user_display_name"
+    private const val KEY_UPI_ID = "user_upi_id"
 
     private val secureRandom = SecureRandom()
 
@@ -45,7 +46,8 @@ object KeyManager {
 
     data class UserIdentity(
         val publicKeyHex: String,
-        val displayName: String
+        val displayName: String,
+        val upiId: String? = null
     ) {
         val shortPubkey: String
             get() = if (publicKeyHex.length > 12) {
@@ -134,9 +136,10 @@ object KeyManager {
         val prefs = getPrefs(context)
         val existingPubHex = prefs.getString(KEY_PUB_HEX, null)
         val existingName = prefs.getString(KEY_USER_NAME, "My Phone") ?: "My Phone"
+        val existingUpi = prefs.getString(KEY_UPI_ID, null)
 
         if (existingPubHex != null) {
-            return UserIdentity(publicKeyHex = existingPubHex, displayName = existingName)
+            return UserIdentity(publicKeyHex = existingPubHex, displayName = existingName, upiId = existingUpi)
         }
 
         // Generate brand new identity
@@ -168,6 +171,29 @@ object KeyManager {
      */
     fun updateDisplayName(context: Context, newName: String) {
         getPrefs(context).edit().putString(KEY_USER_NAME, newName.trim()).apply()
+    }
+
+    /**
+     * Updates the user's local UPI ID for settlements.
+     */
+    fun updateUpiId(context: Context, newUpiId: String) {
+        getPrefs(context).edit().putString(KEY_UPI_ID, newUpiId.trim()).apply()
+    }
+
+    fun getUpiId(context: Context): String {
+        return getPrefs(context).getString(KEY_UPI_ID, "") ?: ""
+    }
+
+    /**
+     * Restores cryptographic identity from backup.
+     */
+    fun restoreIdentity(context: Context, privHex: String, pubHex: String, displayName: String, upiId: String? = null) {
+        getPrefs(context).edit()
+            .putString(KEY_PRIV_HEX, privHex)
+            .putString(KEY_PUB_HEX, pubHex)
+            .putString(KEY_USER_NAME, displayName)
+            .putString(KEY_UPI_ID, upiId)
+            .apply()
     }
 
     private fun getPrefs(context: Context): SharedPreferences {

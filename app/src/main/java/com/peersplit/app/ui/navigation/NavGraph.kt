@@ -127,8 +127,8 @@ fun NavGraph(
                 groupDetail = groupDetail,
                 isSubmitting = isSubmitting,
                 onBackClick = { navController.popBackStack() },
-                onSubmitExpense = { desc, amount, currency, payer, splits ->
-                    addExpenseViewModel.submitExpense(desc, amount, currency, payer, splits)
+                onSubmitExpense = { desc, amount, currency, payer, splits, category, splitType, note ->
+                    addExpenseViewModel.submitExpense(desc, amount, currency, payer, splits, category, splitType, note)
                     navController.popBackStack()
                 }
             )

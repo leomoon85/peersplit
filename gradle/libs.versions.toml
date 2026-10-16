@@ -14,6 +14,7 @@ okhttp = "4.12.0"
 bouncyCastle = "1.78.1"
 zxing = "3.5.3"
 cameraX = "1.4.0"
+mlkitTextRecognition = "16.0.1"
 junit = "4.13.2"
 junitVersion = "1.2.1"
 espressoCore = "3.6.1"
@@ -52,6 +53,9 @@ bouncycastle-bcprov = { group = "org.bouncycastle", name = "bcprov-jdk18on", ver
 
 # QR Code Generation & Scanning (Air-gapped sync)
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+
+# On-Device Offline ML Kit OCR for smart receipt scanning
+mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
 
 # Unit Testing
 junit = { group = "junit", name = "junit", version.ref = "junit" }

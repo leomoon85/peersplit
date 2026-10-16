@@ -27,6 +27,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.peersplit.app.blockchain.SettlementSuggestion
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import com.peersplit.app.data.model.ExpenseCategory
 import com.peersplit.app.data.model.ExpenseItem
 import com.peersplit.app.data.model.Member
 import com.peersplit.app.data.repository.GroupDetail
@@ -34,6 +38,7 @@ import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
 import com.peersplit.app.util.CurrencyUtil
+import com.peersplit.app.util.ExportUtil
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -52,6 +57,7 @@ fun GroupDetailScreen(
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(0) }
+    var showExportMenu by remember { mutableStateOf(false) }
 
     if (groupDetail == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -94,6 +100,32 @@ fun GroupDetailScreen(
                     IconButton(onClick = onGenerateInvite) {
                         Icon(Icons.Default.Share, contentDescription = "Invite Members")
                     }
+                    Box {
+                        IconButton(onClick = { showExportMenu = true }) {
+                            Icon(Icons.Default.FileDownload, contentDescription = "Export Ledger")
+                        }
+                        DropdownMenu(
+                            expanded = showExportMenu,
+                            onDismissRequest = { showExportMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Share Formatted Statement") },
+                                onClick = {
+                                    showExportMenu = false
+                                    ExportUtil.shareStatement(context, groupDetail, asCsv = false)
+                                },
+                                leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Export CSV Spreadsheet") },
+                                onClick = {
+                                    showExportMenu = false
+                                    ExportUtil.shareStatement(context, groupDetail, asCsv = true)
+                                },
+                                leadingIcon = { Icon(Icons.Default.TableChart, contentDescription = null) }
+                            )
+                        }
+                    }
                 }
             )
         },
@@ -114,12 +146,17 @@ fun GroupDetailScreen(
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    text = { Text("Debts & Balances") }
+                    text = { Text("Debts") }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text("Expense Ledger (${groupDetail.expenses.size})") }
+                    text = { Text("Ledger (${groupDetail.expenses.size})") }
+                )
+                Tab(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
+                    text = { Text("Analytics 📊") }
                 )
             }
 
@@ -129,6 +166,7 @@ fun GroupDetailScreen(
                     onSettleUpClick = onSettleUpClick
                 )
                 1 -> ExpensesTab(groupDetail = groupDetail)
+                2 -> AnalyticsTab(groupDetail = groupDetail)
             }
         }
     }
@@ -419,6 +457,7 @@ fun ExpensesTab(groupDetail: GroupDetail) {
 @Composable
 fun ExpenseItemRow(expense: ExpenseItem, currency: String) {
     val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
+    val category = ExpenseCategory.fromName(expense.category)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -431,25 +470,43 @@ fun ExpenseItemRow(expense: ExpenseItem, currency: String) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = expense.description,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "${expense.payerName} paid ${CurrencyUtil.formatAmount(expense.totalAmount, currency)} • ${dateFormat.format(Date(expense.timestamp))}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "⛓️ Block #${expense.blockIndex}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = BlockchainAccent,
-                    fontFamily = FontFamily.Monospace
-                )
+            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(category.composeColor().copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(category.iconEmoji, fontSize = 20.sp)
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = expense.description,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (expense.note.isNotBlank()) {
+                        Text(
+                            text = "“${expense.note}”",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "${expense.payerName} paid ${CurrencyUtil.formatAmount(expense.totalAmount, currency)} • ${dateFormat.format(Date(expense.timestamp))}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "⛓️ Block #${expense.blockIndex}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = BlockchainAccent,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
 
             Column(horizontalAlignment = Alignment.End) {
@@ -473,6 +530,151 @@ fun ExpenseItemRow(expense: ExpenseItem, currency: String) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+    }
+}
+
+@Composable
+fun AnalyticsTab(groupDetail: GroupDetail) {
+    val currency = groupDetail.group.currency
+    val expenses = groupDetail.expenses
+    val totalSpend = expenses.sumOf { it.totalAmount }
+
+    if (expenses.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+            Text(
+                "No spending data available yet.\nAdd expenses to see category breakdown and charts.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+        }
+        return
+    }
+
+    val categoryBreakdown = remember(expenses) {
+        expenses.groupBy { ExpenseCategory.fromName(it.category) }
+            .mapValues { entry -> entry.value.sumOf { it.totalAmount } }
+            .toList()
+            .sortedByDescending { it.second }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Visual Donut Chart Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "SPENDING BY CATEGORY",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Box(
+                        modifier = Modifier.size(200.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                            var startAngle = -90f
+                            categoryBreakdown.forEach { (cat, catAmount) ->
+                                val sweep = if (totalSpend > 0) ((catAmount / totalSpend) * 360f).toFloat() else 0f
+                                drawArc(
+                                    color = cat.composeColor(),
+                                    startAngle = startAngle,
+                                    sweepAngle = sweep,
+                                    useCenter = false,
+                                    style = Stroke(width = 28.dp.toPx(), cap = StrokeCap.Butt)
+                                )
+                                startAngle += sweep
+                            }
+                        }
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                "Total Spent",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                CurrencyUtil.formatAmount(totalSpend, currency),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Category Breakdown List
+        item {
+            Text(
+                "Category Breakdown",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        items(categoryBreakdown) { (cat, catAmount) ->
+            val percentage = if (totalSpend > 0) (catAmount / totalSpend) * 100 else 0.0
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(cat.composeColor().copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(cat.iconEmoji, fontSize = 18.sp)
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(cat.displayName, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "${String.format(Locale.US, "%.1f", percentage)}% of total",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Text(
+                        CurrencyUtil.formatAmount(catAmount, currency),
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(80.dp))
         }
     }
 }

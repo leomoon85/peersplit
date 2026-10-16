@@ -58,24 +58,26 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
         amount: Double,
         currency: String,
         payerPubkey: String,
-        splitWithPubkeys: List<String>
+        splits: List<SplitItem>,
+        category: String = "General",
+        splitType: String = "EQUAL",
+        note: String = ""
     ) {
-        if (amount <= 0 || description.isBlank() || splitWithPubkeys.isEmpty()) return
+        if (amount <= 0 || description.isBlank() || splits.isEmpty()) return
 
         viewModelScope.launch {
             _isSubmitting.value = true
             try {
-                // Split equally among selected members
-                val perPerson = amount / splitWithPubkeys.size
-                val splits = splitWithPubkeys.map { SplitItem(userPubkey = it, amount = perPerson) }
-
                 repository.addExpense(
                     groupId = groupId,
                     description = description.trim(),
                     amount = amount,
                     currency = currency,
                     payerPubkey = payerPubkey,
-                    splits = splits
+                    splits = splits,
+                    category = category,
+                    splitType = splitType,
+                    note = note
                 )
                 _submissionSuccess.value = true
             } catch (e: Exception) {

@@ -122,7 +122,8 @@ class ExpenseRepository(
                     pubkey = memberEntity.pubkey,
                     displayName = memberEntity.displayName,
                     isCurrentUser = memberEntity.pubkey == identity.publicKeyHex,
-                    netBalance = netBalances[memberEntity.pubkey] ?: 0.0
+                    netBalance = netBalances[memberEntity.pubkey] ?: 0.0,
+                    upiId = memberEntity.upiId
                 )
             }
 
@@ -142,7 +143,10 @@ class ExpenseRepository(
                         payerName = memberMap[exp.payerPubkey] ?: "Member",
                         timestamp = block.timestamp,
                         userShare = share,
-                        blockIndex = block.index
+                        blockIndex = block.index,
+                        category = exp.category,
+                        note = exp.note,
+                        splitType = exp.splitType
                     )
                 } catch (e: Exception) {
                     null
@@ -198,7 +202,8 @@ class ExpenseRepository(
             currency = currency.trim(),
             creatorPubkey = identity.publicKeyHex,
             creatorDisplayName = identity.displayName,
-            privateKeyHex = privKeyHex
+            privateKeyHex = privKeyHex,
+            creatorUpiId = identity.upiId
         )
 
         val pinHash = if (!secretPin.isNullOrBlank()) HashUtil.sha256Hex(secretPin) else null
@@ -222,7 +227,8 @@ class ExpenseRepository(
             MemberEntity(
                 groupId = groupId,
                 pubkey = identity.publicKeyHex,
-                displayName = identity.displayName
+                displayName = identity.displayName,
+                upiId = identity.upiId
             )
         )
 
@@ -243,7 +249,9 @@ class ExpenseRepository(
         currency: String,
         payerPubkey: String,
         splits: List<SplitItem>,
-        category: String = "General"
+        category: String = "General",
+        splitType: String = "EQUAL",
+        note: String = ""
     ) {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
@@ -261,9 +269,10 @@ class ExpenseRepository(
             payerPubkey = payerPubkey,
             splits = splits,
             category = category,
-            note = "",
+            note = note,
             authorPubkey = identity.publicKeyHex,
-            authorPrivateKeyHex = privKeyHex
+            authorPrivateKeyHex = privKeyHex,
+            splitType = splitType
         )
 
         database.blockDao().insertBlock(BlockEntity.fromDomainBlock(expenseBlock, isVerified = true))
@@ -373,7 +382,8 @@ class ExpenseRepository(
                 MemberEntity(
                     groupId = inviteData.groupId,
                     pubkey = identity.publicKeyHex,
-                    displayName = identity.displayName
+                    displayName = identity.displayName,
+                    upiId = identity.upiId
                 )
             )
 
@@ -391,7 +401,8 @@ class ExpenseRepository(
                     newMemberPubkey = identity.publicKeyHex,
                     newMemberName = identity.displayName,
                     authorPubkey = identity.publicKeyHex,
-                    authorPrivateKeyHex = privKeyHex
+                    authorPrivateKeyHex = privKeyHex,
+                    upiId = identity.upiId
                 )
                 database.blockDao().insertBlock(BlockEntity.fromDomainBlock(joinBlock, isVerified = true))
                 syncManager.broadcastBlock(joinBlock, inviteData.groupKeyBase64)

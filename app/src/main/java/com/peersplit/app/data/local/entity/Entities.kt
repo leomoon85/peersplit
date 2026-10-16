@@ -27,7 +27,8 @@ data class MemberEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val groupId: String,
     val pubkey: String,
-    val displayName: String
+    val displayName: String,
+    val upiId: String? = null
 )
 
 @Entity(

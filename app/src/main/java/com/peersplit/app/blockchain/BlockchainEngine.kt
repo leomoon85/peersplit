@@ -32,7 +32,8 @@ object BlockchainEngine {
         creatorPubkey: String,
         creatorDisplayName: String,
         privateKeyHex: String,
-        groupId: String = "grp_${UUID.randomUUID().toString().take(12)}"
+        groupId: String = "grp_${UUID.randomUUID().toString().take(12)}",
+        creatorUpiId: String? = null
     ): Pair<String, Block> {
         val genesisPayload = GroupGenesisPayload(
             groupId = groupId,
@@ -40,7 +41,7 @@ object BlockchainEngine {
             currency = currency,
             creatorPubkey = creatorPubkey,
             initialMembers = listOf(
-                MemberInfo(pubkey = creatorPubkey, displayName = creatorDisplayName)
+                MemberInfo(pubkey = creatorPubkey, displayName = creatorDisplayName, upiId = creatorUpiId)
             )
         )
         val payloadJson = json.encodeToString(genesisPayload)
@@ -67,12 +68,14 @@ object BlockchainEngine {
         newMemberPubkey: String,
         newMemberName: String,
         authorPubkey: String,
-        authorPrivateKeyHex: String
+        authorPrivateKeyHex: String,
+        upiId: String? = null
     ): Block {
         val payload = MemberJoinedPayload(
             pubkey = newMemberPubkey,
             displayName = newMemberName,
-            joinedAt = System.currentTimeMillis()
+            joinedAt = System.currentTimeMillis(),
+            upiId = upiId
         )
         val payloadJson = json.encodeToString(payload)
 
@@ -101,7 +104,8 @@ object BlockchainEngine {
         category: String,
         note: String,
         authorPubkey: String,
-        authorPrivateKeyHex: String
+        authorPrivateKeyHex: String,
+        splitType: String = "EQUAL"
     ): Block {
         val payload = ExpensePayload(
             expenseId = "exp_${UUID.randomUUID().toString().take(12)}",
@@ -111,7 +115,8 @@ object BlockchainEngine {
             payerPubkey = payerPubkey,
             splits = splits,
             category = category,
-            note = note
+            note = note,
+            splitType = splitType
         )
         val payloadJson = json.encodeToString(payload)
 

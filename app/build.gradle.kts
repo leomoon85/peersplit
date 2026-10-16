@@ -79,6 +79,9 @@ dependencies {
     // QR Codes for offline ledger sync
     implementation(libs.zxing.core)
 
+    // On-Device ML Kit OCR
+    implementation(libs.mlkit.text.recognition)
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

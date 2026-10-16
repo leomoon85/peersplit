@@ -36,7 +36,8 @@ data class GroupGenesisPayload(
 @Serializable
 data class MemberInfo(
     val pubkey: String,
-    val displayName: String
+    val displayName: String,
+    val upiId: String? = null
 )
 
 /**
@@ -46,7 +47,8 @@ data class MemberInfo(
 data class MemberJoinedPayload(
     val pubkey: String,
     val displayName: String,
-    val joinedAt: Long
+    val joinedAt: Long,
+    val upiId: String? = null
 )
 
 /**
@@ -61,7 +63,8 @@ data class ExpensePayload(
     val payerPubkey: String,
     val splits: List<SplitItem>,
     val category: String = "General",
-    val note: String = ""
+    val note: String = "",
+    val splitType: String = "EQUAL"
 )
 
 /**

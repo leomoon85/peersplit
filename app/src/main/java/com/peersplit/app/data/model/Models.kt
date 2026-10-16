@@ -20,7 +20,8 @@ data class Member(
     val pubkey: String,
     val displayName: String,
     val isCurrentUser: Boolean = false,
-    val netBalance: Double = 0.0
+    val netBalance: Double = 0.0,
+    val upiId: String? = null
 )
 
 data class ExpenseItem(
@@ -32,5 +33,8 @@ data class ExpenseItem(
     val payerName: String,
     val timestamp: Long,
     val userShare: Double, // what current user paid or owes for this expense
-    val blockIndex: Long
+    val blockIndex: Long,
+    val category: String = "General",
+    val note: String = "",
+    val splitType: String = "EQUAL"
 )

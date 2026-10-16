@@ -181,7 +181,7 @@ class P2PSyncManager(
                 val payload = json.decodeFromString(GroupGenesisPayload.serializer(), block.payloadJson)
                 payload.initialMembers.forEach { member ->
                     database.memberDao().insertMember(
-                        MemberEntity(groupId = groupId, pubkey = member.pubkey, displayName = member.displayName)
+                        MemberEntity(groupId = groupId, pubkey = member.pubkey, displayName = member.displayName, upiId = member.upiId)
                     )
                 }
                 Log.d(TAG, "Processed Genesis side effects for group $groupId (${payload.initialMembers.size} members)")
@@ -189,7 +189,7 @@ class P2PSyncManager(
             BlockType.MEMBER_JOIN -> {
                 val payload = json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson)
                 database.memberDao().insertMember(
-                    MemberEntity(groupId = groupId, pubkey = payload.pubkey, displayName = payload.displayName)
+                    MemberEntity(groupId = groupId, pubkey = payload.pubkey, displayName = payload.displayName, upiId = payload.upiId)
                 )
                 Log.d(TAG, "Processed Member Join: ${payload.displayName} joined group $groupId")
             }
