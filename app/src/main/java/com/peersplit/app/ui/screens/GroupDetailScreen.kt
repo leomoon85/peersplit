@@ -41,8 +41,10 @@ import com.peersplit.app.data.repository.GroupDetail
 import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import com.peersplit.app.util.CurrencyUtil
 import com.peersplit.app.util.ExportUtil
+import com.peersplit.app.util.ShareUtil
 import com.peersplit.app.util.UpiUtil
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -551,16 +553,41 @@ fun GroupDetailScreen(
                 }
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val clip = ClipData.newPlainText("PeerSplit Invite", inviteCode)
-                        clipboard.setPrimaryClip(clip)
-                        Toast.makeText(context, "Invite link copied to clipboard!", Toast.LENGTH_SHORT).show()
-                        onDismissInvite()
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            ShareUtil.copySensitive(context, "PeerSplit Invite", inviteCode)
+                            Toast.makeText(context, "Invite link copied to clipboard!", Toast.LENGTH_SHORT).show()
+                            onDismissInvite()
+                        }
+                    ) {
+                        Text("Copy Link")
                     }
-                ) {
-                    Text("Copy Link")
+                    Button(
+                        onClick = {
+                            val qrBitmap = try {
+                                QrCodeUtil.generateQrBitmap(inviteCode, 600, 600)
+                            } catch (e: Exception) {
+                                null
+                            }
+                            val shareText = "Join my expense sharing group *${groupDetail.group.name}* on PeerSplit!\n\n" +
+                                    "Tap this link on your phone: $inviteCode\n\n" +
+                                    "Or open PeerSplit and scan/pick the attached QR code."
+                            ShareUtil.shareTextWithImage(
+                                context = context,
+                                text = shareText,
+                                image = qrBitmap,
+                                imageName = "peersplit_invite_qr",
+                                chooserTitle = "Share Group Invite via",
+                                subject = "PeerSplit Invite: ${groupDetail.group.name}"
+                            )
+                            onDismissInvite()
+                        }
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Share")
+                    }
                 }
             },
             dismissButton = {
@@ -726,6 +753,8 @@ fun BalancesAndDebtsTab(
                                 val creditorMember = memberMap[stl.toPubkey]
                                 val debtor = debtorMember?.displayName ?: "Member (${stl.fromPubkey.take(4)})"
                                 val creditor = creditorMember?.displayName ?: "Member (${stl.toPubkey.take(4)})"
+                                val isOwedToUser = creditorMember?.isCurrentUser == true
+                                val userIsDebtor = debtorMember?.isCurrentUser == true
 
                                 Row(
                                     modifier = Modifier
@@ -736,7 +765,7 @@ fun BalancesAndDebtsTab(
                                 ) {
                                     Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                                         Icon(
-                                            Icons.Default.ArrowForward,
+                                            Icons.AutoMirrored.Filled.ArrowForward,
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.size(16.dp)
@@ -744,7 +773,7 @@ fun BalancesAndDebtsTab(
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Column {
                                             Text(
-                                                "$debtor pays $creditor",
+                                                if (userIsDebtor) "You pay $creditor" else if (isOwedToUser) "$debtor pays you" else "$debtor pays $creditor",
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 fontWeight = FontWeight.Medium
                                             )
@@ -756,26 +785,36 @@ fun BalancesAndDebtsTab(
                                             )
                                         }
                                     }
-                                    // 1-Tap Remind Button
-                                    IconButton(
-                                        onClick = {
-                                            UpiUtil.sharePaymentReminder(
-                                                context = context,
-                                                debtorName = debtor,
-                                                creditorName = creditor,
-                                                groupName = groupDetail.group.name,
-                                                amount = stl.amount,
-                                                currency = groupDetail.group.currency,
-                                                creditorUpiId = creditorMember?.upiId
+                                    if (isOwedToUser) {
+                                        // 1-Tap Remind Button (only when someone owes the user money)
+                                        IconButton(
+                                            onClick = {
+                                                UpiUtil.sharePaymentReminder(
+                                                    context = context,
+                                                    debtorName = debtor,
+                                                    creditorName = creditor,
+                                                    groupName = groupDetail.group.name,
+                                                    amount = stl.amount,
+                                                    currency = groupDetail.group.currency,
+                                                    creditorUpiId = creditorMember?.upiId
+                                                )
+                                            }
+                                        ) {
+                                            Icon(
+                                                Icons.Default.NotificationsActive,
+                                                contentDescription = "Send Payment Reminder",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(20.dp)
                                             )
                                         }
-                                    ) {
-                                        Icon(
-                                            Icons.Default.NotificationsActive,
-                                            contentDescription = "Send Payment Reminder",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(20.dp)
-                                        )
+                                    } else if (userIsDebtor) {
+                                        OutlinedButton(
+                                            onClick = onSettleUpClick,
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text("Pay", fontSize = 12.sp)
+                                        }
                                     }
                                 }
                             }

@@ -77,6 +77,9 @@ object UpiUtil {
 
     /**
      * Shares a polite 1-tap payment reminder via WhatsApp / SMS / Share Sheet.
+     * UPI details (ID + scannable QR image) are only included for INR groups,
+     * since UPI payments are rupee-only. upi:// links are not clickable in most
+     * chat apps, so we attach the QR image instead of relying on the link.
      */
     fun sharePaymentReminder(
         context: Context,
@@ -88,25 +91,30 @@ object UpiUtil {
         creditorUpiId: String? = null
     ) {
         val formattedAmt = CurrencyUtil.formatAmount(amount, currency)
+        val isUpiEligible = currency.equals("INR", ignoreCase = true) && !creditorUpiId.isNullOrBlank()
+
         val sb = StringBuilder()
         sb.append("Hi $debtorName! 👋\n\n")
         sb.append("Friendly reminder for our *$groupName* expenses on PeerSplit:\n")
         sb.append("• Amount due to $creditorName: *$formattedAmt*\n")
 
-        if (!creditorUpiId.isNullOrBlank()) {
-            val upiUri = buildUpiUri(creditorUpiId, creditorName, amount, "PeerSplit: $groupName")
-            sb.append("• UPI ID: `$creditorUpiId`\n")
-            sb.append("• Quick UPI Pay Link: $upiUri\n")
+        var qrBitmap: Bitmap? = null
+        if (isUpiEligible) {
+            sb.append("• Pay via UPI to: ${creditorUpiId!!.trim()}\n")
+            qrBitmap = generateUpiQrBitmap(creditorUpiId, creditorName, amount, "PeerSplit: $groupName", 600)
+            if (qrBitmap != null) {
+                sb.append("• Or scan the attached QR code with any UPI app (GPay, PhonePe, Paytm)\n")
+            }
         }
 
-        sb.append("\n🔒 Verified on PeerSplit decentralized ledger.")
+        sb.append("\nThanks! 🙏")
 
-        val sendIntent = Intent().apply {
-            action = Intent.ACTION_SEND
-            putExtra(Intent.EXTRA_TEXT, sb.toString())
-            type = "text/plain"
-        }
-        val chooser = Intent.createChooser(sendIntent, "Send Payment Reminder to $debtorName")
-        context.startActivity(chooser)
+        ShareUtil.shareTextWithImage(
+            context = context,
+            text = sb.toString(),
+            image = qrBitmap,
+            imageName = "upi_payment_qr",
+            chooserTitle = "Send Payment Reminder to $debtorName"
+        )
     }
 }

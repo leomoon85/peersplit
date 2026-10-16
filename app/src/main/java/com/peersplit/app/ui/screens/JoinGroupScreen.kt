@@ -1,5 +1,7 @@
 package com.peersplit.app.ui.screens
 
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.BitmapFactory
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -7,8 +9,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,25 +21,35 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.peersplit.app.crypto.QrCodeUtil
+import com.peersplit.app.ui.navigation.PendingInvite
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun JoinGroupScreen(
     onBackClick: () -> Unit,
-    onJoinGroup: (inviteUri: String) -> Unit
+    onJoinGroup: (inviteUri: String, onFailed: () -> Unit) -> Unit
 ) {
     val context = LocalContext.current
     var inviteCode by remember { mutableStateOf("") }
     var isJoining by remember { mutableStateOf(false) }
+
+    // Prefill from a tapped peersplit:// link (also when this screen is already open)
+    val pending by PendingInvite.code.collectAsState()
+    LaunchedEffect(pending) {
+        pending?.let {
+            inviteCode = it
+            PendingInvite.code.value = null
+            Toast.makeText(context, "Invite link received — tap Join to continue", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
             try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val bitmap = BitmapFactory.decodeStream(inputStream)
-                val decoded = QrCodeUtil.decodeQrBitmap(bitmap)
+                val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                val decoded = bitmap?.let { QrCodeUtil.decodeQrBitmap(it) }
                 if (!decoded.isNullOrBlank()) {
                     inviteCode = decoded.trim()
                     Toast.makeText(context, "QR code recognized!", Toast.LENGTH_SHORT).show()
@@ -55,7 +68,7 @@ fun JoinGroupScreen(
                 title = { Text("Join Group", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
             )
@@ -86,14 +99,34 @@ fun JoinGroupScreen(
                 maxLines = 5
             )
 
-            OutlinedButton(
-                onClick = { imagePickerLauncher.launch("image/*") },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Scan / Pick QR Code from Gallery")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val text = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim()
+                        if (!text.isNullOrBlank()) {
+                            // Extract the link even if pasted along with the surrounding message
+                            inviteCode = Regex("peersplit://\\S+").find(text)?.value ?: text
+                        } else {
+                            Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Paste")
+                }
+                OutlinedButton(
+                    onClick = { imagePickerLauncher.launch("image/*") },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("QR from Gallery")
+                }
             }
 
             Text(
@@ -108,7 +141,7 @@ fun JoinGroupScreen(
                 onClick = {
                     if (inviteCode.isNotBlank() && !isJoining) {
                         isJoining = true
-                        onJoinGroup(inviteCode.trim())
+                        onJoinGroup(inviteCode.trim()) { isJoining = false }
                     }
                 },
                 modifier = Modifier

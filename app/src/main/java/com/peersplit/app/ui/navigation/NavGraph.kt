@@ -1,8 +1,12 @@
 package com.peersplit.app.ui.navigation
 
+import android.widget.Toast
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -23,6 +27,14 @@ fun NavGraph(
 ) {
     val repository = PeerSplitApp.instance.repository
     val scope = CoroutineScope(Dispatchers.Main)
+
+    // Deep link: peersplit://... opens Join Group with the code prefilled
+    val pendingInvite by PendingInvite.code.collectAsState()
+    LaunchedEffect(pendingInvite) {
+        if (pendingInvite != null) {
+            navController.navigate(Screen.JoinGroup.route) { launchSingleTop = true }
+        }
+    }
 
     NavHost(
         navController = navController,
@@ -69,14 +81,18 @@ fun NavGraph(
         }
 
         composable(Screen.JoinGroup.route) {
+            val context = LocalContext.current
             JoinGroupScreen(
                 onBackClick = { navController.popBackStack() },
-                onJoinGroup = { inviteUri ->
+                onJoinGroup = { inviteUri, onFailed ->
                     scope.launch {
                         val result = repository.joinGroup(inviteUri)
                         result.onSuccess { groupId ->
                             navController.popBackStack()
                             navController.navigate(Screen.GroupDetail.createRoute(groupId))
+                        }.onFailure {
+                            Toast.makeText(context, "Invalid or corrupted invite link", Toast.LENGTH_LONG).show()
+                            onFailed()
                         }
                     }
                 }

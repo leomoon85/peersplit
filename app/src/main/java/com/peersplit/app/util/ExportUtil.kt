@@ -93,17 +93,26 @@ object ExportUtil {
      * Triggers Android share sheet to export statement via WhatsApp, Email, Drive, etc.
      */
     fun shareStatement(context: Context, groupDetail: GroupDetail, asCsv: Boolean = false) {
-        val textToSend = if (asCsv) generateCsv(groupDetail) else generateTextStatement(groupDetail)
-        val title = if (asCsv) "${groupDetail.group.name}_ledger.csv" else "PeerSplit Statement - ${groupDetail.group.name}"
-
-        val sendIntent = Intent().apply {
-            action = Intent.ACTION_SEND
-            putExtra(Intent.EXTRA_TEXT, textToSend)
-            putExtra(Intent.EXTRA_TITLE, title)
-            putExtra(Intent.EXTRA_SUBJECT, title)
-            type = if (asCsv) "text/csv" else "text/plain"
+        val groupName = groupDetail.group.name
+        if (asCsv) {
+            // Real file attachment so Gmail/Drive/WhatsApp open it in Sheets/Excel
+            ShareUtil.shareFile(
+                context = context,
+                content = "\uFEFF" + generateCsv(groupDetail), // BOM so Excel reads ₹/€ correctly
+                fileName = "${groupName}_ledger.csv",
+                mimeType = "text/csv",
+                chooserTitle = "Export CSV Spreadsheet via",
+                subject = "PeerSplit Ledger - $groupName"
+            )
+        } else {
+            ShareUtil.shareTextWithImage(
+                context = context,
+                text = generateTextStatement(groupDetail),
+                image = null,
+                imageName = "statement",
+                chooserTitle = "Share Ledger Statement via",
+                subject = "PeerSplit Statement - $groupName"
+            )
         }
-        val chooser = Intent.createChooser(sendIntent, "Share Ledger Statement via")
-        context.startActivity(chooser)
     }
 }
