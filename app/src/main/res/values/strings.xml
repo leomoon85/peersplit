@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">PeerSplit</string>
+    <string name="tagline">Serverless P2P Expense Sharing</string>
+</resources>

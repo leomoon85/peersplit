@@ -1,0 +1,86 @@
+package com.peersplit.app.ui.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.peersplit.app.PeerSplitApp
+import com.peersplit.app.blockchain.SplitItem
+import com.peersplit.app.data.repository.GroupDetail
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+class GroupViewModel(private val groupId: String) : ViewModel() {
+
+    private val repository = PeerSplitApp.instance.repository
+
+    val groupDetail: StateFlow<GroupDetail?> = repository.getGroupDetail(groupId).stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = null
+    )
+
+    private val _inviteCode = MutableStateFlow<String?>(null)
+    val inviteCode: StateFlow<String?> = _inviteCode.asStateFlow()
+
+    fun generateInvite() {
+        viewModelScope.launch {
+            val code = repository.generateInviteCode(groupId)
+            _inviteCode.value = code
+        }
+    }
+
+    fun dismissInviteDialog() {
+        _inviteCode.value = null
+    }
+}
+
+class AddExpenseViewModel(private val groupId: String) : ViewModel() {
+
+    private val repository = PeerSplitApp.instance.repository
+
+    val groupDetail: StateFlow<GroupDetail?> = repository.getGroupDetail(groupId).stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = null
+    )
+
+    private val _isSubmitting = MutableStateFlow(false)
+    val isSubmitting: StateFlow<Boolean> = _isSubmitting.asStateFlow()
+
+    private val _submissionSuccess = MutableStateFlow(false)
+    val submissionSuccess: StateFlow<Boolean> = _submissionSuccess.asStateFlow()
+
+    fun submitExpense(
+        description: String,
+        amount: Double,
+        currency: String,
+        payerPubkey: String,
+        splitWithPubkeys: List<String>
+    ) {
+        if (amount <= 0 || description.isBlank() || splitWithPubkeys.isEmpty()) return
+
+        viewModelScope.launch {
+            _isSubmitting.value = true
+            try {
+                // Split equally among selected members
+                val perPerson = amount / splitWithPubkeys.size
+                val splits = splitWithPubkeys.map { SplitItem(userPubkey = it, amount = perPerson) }
+
+                repository.addExpense(
+                    groupId = groupId,
+                    description = description.trim(),
+                    amount = amount,
+                    currency = currency,
+                    payerPubkey = payerPubkey,
+                    splits = splits
+                )
+                _submissionSuccess.value = true
+            } catch (e: Exception) {
+                _isSubmitting.value = false
+            }
+        }
+    }
+}
