@@ -43,6 +43,9 @@ interface MemberDao {
 
     @Query("SELECT * FROM members WHERE groupId = :groupId")
     suspend fun getMembersForGroupSync(groupId: String): List<MemberEntity>
+
+    @Query("SELECT COUNT(*) FROM members")
+    fun getAllMembersCountFlow(): Flow<Long>
 }
 
 @Dao
@@ -64,6 +67,9 @@ interface BlockDao {
 
     @Query("SELECT COUNT(*) FROM blocks WHERE groupId = :groupId")
     suspend fun getBlockCount(groupId: String): Long
+
+    @Query("SELECT COUNT(*) FROM blocks")
+    fun getAllBlocksCountFlow(): Flow<Long>
 
     @Query("DELETE FROM blocks WHERE groupId = :groupId")
     suspend fun deleteBlocksForGroup(groupId: String)

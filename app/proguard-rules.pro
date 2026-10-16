@@ -17,7 +17,14 @@
 
 # Room SQLite
 -keep class * extends androidx.room.RoomDatabase
+-keep @androidx.room.Entity class * { *; }
 -dontwarn androidx.room.paging.**
+
+# Google ML Kit On-Device Text Recognition
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_text_common.** { *; }
+-keep class com.google.android.gms.internal.mlkit_common.** { *; }
+-dontwarn com.google.mlkit.**
 
 # OkHttp
 -dontwarn okhttp3.**

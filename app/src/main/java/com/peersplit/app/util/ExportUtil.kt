@@ -11,6 +11,15 @@ object ExportUtil {
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
 
+    private fun sanitizeCsvField(input: String): String {
+        val escaped = input.replace("\"", "\"\"")
+        return if (escaped.isNotEmpty() && escaped[0] in charArrayOf('=', '+', '-', '@', '\t', '\r')) {
+            "'$escaped"
+        } else {
+            escaped
+        }
+    }
+
     /**
      * Converts a group's expense ledger into a clean CSV format.
      */
@@ -20,12 +29,13 @@ object ExportUtil {
 
         for (exp in groupDetail.expenses) {
             val dateStr = dateFormat.format(Date(exp.timestamp))
-            val safeDesc = exp.description.replace("\"", "\"\"")
-            val safePayer = exp.payerName.replace("\"", "\"\"")
+            val safeCat = sanitizeCsvField(exp.category)
+            val safeDesc = sanitizeCsvField(exp.description)
+            val safePayer = sanitizeCsvField(exp.payerName)
             val totalStr = String.format(Locale.US, "%.2f", exp.totalAmount)
             val shareStr = String.format(Locale.US, "%.2f", exp.userShare)
 
-            sb.append("${exp.blockIndex},\"$dateStr\",\"${exp.category}\",\"$safeDesc\",\"$safePayer\",$totalStr,${exp.currency},$shareStr\n")
+            sb.append("${exp.blockIndex},\"$dateStr\",\"$safeCat\",\"$safeDesc\",\"$safePayer\",$totalStr,${exp.currency},$shareStr\n")
         }
 
         return sb.toString()

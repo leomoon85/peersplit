@@ -252,6 +252,16 @@ object BackupManager {
             )
         }
 
+        // 3. Re-register restored groups with P2P Sync Manager
+        try {
+            val syncManager = com.peersplit.app.PeerSplitApp.instance.syncManager
+            payload.groups.forEach { g ->
+                syncManager.monitorGroup(g.id)
+            }
+        } catch (_: Exception) {
+            // Ignored in unit tests where PeerSplitApp singleton is not initialized
+        }
+
         return true
     }
 }

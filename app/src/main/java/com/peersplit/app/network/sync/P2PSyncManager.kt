@@ -170,6 +170,47 @@ class P2PSyncManager(
                     }
                     progress = true
                     break // break inner loop to re-fetch latest from DB
+                } else if (
+                    latest != null &&
+                    candidate.index == latest.index &&
+                    candidate.prevHash == latest.prevHash &&
+                    candidate.blockHash != latest.blockHash
+                ) {
+                    // Deterministic fork resolution for concurrent blocks at the same index:
+                    // Lowest blockHash lexicographically wins the current slot.
+                    if (candidate.blockHash < latest.blockHash) {
+                        Log.i(TAG, "Resolving concurrent block fork at index #${candidate.index}: peer block wins")
+                        database.blockDao().insertBlock(BlockEntity.fromDomainBlock(candidate, isVerified = true))
+                        processBlockSideEffects(groupId, candidate)
+                        synchronized(pendingBlocks) {
+                            pendingBlocks[groupId]?.removeIf { it.blockHash == candidate.blockHash }
+                        }
+                        // If our displaced local block was authored by this device, re-sign & re-append on top of candidate
+                        val localIdentity = KeyManager.getOrCreateIdentity(context)
+                        val groupEntity = database.groupDao().getGroupByIdSync(groupId)
+                        if (latest.creatorPubkey == localIdentity.publicKeyHex && groupEntity != null) {
+                            val privKeyHex = KeyManager.getPrivateKeyHex(context)
+                            val rebasedBlock = Block.createAndSign(
+                                index = candidate.index + 1,
+                                groupId = groupId,
+                                prevHash = candidate.blockHash,
+                                timestamp = System.currentTimeMillis(),
+                                creatorPubkey = latest.creatorPubkey,
+                                blockType = latest.blockType,
+                                payloadJson = latest.payloadJson,
+                                privateKeyHex = privKeyHex
+                            )
+                            database.blockDao().insertBlock(BlockEntity.fromDomainBlock(rebasedBlock, isVerified = true))
+                            broadcastBlock(rebasedBlock, groupEntity.groupKeyBase64)
+                        }
+                        progress = true
+                        break
+                    } else {
+                        // Our local block wins; drop stale conflicting candidate
+                        synchronized(pendingBlocks) {
+                            pendingBlocks[groupId]?.removeIf { it.blockHash == candidate.blockHash }
+                        }
+                    }
                 }
             }
         }

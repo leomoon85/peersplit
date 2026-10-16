@@ -2,24 +2,36 @@ package com.peersplit.app.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
 import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
 import org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
+import java.security.KeyStore
 import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 /**
  * Manages device-level cryptographic identity (Ed25519 public/private keys),
- * digital signing of ledger blocks, and signature verification.
+ * hardware-backed Android Keystore encryption at rest, digital signing of ledger blocks,
+ * and signature verification.
  */
 object KeyManager {
 
     private const val PREFS_NAME = "peersplit_crypto_identity"
-    private const val KEY_PRIV_HEX = "priv_key_hex"
+    private const val KEY_PRIV_ENC = "priv_key_enc_v2"
+    private const val KEY_PRIV_HEX_LEGACY = "priv_key_hex"
     private const val KEY_PUB_HEX = "pub_key_hex"
     private const val KEY_USER_NAME = "user_display_name"
     private const val KEY_UPI_ID = "user_upi_id"
+    private const val KEYSTORE_ALIAS = "peersplit_master_identity_key"
+    private const val PIN_KDF_SALT = "PeerSplit_Vault_Salt_v1:"
 
     private val secureRandom = SecureRandom()
 
@@ -130,6 +142,28 @@ object KeyManager {
     }
 
     /**
+     * Computes a salted, stretched hash for Secret Vault PINs (backwards-compatible check available).
+     */
+    fun hashSecretPin(pin: String): String {
+        var digest = HashUtil.sha256((PIN_KDF_SALT + pin.trim()).toByteArray(Charsets.UTF_8))
+        repeat(4096) {
+            digest = HashUtil.sha256(digest)
+        }
+        return HashUtil.toHex(digest)
+    }
+
+    /**
+     * Verifies a Secret Vault PIN against a stored hash (supports both v2 salted stretched hash and legacy SHA-256).
+     */
+    fun verifySecretPin(pin: String, storedHash: String?): Boolean {
+        if (storedHash.isNullOrBlank()) return true
+        val saltedHash = hashSecretPin(pin)
+        if (saltedHash == storedHash) return true
+        // Legacy fallback for previously created groups
+        return HashUtil.sha256Hex(pin.trim()) == storedHash
+    }
+
+    /**
      * Gets or creates the local device user identity.
      */
     fun getOrCreateIdentity(context: Context): UserIdentity {
@@ -139,13 +173,19 @@ object KeyManager {
         val existingUpi = prefs.getString(KEY_UPI_ID, null)
 
         if (existingPubHex != null) {
+            // Migrate legacy plaintext private key if present
+            val legacyPriv = prefs.getString(KEY_PRIV_HEX_LEGACY, null)
+            if (legacyPriv != null) {
+                storePrivateKeyEncrypted(prefs, legacyPriv)
+                prefs.edit().remove(KEY_PRIV_HEX_LEGACY).apply()
+            }
             return UserIdentity(publicKeyHex = existingPubHex, displayName = existingName, upiId = existingUpi)
         }
 
         // Generate brand new identity
         val keyPair = generateKeyPair()
+        storePrivateKeyEncrypted(prefs, keyPair.privateKeyHex)
         prefs.edit()
-            .putString(KEY_PRIV_HEX, keyPair.privateKeyHex)
             .putString(KEY_PUB_HEX, keyPair.publicKeyHex)
             .putString(KEY_USER_NAME, "My Phone")
             .apply()
@@ -154,16 +194,29 @@ object KeyManager {
     }
 
     /**
-     * Retrieves the stored private key in hex.
+     * Retrieves the stored private key in hex (decrypted via Android Keystore).
      */
     fun getPrivateKeyHex(context: Context): String {
         val prefs = getPrefs(context)
-        var privHex = prefs.getString(KEY_PRIV_HEX, null)
-        if (privHex == null) {
-            getOrCreateIdentity(context)
-            privHex = prefs.getString(KEY_PRIV_HEX, null)!!
+        val encPriv = prefs.getString(KEY_PRIV_ENC, null)
+        if (encPriv != null) {
+            val decrypted = decryptWithKeystore(encPriv)
+            if (decrypted != null) return decrypted
         }
-        return privHex
+
+        // Check legacy plaintext key and migrate
+        val legacyPriv = prefs.getString(KEY_PRIV_HEX_LEGACY, null)
+        if (legacyPriv != null) {
+            storePrivateKeyEncrypted(prefs, legacyPriv)
+            prefs.edit().remove(KEY_PRIV_HEX_LEGACY).apply()
+            return legacyPriv
+        }
+
+        // Otherwise initialize identity
+        getOrCreateIdentity(context)
+        val newEnc = prefs.getString(KEY_PRIV_ENC, null)
+        return newEnc?.let { decryptWithKeystore(it) }
+            ?: prefs.getString(KEY_PRIV_HEX_LEGACY, null)!!
     }
 
     /**
@@ -188,12 +241,78 @@ object KeyManager {
      * Restores cryptographic identity from backup.
      */
     fun restoreIdentity(context: Context, privHex: String, pubHex: String, displayName: String, upiId: String? = null) {
-        getPrefs(context).edit()
-            .putString(KEY_PRIV_HEX, privHex)
+        val prefs = getPrefs(context)
+        storePrivateKeyEncrypted(prefs, privHex)
+        prefs.edit()
+            .remove(KEY_PRIV_HEX_LEGACY)
             .putString(KEY_PUB_HEX, pubHex)
             .putString(KEY_USER_NAME, displayName)
             .putString(KEY_UPI_ID, upiId)
             .apply()
+    }
+
+    private fun storePrivateKeyEncrypted(prefs: SharedPreferences, privHex: String) {
+        val encrypted = encryptWithKeystore(privHex)
+        if (encrypted != null) {
+            prefs.edit().putString(KEY_PRIV_ENC, encrypted).apply()
+        } else {
+            prefs.edit().putString(KEY_PRIV_HEX_LEGACY, privHex).apply()
+        }
+    }
+
+    private fun getOrCreateKeystoreSecretKey(): SecretKey? {
+        return try {
+            val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            val existingKey = keyStore.getEntry(KEYSTORE_ALIAS, null) as? KeyStore.SecretKeyEntry
+            if (existingKey != null) {
+                return existingKey.secretKey
+            }
+            val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+            val spec = KeyGenParameterSpec.Builder(
+                KEYSTORE_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+            keyGenerator.init(spec)
+            keyGenerator.generateKey()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun encryptWithKeystore(plaintext: String): String? {
+        return try {
+            val secretKey = getOrCreateKeystoreSecretKey() ?: return null
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+            val iv = cipher.iv
+            val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+            val combined = ByteArray(1 + iv.size + ciphertext.size)
+            combined[0] = iv.size.toByte()
+            System.arraycopy(iv, 0, combined, 1, iv.size)
+            System.arraycopy(ciphertext, 0, combined, 1 + iv.size, ciphertext.size)
+            Base64.encodeToString(combined, Base64.NO_WRAP)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun decryptWithKeystore(encoded: String): String? {
+        return try {
+            val secretKey = getOrCreateKeystoreSecretKey() ?: return null
+            val combined = Base64.decode(encoded, Base64.NO_WRAP)
+            val ivSize = combined[0].toInt() and 0xFF
+            val iv = combined.copyOfRange(1, 1 + ivSize)
+            val ciphertext = combined.copyOfRange(1 + ivSize, combined.size)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+            String(cipher.doFinal(ciphertext), Charsets.UTF_8)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun getPrefs(context: Context): SharedPreferences {

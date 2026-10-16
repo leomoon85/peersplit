@@ -64,10 +64,9 @@ class ExpenseRepository(
         val identity = KeyManager.getOrCreateIdentity(context)
         return combine(
             database.groupDao().getAllGroups(),
-            database.memberDao().getMembersForGroup(""), // dummy flow trigger
-        ) { groups, _ ->
-            groups
-        }.combine(database.groupDao().getAllGroups()) { _, groupEntities ->
+            database.memberDao().getAllMembersCountFlow(),
+            database.blockDao().getAllBlocksCountFlow()
+        ) { groupEntities, _, _ ->
             groupEntities.map { entity ->
                 val blocks = database.blockDao().getBlocksForGroupSync(entity.id).map { it.toDomainBlock() }
                 val members = database.memberDao().getMembersForGroupSync(entity.id)
@@ -206,7 +205,7 @@ class ExpenseRepository(
             creatorUpiId = identity.upiId
         )
 
-        val pinHash = if (!secretPin.isNullOrBlank()) HashUtil.sha256Hex(secretPin) else null
+        val pinHash = if (!secretPin.isNullOrBlank()) KeyManager.hashSecretPin(secretPin) else null
 
         // Store Group and Genesis Block locally
         database.groupDao().insertGroup(
