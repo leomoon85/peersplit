@@ -7,6 +7,8 @@ import com.peersplit.app.data.repository.ExpenseRepository
 import com.peersplit.app.network.nostr.RelayPool
 import com.peersplit.app.network.sync.P2PSyncManager
 
+import com.peersplit.app.ui.theme.ThemeManager
+
 class PeerSplitApp : Application() {
 
     lateinit var database: AppDatabase
@@ -24,6 +26,9 @@ class PeerSplitApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+
+        // Initialize Theme Mode
+        ThemeManager.init(this)
 
         // Initialize Cryptographic Identity
         KeyManager.getOrCreateIdentity(this)

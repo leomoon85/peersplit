@@ -9,6 +9,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -36,6 +37,8 @@ import com.peersplit.app.data.backup.BackupManager
 import com.peersplit.app.network.nostr.RelayPool
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
+import com.peersplit.app.ui.theme.ThemeManager
+import com.peersplit.app.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.io.OutputStream
@@ -213,6 +216,53 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text("Save")
+                    }
+                }
+            }
+
+            // App Theme (Light / Dark / System Default)
+            item {
+                Text("Appearance & Theme", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("Select Light, Dark, or follow your Android system preference.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val currentTheme by ThemeManager.themeMode.collectAsState()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ThemeMode.entries.forEach { mode ->
+                        val isSelected = currentTheme == mode
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { ThemeManager.setThemeMode(context, mode) },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelected) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                }
+                            ),
+                            border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(mode.iconEmoji, fontSize = 22.sp)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = mode.title,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    maxLines = 1
+                                )
+                            }
+                        }
                     }
                 }
             }
