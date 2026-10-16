@@ -49,6 +49,9 @@ interface MemberDao {
 
     @Query("SELECT COUNT(*) FROM members")
     fun getAllMembersCountFlow(): Flow<Long>
+
+    @Query("UPDATE members SET upiId = :upiId WHERE groupId = :groupId AND pubkey = :pubkey")
+    suspend fun updateMemberUpiId(groupId: String, pubkey: String, upiId: String)
 }
 
 @Dao

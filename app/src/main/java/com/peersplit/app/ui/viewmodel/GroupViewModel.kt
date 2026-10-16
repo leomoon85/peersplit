@@ -53,6 +53,12 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
             repository.updateGroupBudget(groupId, budget)
         }
     }
+
+    fun updateMemberUpiId(pubkey: String, upiId: String) {
+        viewModelScope.launch {
+            repository.updateMemberUpiId(groupId, pubkey, upiId)
+        }
+    }
 }
 
 class AddExpenseViewModel(private val groupId: String) : ViewModel() {

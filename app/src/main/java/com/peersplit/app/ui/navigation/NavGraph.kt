@@ -115,8 +115,8 @@ fun NavGraph(
                 onAddExpenseClick = {
                     navController.navigate(Screen.AddExpense.createRoute(groupId))
                 },
-                onSettleUpClick = {
-                    navController.navigate(Screen.SettleUp.createRoute(groupId))
+                onSettleUpClick = { payer, payee, amount ->
+                    navController.navigate(Screen.SettleUp.createRoute(groupId, payer, payee, amount))
                 },
                 onAuditLedgerClick = {
                     navController.navigate(Screen.LedgerAudit.createRoute(groupId))
@@ -161,15 +161,29 @@ fun NavGraph(
 
         composable(
             route = Screen.SettleUp.route,
-            arguments = listOf(navArgument("groupId") { type = NavType.StringType })
+            arguments = listOf(
+                navArgument("groupId") { type = NavType.StringType },
+                navArgument("payer") { type = NavType.StringType; defaultValue = ""; nullable = true },
+                navArgument("payee") { type = NavType.StringType; defaultValue = ""; nullable = true },
+                navArgument("amount") { type = NavType.StringType; defaultValue = ""; nullable = true }
+            )
         ) { backStackEntry ->
             val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
+            val initialPayer = backStackEntry.arguments?.getString("payer")?.takeIf { it.isNotBlank() }
+            val initialPayee = backStackEntry.arguments?.getString("payee")?.takeIf { it.isNotBlank() }
+            val initialAmount = backStackEntry.arguments?.getString("amount")?.takeIf { it.isNotBlank() }?.toDoubleOrNull()
             val groupViewModel = viewModel { GroupViewModel(groupId) }
             val groupDetail by groupViewModel.groupDetail.collectAsState()
 
             SettleUpScreen(
                 groupDetail = groupDetail,
+                initialPayer = initialPayer,
+                initialPayee = initialPayee,
+                initialAmount = initialAmount,
                 onBackClick = { navController.popBackStack() },
+                onUpdatePayeeUpi = { payeePubkey, upiId ->
+                    groupViewModel.updateMemberUpiId(payeePubkey, upiId)
+                },
                 onRecordSettlement = { payer, payee, amount, currency ->
                     scope.launch {
                         repository.recordSettlement(groupId, payer, payee, amount, currency)

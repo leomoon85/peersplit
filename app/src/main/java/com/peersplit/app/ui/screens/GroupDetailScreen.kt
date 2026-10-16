@@ -57,7 +57,7 @@ fun GroupDetailScreen(
     inviteCode: String?,
     onBackClick: () -> Unit,
     onAddExpenseClick: () -> Unit,
-    onSettleUpClick: () -> Unit,
+    onSettleUpClick: (payer: String?, payee: String?, amount: Double?) -> Unit = { _, _, _ -> },
     onAuditLedgerClick: () -> Unit,
     onGenerateInvite: () -> Unit,
     onDismissInvite: () -> Unit,
@@ -679,7 +679,7 @@ fun BudgetProgressCard(
 @Composable
 fun BalancesAndDebtsTab(
     groupDetail: GroupDetail,
-    onSettleUpClick: () -> Unit,
+    onSettleUpClick: (payer: String?, payee: String?, amount: Double?) -> Unit = { _, _, _ -> },
     onAddMemberClick: () -> Unit = {},
     onSetBudgetClick: () -> Unit = {}
 ) {
@@ -731,7 +731,7 @@ fun BalancesAndDebtsTab(
                                 )
                             }
                             Button(
-                                onClick = onSettleUpClick,
+                                onClick = { onSettleUpClick(null, null, null) },
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                             ) {
                                 Text("Settle Up")
@@ -809,7 +809,7 @@ fun BalancesAndDebtsTab(
                                         }
                                     } else if (userIsDebtor) {
                                         OutlinedButton(
-                                            onClick = onSettleUpClick,
+                                            onClick = { onSettleUpClick(stl.fromPubkey, stl.toPubkey, stl.amount) },
                                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                             shape = RoundedCornerShape(8.dp)
                                         ) {
@@ -894,6 +894,14 @@ fun MemberBalanceRow(member: Member, currency: String = "USD") {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontFamily = FontFamily.Monospace
                     )
+                    if (!member.upiId.isNullOrBlank()) {
+                        Text(
+                            "UPI: ${member.upiId}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
             }
 

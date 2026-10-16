@@ -312,6 +312,14 @@ class ExpenseRepository(
     }
 
     /**
+     * Updates the local UPI ID for a member in a group.
+     */
+    suspend fun updateMemberUpiId(groupId: String, pubkey: String, upiId: String) {
+        val cleanUpi = upiId.trim()
+        database.memberDao().updateMemberUpiId(groupId, pubkey, cleanUpi)
+    }
+
+    /**
      * Adds an expense, signs the block, appends to local chain, and broadcasts.
      */
     suspend fun addExpense(
