@@ -39,6 +39,7 @@ import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
 import com.peersplit.app.ui.theme.ThemeManager
 import com.peersplit.app.ui.theme.ThemeMode
+import com.peersplit.app.util.NameUtil
 import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.io.OutputStream
@@ -148,16 +149,16 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                                 .background(MaterialTheme.colorScheme.primaryContainer),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                Icons.Default.Key,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(32.dp)
+                            Text(
+                                text = NameUtil.getInitials(displayName),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            identity.displayName,
+                            displayName,
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold
                         )

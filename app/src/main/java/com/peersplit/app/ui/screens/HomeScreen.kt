@@ -43,12 +43,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.data.model.Group
 import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
 import com.peersplit.app.ui.viewmodel.HomeUiState
 import com.peersplit.app.util.CurrencyUtil
+import com.peersplit.app.util.NameUtil
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -123,6 +125,9 @@ fun HomeScreen(
                     }
                 },
                 actions = {
+                    val userInitials = remember {
+                        NameUtil.getInitials(KeyManager.getOrCreateIdentity(context).displayName)
+                    }
                     if (uiState.isSecretVaultUnlocked) {
                         IconButton(onClick = {
                             onLockVault()
@@ -131,8 +136,24 @@ fun HomeScreen(
                             Icon(Icons.Default.Lock, contentDescription = "Lock Private Vault", tint = BlockchainAccent)
                         }
                     }
-                    IconButton(onClick = onProfileClick) {
-                        Icon(Icons.Default.Person, contentDescription = "Profile & Settings")
+                    IconButton(
+                        onClick = onProfileClick,
+                        modifier = Modifier.padding(end = 4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = userInitials,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
                     }
                 }
             )

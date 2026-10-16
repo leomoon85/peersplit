@@ -44,6 +44,7 @@ import com.peersplit.app.ui.theme.BlockchainAccent
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import com.peersplit.app.util.CurrencyUtil
 import com.peersplit.app.util.ExportUtil
+import com.peersplit.app.util.NameUtil
 import com.peersplit.app.util.ShareUtil
 import com.peersplit.app.util.UpiUtil
 import java.text.SimpleDateFormat
@@ -894,7 +895,7 @@ fun MemberBalanceRow(member: Member, currency: String = "USD") {
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        member.displayName.take(1).uppercase(),
+                        NameUtil.getInitials(member.displayName),
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
