@@ -42,7 +42,14 @@ object KeyManager {
     private val _identityVersion = MutableStateFlow(0L)
     val identityVersion: StateFlow<Long> = _identityVersion.asStateFlow()
 
+    @Volatile
+    private var cachedIdentity: UserIdentity? = null
+    @Volatile
+    private var cachedPrivateKeyHex: String? = null
+
     fun notifyIdentityChanged() {
+        cachedIdentity = null
+        cachedPrivateKeyHex = null
         _identityVersion.value = System.currentTimeMillis()
     }
 
@@ -189,6 +196,8 @@ object KeyManager {
      * Gets or creates the local device user identity.
      */
     fun getOrCreateIdentity(context: Context): UserIdentity {
+        cachedIdentity?.let { return it }
+
         val prefs = getPrefs(context)
         val existingPubHex = prefs.getString(KEY_PUB_HEX, null)
         val existingName = prefs.getString(KEY_USER_NAME, "My Phone") ?: "My Phone"
@@ -202,12 +211,14 @@ object KeyManager {
                 storePrivateKeyEncrypted(prefs, legacyPriv)
                 prefs.edit().remove(KEY_PRIV_HEX_LEGACY).apply()
             }
-            return UserIdentity(
+            val identity = UserIdentity(
                 publicKeyHex = existingPubHex,
                 displayName = existingName,
                 upiId = existingUpi,
                 phone = existingPhone
             )
+            cachedIdentity = identity
+            return identity
         }
 
         // Generate brand new identity
@@ -218,18 +229,26 @@ object KeyManager {
             .putString(KEY_USER_NAME, "My Phone")
             .apply()
 
-        return UserIdentity(publicKeyHex = keyPair.publicKeyHex, displayName = "My Phone")
+        cachedPrivateKeyHex = keyPair.privateKeyHex
+        val identity = UserIdentity(publicKeyHex = keyPair.publicKeyHex, displayName = "My Phone")
+        cachedIdentity = identity
+        return identity
     }
 
     /**
      * Retrieves the stored private key in hex (decrypted via Android Keystore).
      */
     fun getPrivateKeyHex(context: Context): String {
+        cachedPrivateKeyHex?.let { return it }
+
         val prefs = getPrefs(context)
         val encPriv = prefs.getString(KEY_PRIV_ENC, null)
         if (encPriv != null) {
             val decrypted = decryptWithKeystore(encPriv)
-            if (decrypted != null) return decrypted
+            if (decrypted != null) {
+                cachedPrivateKeyHex = decrypted
+                return decrypted
+            }
         }
 
         // Check legacy plaintext key and migrate
@@ -237,14 +256,17 @@ object KeyManager {
         if (legacyPriv != null) {
             storePrivateKeyEncrypted(prefs, legacyPriv)
             prefs.edit().remove(KEY_PRIV_HEX_LEGACY).apply()
+            cachedPrivateKeyHex = legacyPriv
             return legacyPriv
         }
 
         // Otherwise initialize identity
         getOrCreateIdentity(context)
         val newEnc = prefs.getString(KEY_PRIV_ENC, null)
-        return newEnc?.let { decryptWithKeystore(it) }
+        val resolved = newEnc?.let { decryptWithKeystore(it) }
             ?: prefs.getString(KEY_PRIV_HEX_LEGACY, null)!!
+        cachedPrivateKeyHex = resolved
+        return resolved
     }
 
     /**

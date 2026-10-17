@@ -1,11 +1,17 @@
 package com.peersplit.app.ui.navigation
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
@@ -16,8 +22,6 @@ import androidx.navigation.navArgument
 import com.peersplit.app.PeerSplitApp
 import com.peersplit.app.ui.screens.*
 import com.peersplit.app.ui.viewmodel.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 @Composable
@@ -26,7 +30,7 @@ fun NavGraph(
     startDestination: String = Screen.Home.route
 ) {
     val repository = PeerSplitApp.instance.repository
-    val scope = CoroutineScope(Dispatchers.Main)
+    val scope = rememberCoroutineScope()
 
     // Deep link: peersplit://... opens Join Group with the code prefilled
     val pendingInvite by PendingInvite.code.collectAsState()
@@ -38,7 +42,35 @@ fun NavGraph(
 
     NavHost(
         navController = navController,
-        startDestination = startDestination
+        startDestination = startDestination,
+        enterTransition = {
+            slideIntoContainer(
+                towards = AnimatedContentTransitionScope.SlideDirection.Start,
+                animationSpec = tween(240, easing = FastOutSlowInEasing),
+                initialOffset = { it / 5 }
+            ) + fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+        },
+        exitTransition = {
+            slideOutOfContainer(
+                towards = AnimatedContentTransitionScope.SlideDirection.Start,
+                animationSpec = tween(240, easing = FastOutSlowInEasing),
+                targetOffset = { it / 7 }
+            ) + fadeOut(animationSpec = tween(180, easing = FastOutSlowInEasing))
+        },
+        popEnterTransition = {
+            slideIntoContainer(
+                towards = AnimatedContentTransitionScope.SlideDirection.End,
+                animationSpec = tween(240, easing = FastOutSlowInEasing),
+                initialOffset = { it / 7 }
+            ) + fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing))
+        },
+        popExitTransition = {
+            slideOutOfContainer(
+                towards = AnimatedContentTransitionScope.SlideDirection.End,
+                animationSpec = tween(240, easing = FastOutSlowInEasing),
+                targetOffset = { it / 5 }
+            ) + fadeOut(animationSpec = tween(180, easing = FastOutSlowInEasing))
+        }
     ) {
         composable(Screen.Home.route) {
             val homeViewModel: HomeViewModel = viewModel()

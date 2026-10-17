@@ -26,13 +26,16 @@ import com.peersplit.app.data.model.ExpenseItem
 import com.peersplit.app.data.model.Group
 import com.peersplit.app.data.model.Member
 import com.peersplit.app.network.sync.P2PSyncManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 
@@ -73,9 +76,63 @@ class ExpenseRepository(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    private val expensePayloadCache = ConcurrentHashMap<String, ExpensePayload>()
+    private val settlementPayloadCache = ConcurrentHashMap<String, SettlementPayload>()
+    private val voidPayloadCache = ConcurrentHashMap<String, ExpenseVoidPayload>()
+    private val memberJoinPayloadCache = ConcurrentHashMap<String, MemberJoinedPayload>()
+    private val ghostHashCache = ConcurrentHashMap<String, String>()
+
+    private fun decodeExpense(block: Block): ExpensePayload? {
+        expensePayloadCache[block.blockHash]?.let { return it }
+        return try {
+            val parsed = json.decodeFromString(ExpensePayload.serializer(), block.payloadJson)
+            expensePayloadCache[block.blockHash] = parsed
+            parsed
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun decodeSettlement(block: Block): SettlementPayload? {
+        settlementPayloadCache[block.blockHash]?.let { return it }
+        return try {
+            val parsed = json.decodeFromString(SettlementPayload.serializer(), block.payloadJson)
+            settlementPayloadCache[block.blockHash] = parsed
+            parsed
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun decodeVoid(block: Block): ExpenseVoidPayload? {
+        voidPayloadCache[block.blockHash]?.let { return it }
+        return try {
+            val parsed = json.decodeFromString(ExpenseVoidPayload.serializer(), block.payloadJson)
+            voidPayloadCache[block.blockHash] = parsed
+            parsed
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun decodeMemberJoin(block: Block): MemberJoinedPayload? {
+        memberJoinPayloadCache[block.blockHash]?.let { return it }
+        return try {
+            val parsed = json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson)
+            memberJoinPayloadCache[block.blockHash] = parsed
+            parsed
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun isGhostPubkey(groupId: String, pubkey: String, displayName: String): Boolean {
-        val expectedHash = HashUtil.sha256Hex("ghost:$groupId:${displayName.trim().lowercase()}")
-        return pubkey == expectedHash || pubkey.startsWith("ghost:")
+        if (pubkey.startsWith("ghost:")) return true
+        val cacheKey = "ghost:$groupId:${displayName.trim().lowercase()}"
+        val expectedHash = ghostHashCache.getOrPut(cacheKey) {
+            HashUtil.sha256Hex(cacheKey)
+        }
+        return pubkey == expectedHash
     }
 
     /**
@@ -97,12 +154,9 @@ class ExpenseRepository(
         // 1. Explicit claims recorded in MEMBER_JOIN blocks
         for (block in blocks) {
             if (block.blockType == BlockType.MEMBER_JOIN) {
-                try {
-                    val payload = json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson)
-                    if (!payload.claimedGhostPubkey.isNullOrBlank() && payload.claimedGhostPubkey != payload.pubkey) {
-                        aliasMap[payload.claimedGhostPubkey] = payload.pubkey
-                    }
-                } catch (_: Exception) {
+                val payload = decodeMemberJoin(block)
+                if (payload != null && !payload.claimedGhostPubkey.isNullOrBlank() && payload.claimedGhostPubkey != payload.pubkey) {
+                    aliasMap[payload.claimedGhostPubkey] = payload.pubkey
                 }
             }
         }
@@ -186,7 +240,7 @@ class ExpenseRepository(
                     createdAt = entity.createdAt
                 )
             }
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     /**
@@ -269,7 +323,7 @@ class ExpenseRepository(
             val expenseItems = domainBlocks.filter { it.blockType == BlockType.EXPENSE || it.blockType == BlockType.SETTLEMENT }.mapNotNull { block ->
                 try {
                     if (block.blockType == BlockType.EXPENSE) {
-                        val exp = json.decodeFromString(ExpensePayload.serializer(), block.payloadJson)
+                        val exp = decodeExpense(block) ?: return@mapNotNull null
                         val isVoided = exp.expenseId in voidedIds
                         val resolvedSplits = exp.splits.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
                         val resolvedPayers = exp.payers.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
@@ -311,7 +365,7 @@ class ExpenseRepository(
                             isVoided = isVoided
                         )
                     } else { // BlockType.SETTLEMENT
-                        val stl = json.decodeFromString(SettlementPayload.serializer(), block.payloadJson)
+                        val stl = decodeSettlement(block) ?: return@mapNotNull null
                         val payerPub = resolvePubkey(stl.payerPubkey)
                         val payeePub = resolvePubkey(stl.payeePubkey)
                         val payerName = memberMap[payerPub] ?: "Member"
@@ -375,7 +429,7 @@ class ExpenseRepository(
                 blocks = domainBlocks,
                 isLedgerIntact = validation is ValidationResult.Valid
             )
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     /**
@@ -935,32 +989,16 @@ class ExpenseRepository(
     }
 
     private fun extractExpenses(blocks: List<Block>): List<ExpensePayload> {
-        return blocks.filter { it.blockType == BlockType.EXPENSE }.mapNotNull { block ->
-            try {
-                json.decodeFromString(ExpensePayload.serializer(), block.payloadJson)
-            } catch (e: Exception) {
-                null
-            }
-        }
+        return blocks.filter { it.blockType == BlockType.EXPENSE }.mapNotNull { decodeExpense(it) }
     }
 
     private fun extractVoidedExpenseIds(blocks: List<Block>): Set<String> {
-        return blocks.filter { it.blockType == BlockType.EXPENSE_VOID }.mapNotNull { block ->
-            try {
-                json.decodeFromString(ExpenseVoidPayload.serializer(), block.payloadJson).targetExpenseId
-            } catch (e: Exception) {
-                null
-            }
+        return blocks.filter { it.blockType == BlockType.EXPENSE_VOID }.mapNotNull {
+            decodeVoid(it)?.targetExpenseId
         }.toSet()
     }
 
     private fun extractSettlements(blocks: List<Block>): List<SettlementPayload> {
-        return blocks.filter { it.blockType == BlockType.SETTLEMENT }.mapNotNull { block ->
-            try {
-                json.decodeFromString(SettlementPayload.serializer(), block.payloadJson)
-            } catch (e: Exception) {
-                null
-            }
-        }
+        return blocks.filter { it.blockType == BlockType.SETTLEMENT }.mapNotNull { decodeSettlement(it) }
     }
 }

@@ -14,9 +14,12 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -82,7 +85,7 @@ fun GroupDetailScreen(
     onImportExpenses: (List<com.peersplit.app.util.ParsedImportExpense>, (Int, Int) -> Unit, (Int) -> Unit) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
-    var selectedTab by remember { mutableStateOf(0) }
+    val pagerState = rememberPagerState(pageCount = { 3 })
     var showExportMenu by remember { mutableStateOf(false) }
 
     // Add Offline Member Dialog state
@@ -149,7 +152,9 @@ fun GroupDetailScreen(
         return
     }
 
-    val activeExpensesCount = groupDetail.expenses.count { !it.isVoided }
+    val activeExpensesCount = remember(groupDetail.expenses) {
+        groupDetail.expenses.count { !it.isVoided }
+    }
 
     Scaffold(
         topBar = {
@@ -310,20 +315,20 @@ fun GroupDetailScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            TabRow(selectedTabIndex = selectedTab) {
+            TabRow(selectedTabIndex = pagerState.currentPage) {
                 Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
+                    selected = pagerState.currentPage == 0,
+                    onClick = { coroutineScope.launch { pagerState.animateScrollToPage(0) } },
                     text = { Text(if (groupDetail.group.isPersonalSolo) "Overview" else "Debts") }
                 )
                 Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
+                    selected = pagerState.currentPage == 1,
+                    onClick = { coroutineScope.launch { pagerState.animateScrollToPage(1) } },
                     text = { Text("Expenses ($activeExpensesCount)") }
                 )
                 Tab(
-                    selected = selectedTab == 2,
-                    onClick = { selectedTab = 2 },
+                    selected = pagerState.currentPage == 2,
+                    onClick = { coroutineScope.launch { pagerState.animateScrollToPage(2) } },
                     text = { Text("Analytics 📊") }
                 )
             }
@@ -341,44 +346,50 @@ fun GroupDetailScreen(
                 )
             }
 
-            when (selectedTab) {
-                0 -> BalancesAndDebtsTab(
-                    groupDetail = groupDetail,
-                    onSettleUpClick = onSettleUpClick,
-                    onAddMemberClick = { showAddMemberDialog = true },
-                    onShareInviteClick = onGenerateInvite,
-                    onEditMemberUpi = { member ->
-                        editPhoneInput = member.phone ?: ""
-                        editUpiInput = member.upiId ?: ""
-                        memberForUpiEdit = member
-                    },
-                    onSetBudgetClick = {
-                        budgetInputText = if (groupDetail.group.monthlyBudget > 0) {
-                            String.format(Locale.US, "%.0f", groupDetail.group.monthlyBudget)
-                        } else ""
-                        showBudgetDialog = true
-                    },
-                    onAddExpenseClick = onAddExpenseClick,
-                    onImportClick = launchImportPicker,
-                    onViewAllExpensesClick = { selectedTab = 1 },
-                    onExpenseClick = { selectedExpenseForDetail = it },
-                    onAuditLedgerClick = onAuditLedgerClick
-                )
-                1 -> ExpensesTab(
-                    groupDetail = groupDetail,
-                    onExpenseClick = { selectedExpenseForDetail = it },
-                    onAddExpenseClick = onAddExpenseClick,
-                    onImportClick = launchImportPicker
-                )
-                2 -> AnalyticsTab(
-                    groupDetail = groupDetail,
-                    onSetBudgetClick = {
-                        budgetInputText = if (groupDetail.group.monthlyBudget > 0) {
-                            String.format(Locale.US, "%.0f", groupDetail.group.monthlyBudget)
-                        } else ""
-                        showBudgetDialog = true
-                    }
-                )
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                beyondViewportPageCount = 1
+            ) { page ->
+                when (page) {
+                    0 -> BalancesAndDebtsTab(
+                        groupDetail = groupDetail,
+                        onSettleUpClick = onSettleUpClick,
+                        onAddMemberClick = { showAddMemberDialog = true },
+                        onShareInviteClick = onGenerateInvite,
+                        onEditMemberUpi = { member ->
+                            editPhoneInput = member.phone ?: ""
+                            editUpiInput = member.upiId ?: ""
+                            memberForUpiEdit = member
+                        },
+                        onSetBudgetClick = {
+                            budgetInputText = if (groupDetail.group.monthlyBudget > 0) {
+                                String.format(Locale.US, "%.0f", groupDetail.group.monthlyBudget)
+                            } else ""
+                            showBudgetDialog = true
+                        },
+                        onAddExpenseClick = onAddExpenseClick,
+                        onImportClick = launchImportPicker,
+                        onViewAllExpensesClick = { coroutineScope.launch { pagerState.animateScrollToPage(1) } },
+                        onExpenseClick = { selectedExpenseForDetail = it },
+                        onAuditLedgerClick = onAuditLedgerClick
+                    )
+                    1 -> ExpensesTab(
+                        groupDetail = groupDetail,
+                        onExpenseClick = { selectedExpenseForDetail = it },
+                        onAddExpenseClick = onAddExpenseClick,
+                        onImportClick = launchImportPicker
+                    )
+                    2 -> AnalyticsTab(
+                        groupDetail = groupDetail,
+                        onSetBudgetClick = {
+                            budgetInputText = if (groupDetail.group.monthlyBudget > 0) {
+                                String.format(Locale.US, "%.0f", groupDetail.group.monthlyBudget)
+                            } else ""
+                            showBudgetDialog = true
+                        }
+                    )
+                }
             }
         }
     }
@@ -1932,6 +1943,14 @@ fun AnalyticsTab(
     }
 
     var selectedChartMode by remember { mutableStateOf(0) } // 0 = Category, 1 = By Person (Payer)
+    val chartSweepAnim = remember { Animatable(0f) }
+    LaunchedEffect(selectedChartMode, totalSpend) {
+        chartSweepAnim.snapTo(0.15f)
+        chartSweepAnim.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing)
+        )
+    }
 
     val categoryBreakdown = remember(expenses) {
         expenses.groupBy { ExpenseCategory.fromName(it.category) }
@@ -1986,6 +2005,16 @@ fun AnalyticsTab(
 
         // Toggle Pill: By Category vs By Person
         item {
+            val catTabBg by animateColorAsState(
+                targetValue = if (selectedChartMode == 0) MaterialTheme.colorScheme.primary else Color.Transparent,
+                animationSpec = tween(200),
+                label = "catTabBg"
+            )
+            val personTabBg by animateColorAsState(
+                targetValue = if (selectedChartMode == 1) MaterialTheme.colorScheme.primary else Color.Transparent,
+                animationSpec = tween(200),
+                label = "personTabBg"
+            )
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1999,7 +2028,7 @@ fun AnalyticsTab(
                 Surface(
                     onClick = { selectedChartMode = 0 },
                     shape = RoundedCornerShape(9.dp),
-                    color = if (selectedChartMode == 0) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    color = catTabBg,
                     modifier = Modifier.weight(1f)
                 ) {
                     Box(
@@ -2018,7 +2047,7 @@ fun AnalyticsTab(
                 Surface(
                     onClick = { selectedChartMode = 1 },
                     shape = RoundedCornerShape(9.dp),
-                    color = if (selectedChartMode == 1) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    color = personTabBg,
                     modifier = Modifier.weight(1f)
                 ) {
                     Box(
@@ -2060,11 +2089,12 @@ fun AnalyticsTab(
                         modifier = Modifier.size(200.dp),
                         contentAlignment = Alignment.Center
                     ) {
+                        val animMultiplier = chartSweepAnim.value
                         Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                             var startAngle = -90f
                             if (selectedChartMode == 0) {
                                 categoryBreakdown.forEach { (cat, catAmount) ->
-                                    val sweep = if (totalSpend > 0) ((catAmount / totalSpend) * 360f).toFloat() else 0f
+                                    val sweep = (if (totalSpend > 0) ((catAmount / totalSpend) * 360f).toFloat() else 0f) * animMultiplier
                                     drawArc(
                                         color = cat.composeColor(),
                                         startAngle = startAngle,
@@ -2076,7 +2106,7 @@ fun AnalyticsTab(
                                 }
                             } else {
                                 memberBreakdown.forEach { (_, memberAmount, color) ->
-                                    val sweep = if (totalSpend > 0) ((memberAmount / totalSpend) * 360f).toFloat() else 0f
+                                    val sweep = (if (totalSpend > 0) ((memberAmount / totalSpend) * 360f).toFloat() else 0f) * animMultiplier
                                     drawArc(
                                         color = color,
                                         startAngle = startAngle,
@@ -2116,7 +2146,7 @@ fun AnalyticsTab(
         }
 
         if (selectedChartMode == 0) {
-            items(categoryBreakdown) { (cat, catAmount) ->
+            items(categoryBreakdown, key = { "cat_${it.first.name}" }) { (cat, catAmount) ->
                 val percentage = if (totalSpend > 0) (catAmount / totalSpend) * 100 else 0.0
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -2159,7 +2189,7 @@ fun AnalyticsTab(
                 }
             }
         } else {
-            items(memberBreakdown) { (memberName, memberAmount, color) ->
+            items(memberBreakdown, key = { "mem_${it.first}" }) { (memberName, memberAmount, color) ->
                 val percentage = if (totalSpend > 0) (memberAmount / totalSpend) * 100 else 0.0
                 Card(
                     modifier = Modifier.fillMaxWidth(),

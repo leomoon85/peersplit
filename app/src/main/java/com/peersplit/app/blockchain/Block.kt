@@ -45,6 +45,9 @@ data class Block(
             return HashUtil.sha256Hex(content)
         }
 
+        private val verifiedHashesCache = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        private val verifiedSignaturesCache = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
         /**
          * Factory function to create and sign a new Block.
          */
@@ -62,7 +65,7 @@ data class Block(
             val hashBytes = HashUtil.fromHex(hash)
             val signature = KeyManager.signHex(hashBytes, privateKeyHex)
 
-            return Block(
+            val block = Block(
                 index = index,
                 groupId = groupId,
                 prevHash = prevHash,
@@ -73,24 +76,41 @@ data class Block(
                 blockHash = hash,
                 signature = signature
             )
+            verifiedHashesCache.add(block.hashCacheKey())
+            verifiedSignaturesCache.add(block.sigCacheKey())
+            return block
         }
     }
+
+    private fun hashCacheKey(): String =
+        "$index:$groupId:$prevHash:$timestamp:$creatorPubkey:${blockType.name}:$payloadJson|$blockHash"
+
+    private fun sigCacheKey(): String =
+        "$blockHash:$creatorPubkey:$signature"
 
     /**
      * Verifies that the block's hash is mathematically correct.
      */
     fun hasValidHash(): Boolean {
+        val key = hashCacheKey()
+        if (verifiedHashesCache.contains(key)) return true
         val calculated = computeHash(index, groupId, prevHash, timestamp, creatorPubkey, blockType, payloadJson)
-        return calculated.equals(blockHash, ignoreCase = true)
+        val valid = calculated.equals(blockHash, ignoreCase = true)
+        if (valid) verifiedHashesCache.add(key)
+        return valid
     }
 
     /**
      * Verifies that the creator's digital signature is authentic over the block hash.
      */
     fun hasValidSignature(): Boolean {
+        val key = sigCacheKey()
+        if (verifiedSignaturesCache.contains(key)) return true
         return try {
             val hashBytes = HashUtil.fromHex(blockHash)
-            KeyManager.verifyHex(hashBytes, signature, creatorPubkey)
+            val valid = KeyManager.verifyHex(hashBytes, signature, creatorPubkey)
+            if (valid) verifiedSignaturesCache.add(key)
+            valid
         } catch (e: Exception) {
             false
         }
