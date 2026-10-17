@@ -30,6 +30,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.peersplit.app.blockchain.SplitItem
+import com.peersplit.app.protocol.MoneyMath
 import com.peersplit.app.data.model.ExpenseCategory
 import com.peersplit.app.data.model.ExpenseItem
 import com.peersplit.app.data.repository.GroupDetail
@@ -289,11 +290,19 @@ fun AddExpenseScreen(
             }
             val diff = totalAmount - sumPaid
             val valid = totalAmount > 0 && kotlin.math.abs(diff) < 0.05 && list.isNotEmpty()
+            val finalList = if (valid) {
+                val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
+                val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
+                list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
+            } else {
+                list
+            }
             val status = if (totalAmount <= 0) "Enter total bill amount first"
             else if (valid) "Paid total matches ($sym${String.format(Locale.US, "%.2f", sumPaid)})"
             else if (diff > 0) "Remaining to pay: $sym${String.format(Locale.US, "%.2f", diff)}"
             else "Exceeds bill by: $sym${String.format(Locale.US, "%.2f", -diff)}"
-            Triple(list, valid, status)
+            Triple(finalList, valid, status)
         }
     }
 
@@ -309,12 +318,10 @@ fun AddExpenseScreen(
                 if (active.isEmpty()) {
                     Triple(emptyList(), false, "Select at least 1 member")
                 } else {
-                    val totalCents = kotlin.math.round(totalAmount * 100).toLong()
-                    val baseCents = totalCents / active.size
-                    val remainderCents = (totalCents % active.size).toInt()
-                    val list = active.mapIndexed { index, pubkey ->
-                        val centsForUser = baseCents + (if (index < remainderCents) 1 else 0)
-                        SplitItem(userPubkey = pubkey, amount = centsForUser / 100.0)
+                    val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                    val eqSplits = MoneyMath.allocateEqualSplits(totalMinor, active)
+                    val list = active.map { pubkey ->
+                        SplitItem(userPubkey = pubkey, amount = MoneyMath.toMajorDouble(eqSplits[pubkey] ?: 0L))
                     }
                     val perPersonAvg = totalAmount / active.size
                     Triple(list, true, "${CurrencyUtil.formatAmount(perPersonAvg, currency)} / person")
@@ -330,10 +337,18 @@ fun AddExpenseScreen(
                 }
                 val diff = totalAmount - sum
                 val valid = kotlin.math.abs(diff) < 0.05 && list.isNotEmpty()
+                val finalList = if (valid) {
+                    val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                    val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
+                    val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
+                    list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
+                } else {
+                    list
+                }
                 val status = if (valid) "Exact amounts match total ($sym${String.format(Locale.US, "%.2f", sum)})"
                 else if (diff > 0) "Remaining to assign: $sym${String.format(Locale.US, "%.2f", diff)}"
                 else "Exceeds total by: $sym${String.format(Locale.US, "%.2f", -diff)}"
-                Triple(list, valid, status)
+                Triple(finalList, valid, status)
             }
             SplitMode.PERCENTAGE -> {
                 var sumPct = 0.0
@@ -348,10 +363,18 @@ fun AddExpenseScreen(
                 }
                 val diff = 100.0 - sumPct
                 val valid = kotlin.math.abs(diff) < 0.5 && list.isNotEmpty()
+                val finalList = if (valid) {
+                    val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                    val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
+                    val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
+                    list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
+                } else {
+                    list
+                }
                 val status = if (valid) "100% assigned"
                 else if (diff > 0) "Remaining: ${String.format(Locale.US, "%.1f", diff)}%"
                 else "Exceeds by: ${String.format(Locale.US, "%.1f", -diff)}%"
-                Triple(list, valid, status)
+                Triple(finalList, valid, status)
             }
             SplitMode.SHARES -> {
                 var totalShares = 0.0
@@ -369,7 +392,11 @@ fun AddExpenseScreen(
                             SplitItem(userPubkey = m.pubkey, amount = computed)
                         } else null
                     }
-                    Triple(list, true, "${String.format(Locale.US, "%.0f", totalShares)} total shares")
+                    val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                    val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
+                    val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
+                    val finalList = list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
+                    Triple(finalList, true, "${String.format(Locale.US, "%.0f", totalShares)} total shares")
                 }
             }
         }

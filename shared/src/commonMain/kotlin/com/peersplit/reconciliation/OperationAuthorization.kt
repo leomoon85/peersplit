@@ -1,5 +1,6 @@
 package com.peersplit.reconciliation
 
+import com.peersplit.protocol.MembershipInvitationGrant
 import com.peersplit.protocol.OperationPayload
 import com.peersplit.protocol.OperationVerifier
 import com.peersplit.protocol.ProtocolMemberInfo
@@ -114,65 +115,14 @@ object OperationAuthorization {
                         )
                     }
 
-                    // Grant must match group
-                    if (grant.groupId != operation.groupId) {
-                        return AuthOutcome(
-                            isAuthorized = false,
-                            rejectionReason = RejectionReason.INVALID_INVITATION,
-                            detail = "Invitation grant groupId mismatch (${grant.groupId} != ${operation.groupId})"
-                        )
-                    }
-
-                    // Inviter must be an active admin or creator
-                    val inviterMember = activeMembers[grant.inviterPublicKey]
-                    val isInviterAdmin = (grant.inviterPublicKey == trustedGenesis.creatorPublicKey) ||
-                        (inviterMember?.role == ProtocolMemberInfo.ROLE_ADMIN)
-                    if (!isInviterAdmin) {
-                        return AuthOutcome(
-                            isAuthorized = false,
-                            rejectionReason = RejectionReason.INVALID_INVITATION,
-                            detail = "Invitation grant was not signed by an active group admin or creator (${grant.inviterPublicKey})"
-                        )
-                    }
-
-                    // If invitedPublicKey is specific (not wildcard "*"), author must match
-                    if (grant.invitedPublicKey.isNotBlank() && grant.invitedPublicKey != "*" && grant.invitedPublicKey != author) {
-                        return AuthOutcome(
-                            isAuthorized = false,
-                            rejectionReason = RejectionReason.INVALID_INVITATION,
-                            detail = "Invitation grant is bound to ${grant.invitedPublicKey}, but presented by $author"
-                        )
-                    }
-
-                    // Replay protection: nonce cannot be already consumed
-                    val nonce = grant.invitationNonce.trim().lowercase()
-                    if (nonce in consumedInvitationNonces) {
-                        return AuthOutcome(
-                            isAuthorized = false,
-                            rejectionReason = RejectionReason.REPLAYED_INVITATION,
-                            detail = "Invitation nonce $nonce has already been consumed"
-                        )
-                    }
-
-                    // Expiry check
-                    if (grant.expiresAtMillis > 0L && operation.createdAtMillis > grant.expiresAtMillis) {
-                        return AuthOutcome(
-                            isAuthorized = false,
-                            rejectionReason = RejectionReason.EXPIRED_INVITATION,
-                            detail = "Invitation grant expired at ${grant.expiresAtMillis} (operation timestamp ${operation.createdAtMillis})"
-                        )
-                    }
-
-                    // Cryptographic signature check
-                    if (!OperationVerifier.verifyInvitationGrant(grant)) {
-                        return AuthOutcome(
-                            isAuthorized = false,
-                            rejectionReason = RejectionReason.INVALID_INVITATION,
-                            detail = "Invitation grant cryptographic signature is invalid"
-                        )
-                    }
-
-                    AuthOutcome(true)
+                    return validateInvitationGrant(
+                        grant = grant,
+                        targetMemberPublicKey = payload.memberPublicKey,
+                        operation = operation,
+                        trustedGenesis = trustedGenesis,
+                        activeMembers = activeMembers,
+                        consumedInvitationNonces = consumedInvitationNonces
+                    )
                 } else {
                     // Non-self addition (an existing user is adding someone else)
                     if (payload.role == ProtocolMemberInfo.ROLE_ADMIN && !isAdmin) {
@@ -192,22 +142,28 @@ object OperationAuthorization {
                     }
 
                     if (isAdmin) {
-                        AuthOutcome(true)
-                    } else if (payload.invitationGrant != null) {
-                        // Ordinary member presenting an admin-signed grant
-                        val grant = payload.invitationGrant
-                        val inviterMember = activeMembers[grant.inviterPublicKey]
-                        val isInviterAdmin = (grant.inviterPublicKey == trustedGenesis.creatorPublicKey) ||
-                            (inviterMember?.role == ProtocolMemberInfo.ROLE_ADMIN)
-                        if (!isInviterAdmin || !OperationVerifier.verifyInvitationGrant(grant)) {
-                            AuthOutcome(
-                                isAuthorized = false,
-                                rejectionReason = RejectionReason.INVALID_INVITATION,
-                                detail = "Invalid admin invitation grant presented by member $author"
+                        if (payload.invitationGrant != null) {
+                            return validateInvitationGrant(
+                                grant = payload.invitationGrant,
+                                targetMemberPublicKey = payload.memberPublicKey,
+                                operation = operation,
+                                trustedGenesis = trustedGenesis,
+                                activeMembers = activeMembers,
+                                consumedInvitationNonces = consumedInvitationNonces
                             )
                         } else {
                             AuthOutcome(true)
                         }
+                    } else if (payload.invitationGrant != null) {
+                        // Ordinary member presenting an admin-signed grant
+                        return validateInvitationGrant(
+                            grant = payload.invitationGrant,
+                            targetMemberPublicKey = payload.memberPublicKey,
+                            operation = operation,
+                            trustedGenesis = trustedGenesis,
+                            activeMembers = activeMembers,
+                            consumedInvitationNonces = consumedInvitationNonces
+                        )
                     } else {
                         AuthOutcome(
                             isAuthorized = false,
@@ -260,5 +216,83 @@ object OperationAuthorization {
                 }
             }
         }
+    }
+
+    private fun validateInvitationGrant(
+        grant: MembershipInvitationGrant,
+        targetMemberPublicKey: String,
+        operation: SignedOperation,
+        trustedGenesis: TrustedGenesis,
+        activeMembers: Map<String, ProtocolMemberInfo>,
+        consumedInvitationNonces: Set<String>
+    ): AuthOutcome {
+        // 1. Group ID match
+        if (grant.groupId != operation.groupId) {
+            return AuthOutcome(
+                isAuthorized = false,
+                rejectionReason = RejectionReason.INVALID_INVITATION,
+                detail = "Invitation grant groupId mismatch (${grant.groupId} != ${operation.groupId})"
+            )
+        }
+
+        // 2. Inviter must be an active admin or creator
+        val inviterMember = activeMembers[grant.inviterPublicKey]
+        val isInviterAdmin = (grant.inviterPublicKey == trustedGenesis.creatorPublicKey) ||
+            (inviterMember?.role == ProtocolMemberInfo.ROLE_ADMIN)
+        if (!isInviterAdmin) {
+            return AuthOutcome(
+                isAuthorized = false,
+                rejectionReason = RejectionReason.INVALID_INVITATION,
+                detail = "Invitation grant was not signed by an active group admin or creator (${grant.inviterPublicKey})"
+            )
+        }
+
+        // 3. Recipient binding: if invitedPublicKey is specific (not wildcard "*"), target must match
+        val normTarget = targetMemberPublicKey.trim().lowercase()
+        val normInvited = grant.invitedPublicKey.trim().lowercase()
+        if (normInvited.isNotBlank() && normInvited != "*" && normInvited != normTarget) {
+            return AuthOutcome(
+                isAuthorized = false,
+                rejectionReason = RejectionReason.INVALID_INVITATION,
+                detail = "Invitation grant is bound to ${grant.invitedPublicKey}, but presented for $targetMemberPublicKey"
+            )
+        }
+
+        // 4. Replay protection: nonce cannot be already consumed
+        val nonce = grant.invitationNonce.trim().lowercase()
+        if (nonce in consumedInvitationNonces) {
+            return AuthOutcome(
+                isAuthorized = false,
+                rejectionReason = RejectionReason.REPLAYED_INVITATION,
+                detail = "Invitation nonce $nonce has already been consumed"
+            )
+        }
+
+        // 5. Expiry check: operation createdAtMillis must be valid (> 0) and not past grant.expiresAtMillis
+        if (operation.createdAtMillis <= 0L) {
+            return AuthOutcome(
+                isAuthorized = false,
+                rejectionReason = RejectionReason.INVALID_INVITATION,
+                detail = "Operation createdAtMillis is invalid (${operation.createdAtMillis})"
+            )
+        }
+        if (grant.expiresAtMillis > 0L && operation.createdAtMillis > grant.expiresAtMillis) {
+            return AuthOutcome(
+                isAuthorized = false,
+                rejectionReason = RejectionReason.EXPIRED_INVITATION,
+                detail = "Invitation grant expired at ${grant.expiresAtMillis} (operation timestamp ${operation.createdAtMillis})"
+            )
+        }
+
+        // 6. Cryptographic signature check
+        if (!OperationVerifier.verifyInvitationGrant(grant)) {
+            return AuthOutcome(
+                isAuthorized = false,
+                rejectionReason = RejectionReason.INVALID_INVITATION,
+                detail = "Invitation grant cryptographic signature is invalid"
+            )
+        }
+
+        return AuthOutcome(true)
     }
 }

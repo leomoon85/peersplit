@@ -2,6 +2,7 @@ package com.peersplit.protocol
 
 import com.peersplit.protocol.crypto.PlatformCrypto
 import com.peersplit.protocol.crypto.PureSha256
+import com.peersplit.protocol.util.currentTimeMillis
 
 /**
  * Cryptographic signer for PeerSplit V2 operations using Ed25519 and domain-separated digests.
@@ -38,7 +39,7 @@ object OperationSigner {
         logicalClock: Long,
         payload: OperationPayload,
         keyEpoch: Int = 0,
-        createdAtMillis: Long = 0L
+        createdAtMillis: Long = currentTimeMillis()
     ): SignedOperation {
         val normalizedParents = parents.map { OperationCanonicalizer.normalizeString(it.trim().lowercase()) }.sorted()
         val normalizedGroupId = OperationCanonicalizer.normalizeString(groupId.trim())
@@ -51,8 +52,10 @@ object OperationSigner {
             parents = normalizedParents,
             logicalClock = logicalClock,
             keyEpoch = keyEpoch,
-            payload = payload
+            payload = payload,
+            createdAtMillis = createdAtMillis
         )
+
 
         val opId = OperationId.compute(canonicalBytes)
         val signingDigest = computeSigningDigest(opId, canonicalBytes)

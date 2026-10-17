@@ -87,7 +87,8 @@ class GoldenVectorsTest {
             parents = emptyList(),
             logicalClock = 1L,
             keyEpoch = 0,
-            payload = genesis
+            payload = genesis,
+            createdAtMillis = 1700000000000L
         )
 
         val bytes2 = OperationCanonicalizer.canonicalizeUnsigned(
@@ -103,7 +104,8 @@ class GoldenVectorsTest {
                     ProtocolMemberInfo(bobPub, "Bob", ProtocolMemberInfo.ROLE_MEMBER),
                     ProtocolMemberInfo(alicePub, "Alice", ProtocolMemberInfo.ROLE_ADMIN)
                 )
-            )
+            ),
+            createdAtMillis = 1700000000000L
         )
 
         assertEquals(PureSha256.toHex(bytes1), PureSha256.toHex(bytes2))

@@ -44,13 +44,15 @@ class SignedOperationProtocolTest {
             description = "Cafe\u0301 Dinner"
         )
 
+        val testTimestamp = 1700000000000L
         val op1 = OperationSigner.createAndSign(
             groupId = "grp_test_1",
             authorPublicKey = alice.publicKeyHex,
             privateKeyHex = alice.privateKeyHex,
             parents = listOf(parent2, parent1),
             logicalClock = 5L,
-            payload = payload1
+            payload = payload1,
+            createdAtMillis = testTimestamp
         )
 
         val op2 = OperationSigner.createAndSign(
@@ -59,7 +61,8 @@ class SignedOperationProtocolTest {
             privateKeyHex = alice.privateKeyHex,
             parents = listOf(parent1, parent2),
             logicalClock = 5L,
-            payload = payload2
+            payload = payload2,
+            createdAtMillis = testTimestamp
         )
 
         assertEquals("Operation IDs must be identical across key/parent order and NFC normalization", op1.operationId, op2.operationId)

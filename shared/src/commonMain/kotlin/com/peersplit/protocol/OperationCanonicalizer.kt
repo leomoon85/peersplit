@@ -42,7 +42,8 @@ object OperationCanonicalizer {
         parents: List<String>,
         logicalClock: Long,
         keyEpoch: Int,
-        payload: OperationPayload
+        payload: OperationPayload,
+        createdAtMillis: Long = 0L
     ): ByteArray {
         if (!ProtocolVersion.isSupported(protocolVersion)) {
             throw IllegalArgumentException("Unsupported protocol version: $protocolVersion")
@@ -63,6 +64,7 @@ object OperationCanonicalizer {
         }
         out.writeLong(logicalClock)
         out.writeInt(keyEpoch)
+        out.writeLong(createdAtMillis)
         writePayload(out, payload)
         return out.toByteArray()
     }
@@ -78,9 +80,11 @@ object OperationCanonicalizer {
             parents = operation.parents,
             logicalClock = operation.logicalClock,
             keyEpoch = operation.keyEpoch,
-            payload = operation.payload
+            payload = operation.payload,
+            createdAtMillis = operation.createdAtMillis
         )
     }
+
 
     private fun writePayload(out: CanonicalByteBuffer, payload: OperationPayload) {
         when (payload) {

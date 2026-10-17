@@ -30,6 +30,7 @@ import com.peersplit.app.data.model.ExpenseItem
 import com.peersplit.app.data.model.Group
 import com.peersplit.app.data.model.Member
 import com.peersplit.app.network.sync.P2PSyncManager
+import com.peersplit.app.protocol.MembershipInvitationGrant
 import com.peersplit.app.protocol.MoneyMath
 import com.peersplit.app.protocol.OperationEntityMapper
 import com.peersplit.app.protocol.OperationId
@@ -70,7 +71,9 @@ data class GroupInviteData(
     val creatorPubkey: String,
     val creatorDisplayName: String = "Creator",
     val genesisBlockJson: String? = null,
-    val blocksJson: List<String> = emptyList()
+    val blocksJson: List<String> = emptyList(),
+    val invitationGrantJson: String? = null,
+    val protocolVersion: Int = 1
 )
 
 data class GroupInvitePreview(
@@ -218,7 +221,16 @@ class ExpenseRepository(
         migrationManager.migrateGroupToV2(groupId)
 
     suspend fun getDagHeads(groupId: String): List<String> {
-        val ops = database.signedOperationDao().getOperationsForGroupSync(groupId)
+        val meta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+        if (meta != null && meta.headOperationIdsJson.isNotBlank() && meta.headOperationIdsJson != "[]") {
+            try {
+                val heads = json.decodeFromString<List<String>>(meta.headOperationIdsJson)
+                if (heads.isNotEmpty()) {
+                    return heads.take(16).sorted()
+                }
+            } catch (_: Exception) {}
+        }
+        val ops = database.signedOperationDao().getAcceptedOperationsForGroupSync(groupId)
         if (ops.isEmpty()) return emptyList()
         val allParents = ops.flatMap {
             try {
@@ -235,7 +247,7 @@ class ExpenseRepository(
 
     suspend fun getNextClock(groupId: String, parents: List<String>): Long {
         if (parents.isEmpty()) return 1L
-        val ops = database.signedOperationDao().getOperationsForGroupSync(groupId)
+        val ops = database.signedOperationDao().getAcceptedOperationsForGroupSync(groupId)
         val opMap = ops.associateBy { it.operationId }
         val maxParentClock = parents.mapNotNull { opMap[it]?.logicalClock }.maxOrNull() ?: 0L
         return maxParentClock + 1L
@@ -874,14 +886,17 @@ class ExpenseRepository(
             // V2 ExpenseCreated SignedOperation
             val parents = getDagHeads(groupId)
             val nextClock = getNextClock(groupId, parents)
-            val splitsMinor = splits.associate {
+            val totalAmountMinor = MoneyMath.toMinorUnits(amount)
+            val rawSplitsMinor = splits.associate {
                 it.userPubkey to MoneyMath.toMinorUnits(it.amount)
             }
-            val payersMinor = if (payers.isNotEmpty()) {
+            val splitsMinor = MoneyMath.normalizeSplitsToExactTotal(totalAmountMinor, rawSplitsMinor)
+            val rawPayersMinor = if (payers.isNotEmpty()) {
                 payers.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
             } else {
-                mapOf(payerPubkey to MoneyMath.toMinorUnits(amount))
+                mapOf(payerPubkey to totalAmountMinor)
             }
+            val payersMinor = MoneyMath.normalizeSplitsToExactTotal(totalAmountMinor, rawPayersMinor)
 
             val expPayload = OperationPayload.ExpenseCreated(
                 expenseId = block.blockHash,
@@ -993,14 +1008,17 @@ class ExpenseRepository(
 
             val parents = getDagHeads(groupId)
             val nextClock = getNextClock(groupId, parents)
-            val splitsMinor = splits.associate {
+            val totalAmountMinor = MoneyMath.toMinorUnits(newAmount)
+            val rawSplitsMinor = splits.associate {
                 it.userPubkey to MoneyMath.toMinorUnits(it.amount)
             }
-            val payersMinor = if (payers.isNotEmpty()) {
+            val splitsMinor = MoneyMath.normalizeSplitsToExactTotal(totalAmountMinor, rawSplitsMinor)
+            val rawPayersMinor = if (payers.isNotEmpty()) {
                 payers.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
             } else {
-                mapOf(payerPubkey to MoneyMath.toMinorUnits(newAmount))
+                mapOf(payerPubkey to totalAmountMinor)
             }
+            val payersMinor = MoneyMath.normalizeSplitsToExactTotal(totalAmountMinor, rawPayersMinor)
 
             val replacement = OperationPayload.ExpenseCreated(
                 expenseId = originalExpenseId,
@@ -1218,6 +1236,22 @@ class ExpenseRepository(
         val members = database.memberDao().getMembersForGroupSync(groupId)
         val creatorName = members.firstOrNull { it.pubkey == group.creatorPubkey }?.displayName ?: "Creator"
 
+        val identity = KeyManager.getOrCreateIdentity(context)
+        val privKeyHex = KeyManager.getPrivateKeyHex(context)
+        val grant = try {
+            val nonce = java.util.UUID.randomUUID().toString().replace("-", "").take(32)
+            OperationSigner.createInvitationGrant(
+                inviterPublicKey = identity.publicKeyHex,
+                invitedPublicKey = "*",
+                groupId = group.id,
+                targetRole = ProtocolMemberInfo.ROLE_MEMBER,
+                invitationNonce = nonce,
+                expiresAtMillis = System.currentTimeMillis() + 14L * 24L * 60L * 60L * 1000L,
+                inviterPrivateKeyHex = privKeyHex
+            )
+        } catch (_: Exception) { null }
+        val grantJson = grant?.let { json.encodeToString(MembershipInvitationGrant.serializer(), it) }
+
         val fullInvite = GroupInviteData(
             groupId = group.id,
             groupName = group.name,
@@ -1226,7 +1260,9 @@ class ExpenseRepository(
             creatorPubkey = group.creatorPubkey,
             creatorDisplayName = creatorName,
             genesisBlockJson = if (allBlocksJson.isEmpty()) genesisJson else null,
-            blocksJson = allBlocksJson
+            blocksJson = allBlocksJson,
+            invitationGrantJson = grantJson,
+            protocolVersion = 2
         )
         val encodedFull = encodeInviteUri(fullInvite)
         if (encodedFull.length <= 2200) {
@@ -1351,7 +1387,7 @@ class ExpenseRepository(
             val identity = KeyManager.getOrCreateIdentity(context)
             val privKeyHex = KeyManager.getPrivateKeyHex(context)
 
-            val mintedJoinBlock = syncManager.withLedgerLock {
+            val (mintedJoinBlock, joinV2Operation) = syncManager.withLedgerLock {
                 val existing = database.groupDao().getGroupByIdSync(inviteData.groupId)
                 if (existing == null) {
                     database.groupDao().insertGroup(
@@ -1453,8 +1489,8 @@ class ExpenseRepository(
                 val currentTip = database.blockDao().getLatestBlockForGroup(inviteData.groupId)?.toDomainBlock()
                     ?: importedBlocks.lastOrNull()
 
-                if (currentTip != null && identity.publicKeyHex != inviteData.creatorPubkey && !alreadyJoinedOnChain) {
-                    val joinBlock = BlockchainEngine.createMemberJoinBlock(
+                val joinBlock = if (currentTip != null && identity.publicKeyHex != inviteData.creatorPubkey && !alreadyJoinedOnChain) {
+                    val jb = BlockchainEngine.createMemberJoinBlock(
                         groupId = inviteData.groupId,
                         prevBlock = currentTip,
                         newMemberPubkey = identity.publicKeyHex,
@@ -1466,12 +1502,65 @@ class ExpenseRepository(
                         phone = effectivePhone
                     )
                     database.blockDao().insertBlock(
-                        BlockEntity.fromDomainBlock(joinBlock, isVerified = true, isSynced = false)
+                        BlockEntity.fromDomainBlock(jb, isVerified = true, isSynced = false)
                     )
-                    joinBlock
+                    jb
                 } else {
                     null
                 }
+
+                // V2 MemberAdded SignedOperation
+                val joinV2Operation = if (identity.publicKeyHex != inviteData.creatorPubkey) {
+                    val groupProtocol = database.groupProtocolDao().getGroupProtocolSync(inviteData.groupId)
+                    val existingOps = database.signedOperationDao().getOperationsForGroupSync(inviteData.groupId)
+                    val alreadyJoinedV2 = existingOps.any {
+                        it.payloadType == "MEMBER_ADDED" && try {
+                            val p = json.decodeFromString(OperationPayload.MemberAdded.serializer(), it.payloadJson)
+                            p.memberPublicKey == identity.publicKeyHex
+                        } catch (_: Exception) { false }
+                    }
+
+                    if (!alreadyJoinedV2) {
+                        val grant = inviteData.invitationGrantJson?.let {
+                            try { json.decodeFromString(MembershipInvitationGrant.serializer(), it) } catch (_: Exception) { null }
+                        }
+                        val parents = getDagHeads(inviteData.groupId)
+                        val nextClock = getNextClock(inviteData.groupId, parents)
+                        val memberPayload = OperationPayload.MemberAdded(
+                            memberPublicKey = identity.publicKeyHex,
+                            displayName = effectiveDisplayName,
+                            role = ProtocolMemberInfo.ROLE_MEMBER,
+                            upiId = effectiveUpi,
+                            phone = effectivePhone,
+                            claimedGhostPubkey = ghostMatch?.pubkey,
+                            invitationGrant = grant
+                        )
+                        val op = OperationSigner.createAndSign(
+                            protocolVersion = ProtocolVersion.V2_SIGNED_OPERATIONS,
+                            groupId = inviteData.groupId,
+                            authorPublicKey = identity.publicKeyHex,
+                            privateKeyHex = privKeyHex,
+                            parents = parents,
+                            logicalClock = nextClock,
+                            payload = memberPayload,
+                            keyEpoch = groupProtocol?.currentKeyEpoch ?: 0
+                        )
+                        database.signedOperationDao().insertOperationIgnore(
+                            OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
+                        )
+                        val deps = OperationEntityMapper.toDependencyEntities(op)
+                        if (deps.isNotEmpty()) {
+                            database.signedOperationDao().insertDependenciesIgnore(deps)
+                        }
+                        op
+                    } else {
+                        null
+                    }
+                } else {
+                    null
+                }
+
+                Pair(joinBlock, joinV2Operation)
             }
 
             // Start monitoring Nostr relays for the group's ledger blocks
@@ -1479,6 +1568,11 @@ class ExpenseRepository(
 
             if (mintedJoinBlock != null) {
                 syncManager.broadcastBlock(mintedJoinBlock, inviteData.groupKeyBase64)
+            }
+
+            if (joinV2Operation != null) {
+                syncManager.broadcastOperation(joinV2Operation, inviteData.groupKeyBase64)
+                syncManager.reconcileV2Group(inviteData.groupId)
             }
 
             // Trigger full chain sync with peers

@@ -139,6 +139,9 @@ interface SignedOperationDao {
     @Query("SELECT * FROM signed_operations WHERE groupId = :groupId ORDER BY logicalClock ASC, operationId ASC")
     suspend fun getOperationsForGroupSync(groupId: String): List<SignedOperationEntity>
 
+    @Query("SELECT * FROM signed_operations WHERE groupId = :groupId AND status = 'ACCEPTED' ORDER BY logicalClock ASC, operationId ASC")
+    suspend fun getAcceptedOperationsForGroupSync(groupId: String): List<SignedOperationEntity>
+
     @Query("SELECT * FROM signed_operations ORDER BY groupId, logicalClock ASC, operationId ASC")
     fun getAllOperationsFlow(): Flow<List<SignedOperationEntity>>
 

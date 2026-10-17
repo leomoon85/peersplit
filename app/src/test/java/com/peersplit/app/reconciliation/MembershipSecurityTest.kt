@@ -411,4 +411,163 @@ class MembershipSecurityTest {
         assertTrue(result.activeMembers.containsKey(bobKey.publicKeyHex))
         assertEquals("Bob", result.activeMembers[bobKey.publicKeyHex]?.displayName)
     }
+
+    @Test
+    fun testNonSelfAdditionEnforcesRecipientBinding() {
+        val (trustedGenesis, genesisOp) = setupGenesis()
+
+        // Admin issues grant explicitly bound to Charlie only
+        val grantBoundToCharlie = OperationSigner.createInvitationGrant(
+            inviterPublicKey = adminKey.publicKeyHex,
+            inviterPrivateKeyHex = adminKey.privateKeyHex,
+            groupId = groupId,
+            invitedPublicKey = charlieKey.publicKeyHex,
+            invitationNonce = "nonce-bound-charlie"
+        )
+
+        // Bob self-joins first with a valid grant
+        val bobGrant = OperationSigner.createInvitationGrant(
+            inviterPublicKey = adminKey.publicKeyHex,
+            inviterPrivateKeyHex = adminKey.privateKeyHex,
+            groupId = groupId,
+            invitedPublicKey = bobKey.publicKeyHex,
+            invitationNonce = "nonce-bob-join"
+        )
+        val bobJoinOp = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = bobKey.publicKeyHex,
+            privateKeyHex = bobKey.privateKeyHex,
+            parents = listOf(genesisOp.operationId),
+            logicalClock = 2L,
+            payload = OperationPayload.MemberAdded(
+                memberPublicKey = bobKey.publicKeyHex,
+                displayName = "Bob",
+                role = ProtocolMemberInfo.ROLE_MEMBER,
+                invitationGrant = bobGrant
+            )
+        )
+
+        // Now Bob (an ordinary member) attempts to add Attacker using Charlie's grant
+        val bobAddsAttackerOp = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = bobKey.publicKeyHex,
+            privateKeyHex = bobKey.privateKeyHex,
+            parents = listOf(bobJoinOp.operationId),
+            logicalClock = 3L,
+            payload = OperationPayload.MemberAdded(
+                memberPublicKey = attackerKey.publicKeyHex,
+                displayName = "Attacker",
+                role = ProtocolMemberInfo.ROLE_MEMBER,
+                invitationGrant = grantBoundToCharlie
+            )
+        )
+
+        val result = DefaultLedgerReconciliationEngine.reconcile(
+            trustedGenesis = trustedGenesis,
+            operations = listOf(genesisOp, bobJoinOp, bobAddsAttackerOp)
+        )
+
+        assertEquals(2, result.acceptedOperations.size)
+        assertEquals(1, result.rejectedOperations.size)
+        val rej = result.rejectedOperations.first()
+        assertEquals(RejectionReason.INVALID_INVITATION, rej.reason)
+        assertTrue(rej.detail.contains("bound to"))
+        assertFalse(result.activeMembers.containsKey(attackerKey.publicKeyHex))
+    }
+
+    @Test
+    fun testNonSelfAdditionEnforcesReplayProtection() {
+        val (trustedGenesis, genesisOp) = setupGenesis()
+
+        val sharedNonceGrant = OperationSigner.createInvitationGrant(
+            inviterPublicKey = adminKey.publicKeyHex,
+            inviterPrivateKeyHex = adminKey.privateKeyHex,
+            groupId = groupId,
+            invitedPublicKey = "*",
+            invitationNonce = "replayed-nonce-123"
+        )
+
+        val bobJoinOp = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = bobKey.publicKeyHex,
+            privateKeyHex = bobKey.privateKeyHex,
+            parents = listOf(genesisOp.operationId),
+            logicalClock = 2L,
+            payload = OperationPayload.MemberAdded(
+                memberPublicKey = bobKey.publicKeyHex,
+                displayName = "Bob",
+                role = ProtocolMemberInfo.ROLE_MEMBER,
+                invitationGrant = sharedNonceGrant
+            )
+        )
+
+        // Bob attempts to add Charlie reusing the same nonce grant
+        val bobAddsCharlieOp = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = bobKey.publicKeyHex,
+            privateKeyHex = bobKey.privateKeyHex,
+            parents = listOf(bobJoinOp.operationId),
+            logicalClock = 3L,
+            payload = OperationPayload.MemberAdded(
+                memberPublicKey = charlieKey.publicKeyHex,
+                displayName = "Charlie",
+                role = ProtocolMemberInfo.ROLE_MEMBER,
+                invitationGrant = sharedNonceGrant
+            )
+        )
+
+        val result = DefaultLedgerReconciliationEngine.reconcile(
+            trustedGenesis = trustedGenesis,
+            operations = listOf(genesisOp, bobJoinOp, bobAddsCharlieOp)
+        )
+
+        assertEquals(2, result.acceptedOperations.size)
+        assertEquals(1, result.rejectedOperations.size)
+        val rej = result.rejectedOperations.first()
+        assertEquals(RejectionReason.REPLAYED_INVITATION, rej.reason)
+        assertFalse(result.activeMembers.containsKey(charlieKey.publicKeyHex))
+    }
+
+    @Test
+    fun testInvitationExpiryEnforcesCryptographicallySignedTimestamp() {
+        val (trustedGenesis, genesisOp) = setupGenesis()
+        val now = System.currentTimeMillis()
+
+        // Grant expired 10 minutes ago
+        val expiredGrant = OperationSigner.createInvitationGrant(
+            inviterPublicKey = adminKey.publicKeyHex,
+            inviterPrivateKeyHex = adminKey.privateKeyHex,
+            groupId = groupId,
+            invitedPublicKey = bobKey.publicKeyHex,
+            invitationNonce = "expired-nonce-001",
+            expiresAtMillis = now - 600_000L
+        )
+
+        // Operation timestamp is after expiry
+        val op = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = bobKey.publicKeyHex,
+            privateKeyHex = bobKey.privateKeyHex,
+            parents = listOf(genesisOp.operationId),
+            logicalClock = 2L,
+            payload = OperationPayload.MemberAdded(
+                memberPublicKey = bobKey.publicKeyHex,
+                displayName = "Bob",
+                role = ProtocolMemberInfo.ROLE_MEMBER,
+                invitationGrant = expiredGrant
+            ),
+            createdAtMillis = now
+        )
+
+        val result = DefaultLedgerReconciliationEngine.reconcile(
+            trustedGenesis = trustedGenesis,
+            operations = listOf(genesisOp, op)
+        )
+
+        assertEquals(1, result.acceptedOperations.size)
+        assertEquals(1, result.rejectedOperations.size)
+        val rej = result.rejectedOperations.first()
+        assertEquals(RejectionReason.EXPIRED_INVITATION, rej.reason)
+        assertFalse(result.activeMembers.containsKey(bobKey.publicKeyHex))
+    }
 }

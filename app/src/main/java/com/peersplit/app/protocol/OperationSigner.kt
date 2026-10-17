@@ -49,8 +49,10 @@ object OperationSigner {
             parents = normalizedParents,
             logicalClock = logicalClock,
             keyEpoch = keyEpoch,
-            payload = payload
+            payload = payload,
+            createdAtMillis = createdAtMillis
         )
+
 
         val opId = OperationId.compute(canonicalBytes)
         val signingDigest = computeSigningDigest(opId, canonicalBytes)
