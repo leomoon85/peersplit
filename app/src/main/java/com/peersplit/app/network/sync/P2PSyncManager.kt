@@ -90,29 +90,33 @@ class P2PSyncManager(
     }
 
     /**
-     * Actively refreshes subscription and broadcasts local chain for a group.
+     * Actively refreshes subscription and optionally broadcasts local chain for a group.
      */
-    fun syncGroupNow(groupId: String) {
+    fun syncGroupNow(groupId: String, broadcastChain: Boolean = false) {
         scope.launch {
             relayPool.connectAll()
             relayPool.subscribeGroup(groupId)
-            broadcastGroupChain(groupId)
+            if (broadcastChain) {
+                broadcastGroupChain(groupId)
+            }
             drainPendingBlocks(groupId)
         }
     }
 
     /**
      * Syncs all stored groups across all connected relays.
-     * Re-establishes socket connections if dropped and re-broadcasts latest blocks.
+     * Re-establishes socket connections if dropped and subscribes to group feeds.
      */
-    fun syncAllGroupsNow() {
+    fun syncAllGroupsNow(broadcastChains: Boolean = false) {
         scope.launch {
             try {
                 relayPool.connectAll()
                 val groups = database.groupDao().getAllGroups().first()
                 groups.forEach { group ->
                     relayPool.subscribeGroup(group.id)
-                    broadcastGroupChain(group.id)
+                    if (broadcastChains) {
+                        broadcastGroupChain(group.id)
+                    }
                     drainPendingBlocks(group.id)
                 }
             } catch (e: Exception) {

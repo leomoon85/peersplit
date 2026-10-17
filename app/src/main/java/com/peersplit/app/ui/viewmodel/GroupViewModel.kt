@@ -32,18 +32,15 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
 
     init {
         viewModelScope.launch {
-            while (true) {
-                syncManager.syncGroupNow(groupId)
-                kotlinx.coroutines.delay(6000)
-            }
+            syncManager.syncGroupNow(groupId, broadcastChain = false)
         }
     }
 
     fun manualSync(onDone: () -> Unit = {}) {
         viewModelScope.launch {
             _isSyncing.value = true
-            syncManager.syncGroupNow(groupId)
-            kotlinx.coroutines.delay(700)
+            syncManager.syncGroupNow(groupId, broadcastChain = true)
+            kotlinx.coroutines.delay(600)
             _isSyncing.value = false
             onDone()
         }

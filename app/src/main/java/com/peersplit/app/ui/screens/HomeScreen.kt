@@ -42,6 +42,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -205,7 +206,7 @@ fun HomeScreen(
                             if (!isManualSyncing) {
                                 isManualSyncing = true
                                 coroutineScope.launch {
-                                    com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow()
+                                    com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow(broadcastChains = true)
                                     kotlinx.coroutines.delay(800)
                                     isManualSyncing = false
                                     Toast.makeText(context, "All groups synced with peers ✓", Toast.LENGTH_SHORT).show()
@@ -216,7 +217,7 @@ fun HomeScreen(
                         Icon(
                             Icons.Default.Sync,
                             contentDescription = "Sync All Groups",
-                            modifier = Modifier.rotate(syncRotation),
+                            modifier = Modifier.graphicsLayer { rotationZ = syncRotation },
                             tint = if (isManualSyncing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -304,20 +305,13 @@ fun HomeScreen(
             }
         }
     ) { padding ->
-        AnimatedVisibility(
-            visible = isVisible,
-            enter = fadeIn(animationSpec = tween(500)) + slideInVertically(
-                initialOffsetY = { 60 },
-                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-            )
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
                 item {
                     Spacer(modifier = Modifier.height(4.dp))
                     TotalBalanceCard(uiState)
@@ -481,7 +475,6 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(80.dp))
                 }
             }
-        }
     }
 
     // Discreet Unlock PIN Dialog
@@ -1285,7 +1278,7 @@ fun HomeBottomEngagementSection(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(rewardProfile.badges) { badge ->
+                    items(rewardProfile.badges, key = { it.id }) { badge ->
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = if (badge.isUnlocked) {

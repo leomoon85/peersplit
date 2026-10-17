@@ -44,9 +44,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var lastResumeSyncTime = 0L
+
     override fun onResume() {
         super.onResume()
-        PeerSplitApp.instance.syncManager.syncAllGroupsNow()
+        val now = System.currentTimeMillis()
+        if (now - lastResumeSyncTime > 30_000L) {
+            lastResumeSyncTime = now
+            PeerSplitApp.instance.syncManager.syncAllGroupsNow(broadcastChains = false)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

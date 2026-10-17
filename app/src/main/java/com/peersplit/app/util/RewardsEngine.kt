@@ -42,6 +42,26 @@ object RewardsEngine {
     private val _version = MutableStateFlow(0)
     val version: StateFlow<Int> = _version.asStateFlow()
 
+    @Volatile
+    private var isCacheLoaded = false
+    private var cachedStreakDays = 1
+    private var cachedBonusXp = 0
+    private var cachedExpensesAdded = 0
+    private var cachedBillsPaid = 0
+    private var cachedSettlementsDone = 0
+
+    @Synchronized
+    private fun ensureCacheLoaded(context: Context) {
+        if (isCacheLoaded) return
+        val prefs = context.getSharedPreferences(PREFS_REWARDS, Context.MODE_PRIVATE)
+        cachedStreakDays = prefs.getInt(KEY_STREAK_DAYS, 1).coerceAtLeast(1)
+        cachedBonusXp = prefs.getInt(KEY_BONUS_XP, 0)
+        cachedExpensesAdded = prefs.getInt(KEY_EXPENSES_ADDED, 0)
+        cachedBillsPaid = prefs.getInt(KEY_BILLS_PAID, 0)
+        cachedSettlementsDone = prefs.getInt(KEY_SETTLEMENTS_DONE, 0)
+        isCacheLoaded = true
+    }
+
     /**
      * Records a user action, updates the daily activity streak, awards XP, and triggers UI refresh.
      */
@@ -52,10 +72,11 @@ object RewardsEngine {
         userPaidBill: Boolean = false,
         isSettlement: Boolean = false
     ): Int {
+        ensureCacheLoaded(context)
         val prefs = context.getSharedPreferences(PREFS_REWARDS, Context.MODE_PRIVATE)
         val todayEpochDay = TimeUnit.MILLISECONDS.toDays(System.currentTimeMillis())
         val lastDay = prefs.getLong(KEY_LAST_ACTIVE_DAY, -1L)
-        var streak = prefs.getInt(KEY_STREAK_DAYS, 1).coerceAtLeast(1)
+        var streak = cachedStreakDays
 
         if (lastDay == -1L) {
             streak = 1
@@ -65,10 +86,16 @@ object RewardsEngine {
             streak = 1
         }
 
-        val currentBonus = prefs.getInt(KEY_BONUS_XP, 0) + xpEarned
-        val expCount = prefs.getInt(KEY_EXPENSES_ADDED, 0) + if (isExpense) 1 else 0
-        val paidCount = prefs.getInt(KEY_BILLS_PAID, 0) + if (userPaidBill) 1 else 0
-        val stlCount = prefs.getInt(KEY_SETTLEMENTS_DONE, 0) + if (isSettlement) 1 else 0
+        val currentBonus = cachedBonusXp + xpEarned
+        val expCount = cachedExpensesAdded + if (isExpense) 1 else 0
+        val paidCount = cachedBillsPaid + if (userPaidBill) 1 else 0
+        val stlCount = cachedSettlementsDone + if (isSettlement) 1 else 0
+
+        cachedStreakDays = streak
+        cachedBonusXp = currentBonus
+        cachedExpensesAdded = expCount
+        cachedBillsPaid = paidCount
+        cachedSettlementsDone = stlCount
 
         prefs.edit()
             .putInt(KEY_BONUS_XP, currentBonus)
@@ -87,18 +114,20 @@ object RewardsEngine {
      * Ensures daily streak is initialized when opening the app.
      */
     fun touchDailyVisit(context: Context) {
+        ensureCacheLoaded(context)
         val prefs = context.getSharedPreferences(PREFS_REWARDS, Context.MODE_PRIVATE)
         val todayEpochDay = TimeUnit.MILLISECONDS.toDays(System.currentTimeMillis())
         val lastDay = prefs.getLong(KEY_LAST_ACTIVE_DAY, -1L)
         if (lastDay == todayEpochDay) return
 
-        var streak = prefs.getInt(KEY_STREAK_DAYS, 1).coerceAtLeast(1)
+        var streak = cachedStreakDays
         streak = when {
             lastDay == -1L -> 1
             todayEpochDay == lastDay + 1L -> streak + 1
             todayEpochDay > lastDay + 1L -> 1
             else -> streak
         }
+        cachedStreakDays = streak
         prefs.edit()
             .putInt(KEY_STREAK_DAYS, streak)
             .putLong(KEY_LAST_ACTIVE_DAY, todayEpochDay)
@@ -112,12 +141,12 @@ object RewardsEngine {
         totalBlocksCount: Int,
         allBalancesSquaredUp: Boolean
     ): RewardProfile {
-        val prefs = context.getSharedPreferences(PREFS_REWARDS, Context.MODE_PRIVATE)
-        val streakDays = prefs.getInt(KEY_STREAK_DAYS, 1).coerceAtLeast(1)
-        val bonusXp = prefs.getInt(KEY_BONUS_XP, 0)
-        val recordedExpenses = prefs.getInt(KEY_EXPENSES_ADDED, 0)
-        val recordedBillsPaid = prefs.getInt(KEY_BILLS_PAID, 0)
-        val recordedSettlements = prefs.getInt(KEY_SETTLEMENTS_DONE, 0)
+        ensureCacheLoaded(context)
+        val streakDays = cachedStreakDays
+        val bonusXp = cachedBonusXp
+        val recordedExpenses = cachedExpensesAdded
+        val recordedBillsPaid = cachedBillsPaid
+        val recordedSettlements = cachedSettlementsDone
 
         // Estimate activity from ledger blocks as well so existing users get full credit immediately
         val nonGenesisBlocks = (totalBlocksCount - groupsCount).coerceAtLeast(0)

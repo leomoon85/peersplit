@@ -30,6 +30,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -195,7 +196,7 @@ fun GroupDetailScreen(
                         Icon(
                             Icons.Default.Sync,
                             contentDescription = "Sync Group Now",
-                            modifier = Modifier.rotate(groupSyncRotation),
+                            modifier = Modifier.graphicsLayer { rotationZ = groupSyncRotation },
                             tint = if (isSyncing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                         )
                     }
@@ -1134,7 +1135,19 @@ fun BalancesAndDebtsTab(
     onAuditLedgerClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val totalSpent = groupDetail.expenses.filter { !it.isVoided && it.splitType != "SETTLEMENT" }.sumOf { it.totalAmount }
+    val totalSpent = remember(groupDetail.expenses) {
+        groupDetail.expenses.filter { !it.isVoided && it.splitType != "SETTLEMENT" }.sumOf { it.totalAmount }
+    }
+    val mvpPubkey = remember(groupDetail.expenses) {
+        groupDetail.expenses
+            .filter { !it.isVoided }
+            .groupBy { it.payerPubkey }
+            .maxByOrNull { entry -> entry.value.sumOf { exp -> exp.totalAmount } }
+            ?.key
+    }
+    val recentActiveExpenses = remember(groupDetail.expenses) {
+        groupDetail.expenses.filter { !it.isVoided }.take(3)
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -1358,13 +1371,7 @@ fun BalancesAndDebtsTab(
             }
         }
 
-        val mvpPubkey = groupDetail.expenses
-            .filter { !it.isVoided }
-            .groupBy { it.payerPubkey }
-            .maxByOrNull { entry -> entry.value.sumOf { exp -> exp.totalAmount } }
-            ?.key
-
-        items(groupDetail.members) { member ->
+        items(groupDetail.members, key = { it.pubkey }) { member ->
             MemberBalanceRow(
                 member = member,
                 currency = groupDetail.group.currency,
@@ -1427,7 +1434,6 @@ fun BalancesAndDebtsTab(
         }
 
         // Recent Expenses Preview on Overview / Debts Tab
-        val recentActiveExpenses = groupDetail.expenses.filter { !it.isVoided }.take(3)
         if (recentActiveExpenses.isNotEmpty()) {
             item {
                 Row(
@@ -1445,7 +1451,7 @@ fun BalancesAndDebtsTab(
                     }
                 }
             }
-            items(recentActiveExpenses) { exp ->
+            items(recentActiveExpenses, key = { it.id }) { exp ->
                 ExpenseItemRow(
                     expense = exp,
                     currency = groupDetail.group.currency,
@@ -1786,7 +1792,7 @@ fun ExpensesTab(
                         .padding(horizontal = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(filteredExpenses) { expense ->
+                    items(filteredExpenses, key = { it.id }) { expense ->
                         ExpenseItemRow(
                             expense = expense,
                             currency = groupDetail.group.currency,
@@ -1908,8 +1914,10 @@ fun AnalyticsTab(
     onSetBudgetClick: () -> Unit = {}
 ) {
     val currency = groupDetail.group.currency
-    val expenses = groupDetail.expenses.filter { !it.isVoided && it.splitType != "SETTLEMENT" }
-    val totalSpend = expenses.sumOf { it.totalAmount }
+    val expenses = remember(groupDetail.expenses) {
+        groupDetail.expenses.filter { !it.isVoided && it.splitType != "SETTLEMENT" }
+    }
+    val totalSpend = remember(expenses) { expenses.sumOf { it.totalAmount } }
 
     if (expenses.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
