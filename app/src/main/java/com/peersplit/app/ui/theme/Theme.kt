@@ -27,7 +27,10 @@ private val DarkColorScheme = darkColorScheme(
 private val LightColorScheme = lightColorScheme(
     primary = Emerald40,
     secondary = Mint40,
-    tertiary = BlockchainAccent
+    tertiary = BlockchainAccent,
+    background = BackgroundLight,
+    surface = SurfaceLight,
+    surfaceVariant = CardLight
 )
 
 @Composable

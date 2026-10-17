@@ -74,6 +74,7 @@ fun NavGraph(
         }
 
         composable(Screen.CreateGroup.route) {
+            val context = LocalContext.current
             CreateGroupScreen(
                 onBackClick = { navController.popBackStack() },
                 onCreateGroup = { name, currency, isSecret, secretPin, isPersonalSolo, initialMembers ->
@@ -86,6 +87,8 @@ fun NavGraph(
                             isPersonalSolo = isPersonalSolo,
                             initialMemberNames = initialMembers
                         )
+                        com.peersplit.app.util.RewardsEngine.recordAction(context, xpEarned = 50)
+                        Toast.makeText(context, "🎉 Group created! +50 SplitPoints (XP)", Toast.LENGTH_SHORT).show()
                         navController.popBackStack()
                         navController.navigate(Screen.GroupDetail.createRoute(groupId))
                     }
@@ -101,6 +104,8 @@ fun NavGraph(
                     scope.launch {
                         val result = repository.joinGroup(inviteUri, claimedGhostPubkey)
                         result.onSuccess { groupId ->
+                            com.peersplit.app.util.RewardsEngine.recordAction(context, xpEarned = 50)
+                            Toast.makeText(context, "🚀 Joined group! +50 SplitPoints (XP)", Toast.LENGTH_SHORT).show()
                             navController.popBackStack()
                             navController.navigate(Screen.GroupDetail.createRoute(groupId))
                         }.onFailure {
@@ -169,6 +174,7 @@ fun NavGraph(
             route = Screen.AddExpense.route,
             arguments = listOf(navArgument("groupId") { type = NavType.StringType })
         ) { backStackEntry ->
+            val context = LocalContext.current
             val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
             val addExpenseViewModel = viewModel { AddExpenseViewModel(groupId) }
             val groupDetail by addExpenseViewModel.groupDetail.collectAsState()
@@ -179,6 +185,16 @@ fun NavGraph(
                 isSubmitting = isSubmitting,
                 onBackClick = { navController.popBackStack() },
                 onSubmitExpense = { desc, amount, currency, payer, splits, category, splitType, note, payers ->
+                    val myPubkey = com.peersplit.app.crypto.KeyManager.getOrCreateIdentity(context).publicKeyHex
+                    val userPaid = payer == myPubkey || payers.any { it.userPubkey == myPubkey && it.amount > 0 }
+                    val xp = if (userPaid) 45 else 25
+                    com.peersplit.app.util.RewardsEngine.recordAction(
+                        context = context,
+                        xpEarned = xp,
+                        isExpense = true,
+                        userPaidBill = userPaid
+                    )
+                    Toast.makeText(context, "⚡ Expense logged! +$xp SplitPoints (XP)", Toast.LENGTH_SHORT).show()
                     addExpenseViewModel.submitExpense(desc, amount, currency, payer, splits, category, splitType, note, payers)
                     navController.popBackStack()
                 }
@@ -194,6 +210,7 @@ fun NavGraph(
                 navArgument("amount") { type = NavType.StringType; defaultValue = ""; nullable = true }
             )
         ) { backStackEntry ->
+            val context = LocalContext.current
             val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
             val initialPayer = backStackEntry.arguments?.getString("payer")?.takeIf { it.isNotBlank() }
             val initialPayee = backStackEntry.arguments?.getString("payee")?.takeIf { it.isNotBlank() }
@@ -213,6 +230,12 @@ fun NavGraph(
                 onRecordSettlement = { payer, payee, amount, currency ->
                     scope.launch {
                         repository.recordSettlement(groupId, payer, payee, amount, currency)
+                        com.peersplit.app.util.RewardsEngine.recordAction(
+                            context = context,
+                            xpEarned = 100,
+                            isSettlement = true
+                        )
+                        Toast.makeText(context, "🏆 Debt settled! +100 SplitPoints (XP)", Toast.LENGTH_SHORT).show()
                         navController.popBackStack()
                     }
                 }

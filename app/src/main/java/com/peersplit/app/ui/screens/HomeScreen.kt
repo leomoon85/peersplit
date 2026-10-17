@@ -48,9 +48,13 @@ import com.peersplit.app.data.model.Group
 import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
+import com.peersplit.app.ui.theme.ThemeManager
+import com.peersplit.app.ui.theme.ThemeMode
 import com.peersplit.app.ui.viewmodel.HomeUiState
 import com.peersplit.app.util.CurrencyUtil
 import com.peersplit.app.util.NameUtil
+import com.peersplit.app.util.RewardProfile
+import com.peersplit.app.util.RewardsEngine
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -83,10 +87,32 @@ fun HomeScreen(
 
     var groupToDelete by remember { mutableStateOf<Group?>(null) }
     var showArchivedSection by remember { mutableStateOf(false) }
+    var showRewardsSheet by remember { mutableStateOf(false) }
+    var showThemeMenu by remember { mutableStateOf(false) }
 
-    // Start-up enter animation trigger
+    val rewardsVersion by RewardsEngine.version.collectAsState()
+    val currentThemeMode by ThemeManager.themeMode.collectAsState()
+
+    val allGroupsCount = uiState.visibleGroups.size + uiState.archivedGroups.size + uiState.secretGroups.size
+    val totalBlocksCount = remember(uiState.visibleGroups, uiState.archivedGroups, uiState.secretGroups) {
+        (uiState.visibleGroups + uiState.archivedGroups + uiState.secretGroups).sumOf { it.blockCount.toInt() }
+    }
+    val allSquaredUp = remember(uiState.visibleGroups) {
+        uiState.visibleGroups.isNotEmpty() && uiState.visibleGroups.all { kotlin.math.abs(it.userNetBalance) < 0.01 }
+    }
+    val rewardProfile = remember(rewardsVersion, allGroupsCount, totalBlocksCount, allSquaredUp) {
+        RewardsEngine.getRewardProfile(
+            context = context,
+            groupsCount = allGroupsCount,
+            totalBlocksCount = totalBlocksCount,
+            allBalancesSquaredUp = allSquaredUp
+        )
+    }
+
+    // Start-up enter animation trigger & daily streak touch
     var isVisible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
+        RewardsEngine.touchDailyVisit(context)
         isVisible = true
     }
 
@@ -139,6 +165,55 @@ fun HomeScreen(
                     val userInitials = remember(identityVersion) {
                         NameUtil.getInitials(KeyManager.getOrCreateIdentity(context).displayName)
                     }
+
+                    // Gamified XP & Streak Pill in TopBar
+                    Surface(
+                        onClick = { showRewardsSheet = true },
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                        modifier = Modifier.padding(end = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "🔥${rewardProfile.streakDays}d • ⚡${rewardProfile.totalXp} XP",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+
+                    // 1-Tap Theme Mode Selector (Default: System Theme, switchable to Light or Dark)
+                    Box {
+                        IconButton(onClick = { showThemeMenu = true }) {
+                            Text(currentThemeMode.iconEmoji, fontSize = 16.sp)
+                        }
+                        DropdownMenu(
+                            expanded = showThemeMenu,
+                            onDismissRequest = { showThemeMenu = false }
+                        ) {
+                            ThemeMode.entries.forEach { mode ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            "${mode.iconEmoji}  ${mode.title}",
+                                            fontWeight = if (currentThemeMode == mode) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    },
+                                    onClick = {
+                                        ThemeManager.setThemeMode(context, mode)
+                                        showThemeMenu = false
+                                        Toast.makeText(context, "Theme set to ${mode.title}", Toast.LENGTH_SHORT).show()
+                                    }
+                                )
+                            }
+                        }
+                    }
+
                     if (uiState.secretGroups.isNotEmpty() || uiState.isSecretVaultUnlocked) {
                         IconButton(onClick = {
                             if (uiState.isSecretVaultUnlocked) {
@@ -212,6 +287,13 @@ fun HomeScreen(
                 item {
                     Spacer(modifier = Modifier.height(4.dp))
                     TotalBalanceCard(uiState)
+                }
+
+                item {
+                    SplitPointsProgressCard(
+                        rewardProfile = rewardProfile,
+                        onClick = { showRewardsSheet = true }
+                    )
                 }
 
                 // Secret Vault Section (Visible only when unlocked)
@@ -536,6 +618,13 @@ fun HomeScreen(
             }
         )
     }
+
+    if (showRewardsSheet) {
+        RewardsBottomSheet(
+            rewardProfile = rewardProfile,
+            onDismiss = { showRewardsSheet = false }
+        )
+    }
 }
 
 @Composable
@@ -807,3 +896,234 @@ fun EmptyGroupsCard(onCreateGroup: () -> Unit, onJoinGroup: () -> Unit) {
         }
     }
 }
+
+@Composable
+fun SplitPointsProgressCard(
+    rewardProfile: RewardProfile,
+    onClick: () -> Unit
+) {
+    val unlockedCount = rewardProfile.unlockedBadgesCount
+    val totalBadges = rewardProfile.badges.size
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+        ),
+        border = BorderStroke(
+            1.dp,
+            Brush.horizontalGradient(
+                listOf(
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                    BlockchainAccent.copy(alpha = 0.35f)
+                )
+            )
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(rewardProfile.levelEmoji, fontSize = 20.sp)
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Lv.${rewardProfile.level} • ${rewardProfile.levelTitle}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                "🔥 ${rewardProfile.streakDays}d",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Text(
+                            "$unlockedCount/$totalBadges Badges Unlocked • Tap for rewards",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        "⚡ ${rewardProfile.totalXp} XP",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "Next: ${rewardProfile.nextLevelXp} XP",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            LinearProgressIndicator(
+                progress = { rewardProfile.levelProgress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(7.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RewardsBottomSheet(
+    rewardProfile: RewardProfile,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(rewardProfile.levelEmoji, fontSize = 28.sp)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            "Level ${rewardProfile.level}: ${rewardProfile.levelTitle}",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "⚡ ${rewardProfile.totalXp} SplitPoints XP  •  🔥 ${rewardProfile.streakDays} Day Streak",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            LinearProgressIndicator(
+                progress = { rewardProfile.levelProgress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                "${(rewardProfile.nextLevelXp - rewardProfile.totalXp).coerceAtLeast(0)} XP to next level • Earn +25 XP per split, +45 XP for paying the bill, +100 XP for settling debts!",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                "ACHIEVEMENT BADGES",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                letterSpacing = 1.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 360.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(rewardProfile.badges) { badge ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (badge.isUnlocked) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                            }
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            if (badge.isUnlocked) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (badge.isUnlocked) badge.emoji else "🔒",
+                                    fontSize = 22.sp
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        badge.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (badge.isUnlocked) MaterialTheme.colorScheme.onSurface
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        "${badge.description} (${badge.progressText})",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Text(
+                                text = if (badge.isUnlocked) "Unlocked ✓" else "+${badge.xpReward} XP",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (badge.isUnlocked) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

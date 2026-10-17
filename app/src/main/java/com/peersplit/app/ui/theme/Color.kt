@@ -15,6 +15,10 @@ val SurfaceDark = Color(0xFF121816)
 val BackgroundDark = Color(0xFF0D1110)
 val CardDark = Color(0xFF1A2220)
 
+val SurfaceLight = Color(0xFFFFFFFF)
+val BackgroundLight = Color(0xFFF8FAFC)
+val CardLight = Color(0xFFF1F5F9)
+
 val BalancePositive = Color(0xFF10B981)
 val BalanceNegative = Color(0xFFEF4444)
 val BalanceNeutral = Color(0xFF94A3B8)

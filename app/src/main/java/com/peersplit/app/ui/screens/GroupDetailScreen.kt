@@ -1184,10 +1184,17 @@ fun BalancesAndDebtsTab(
             }
         }
 
+        val mvpPubkey = groupDetail.expenses
+            .filter { !it.isVoided }
+            .groupBy { it.payerPubkey }
+            .maxByOrNull { entry -> entry.value.sumOf { exp -> exp.totalAmount } }
+            ?.key
+
         items(groupDetail.members) { member ->
             MemberBalanceRow(
                 member = member,
                 currency = groupDetail.group.currency,
+                isMvp = (mvpPubkey != null && member.pubkey == mvpPubkey && groupDetail.members.size > 1),
                 onClick = { onEditMemberUpi(member) }
             )
         }
@@ -1202,6 +1209,7 @@ fun BalancesAndDebtsTab(
 fun MemberBalanceRow(
     member: Member,
     currency: String = "INR",
+    isMvp: Boolean = false,
     onClick: () -> Unit = {}
 ) {
     Card(
@@ -1233,11 +1241,28 @@ fun MemberBalanceRow(
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
-                    Text(
-                        text = if (member.isCurrentUser) "${member.displayName} (You)" else member.displayName,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = if (member.isCurrentUser) "${member.displayName} (You)" else member.displayName,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (isMvp) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "👑 MVP",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .background(
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                     val hasPhone = !member.phone.isNullOrBlank()
                     val hasUpi = !member.upiId.isNullOrBlank()
                     if (hasPhone || hasUpi) {
