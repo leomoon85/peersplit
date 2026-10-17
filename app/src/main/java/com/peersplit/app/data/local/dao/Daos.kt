@@ -95,6 +95,12 @@ interface BlockDao {
     @Query("SELECT COUNT(*) FROM blocks")
     fun getAllBlocksCountFlow(): Flow<Long>
 
+    @Query("SELECT * FROM blocks WHERE isSynced = 0 ORDER BY timestamp ASC")
+    suspend fun getUnsyncedBlocksSync(): List<BlockEntity>
+
+    @Query("UPDATE blocks SET isSynced = 1 WHERE blockHash = :blockHash")
+    suspend fun markBlockSynced(blockHash: String)
+
     @Query("DELETE FROM blocks WHERE groupId = :groupId AND `index` >= :fromIndex")
     suspend fun deleteBlocksFromIndex(groupId: String, fromIndex: Long)
 

@@ -2,8 +2,10 @@ package com.peersplit.app.network.sync
 
 import android.content.Context
 import android.util.Log
+import androidx.room.withTransaction
 import com.peersplit.app.blockchain.Block
 import com.peersplit.app.blockchain.BlockType
+import com.peersplit.app.blockchain.BlockchainEngine
 import com.peersplit.app.blockchain.ExpensePayload
 import com.peersplit.app.blockchain.ExpenseVoidPayload
 import com.peersplit.app.blockchain.GroupGenesisPayload
@@ -14,6 +16,7 @@ import com.peersplit.app.crypto.HashUtil
 import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.data.local.AppDatabase
 import com.peersplit.app.data.local.entity.BlockEntity
+import com.peersplit.app.data.local.entity.GroupEntity
 import com.peersplit.app.data.local.entity.MemberEntity
 import com.peersplit.app.network.nostr.NostrEvent
 import com.peersplit.app.network.nostr.RelayPool
@@ -26,6 +29,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Orchestrates zero-server P2P synchronization.
@@ -39,13 +43,31 @@ class P2PSyncManager(
 ) {
     companion object {
         private const val TAG = "P2PSyncManager"
+        private const val MAX_PENDING_BLOCKS_PER_GROUP = 500
+        private const val MAX_EARLY_GROUPS = 25
+        private const val MAX_EARLY_EVENTS_PER_GROUP = 100
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private val json = Json { ignoreUnknownKeys = true }
     private val pendingBlocks = Collections.synchronizedMap(mutableMapOf<String, MutableList<Block>>())
-    private val earlyEvents = Collections.synchronizedMap(mutableMapOf<String, MutableList<NostrEvent>>())
+    private val earlyEvents = Collections.synchronizedMap(
+        object : LinkedHashMap<String, MutableList<NostrEvent>>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MutableList<NostrEvent>>?): Boolean {
+                return size > MAX_EARLY_GROUPS
+            }
+        }
+    )
+    private val eventIdToBlockHash = ConcurrentHashMap<String, String>()
     private val syncMutex = Mutex()
+
+    /**
+     * Acquires the ledger synchronization lock so local block creation and incoming P2P sync
+     * never race on the current chain tip.
+     */
+    suspend fun <T> withLedgerLock(action: suspend () -> T): T = syncMutex.withLock {
+        action()
+    }
 
     fun initialize() {
         relayPool.connectAll()
@@ -57,7 +79,21 @@ class P2PSyncManager(
             }
         }
 
-        // Subscribe to all currently stored groups (without re-encrypting/broadcasting full chains on cold start)
+        // Listen for relay OK acknowledgments to mark durable outbox blocks as synced
+        scope.launch {
+            relayPool.ackedEventIds.collect { eventId ->
+                val blockHash = eventIdToBlockHash.remove(eventId)
+                if (!blockHash.isNullOrBlank()) {
+                    try {
+                        database.blockDao().markBlockSynced(blockHash)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to mark block synced for ack $eventId: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        // Subscribe to all currently stored groups and flush any unsynced outbox blocks
         scope.launch {
             try {
                 val groups = database.groupDao().getAllGroups().first()
@@ -65,8 +101,29 @@ class P2PSyncManager(
                     Log.d(TAG, "Subscribing to existing group ${group.id}")
                     relayPool.subscribeGroup(group.id)
                 }
+                flushUnsyncedBlocks()
             } catch (e: Exception) {
                 Log.e(TAG, "Error subscribing to groups: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Flushes any locally created blocks that have not yet been acknowledged by a relay.
+     */
+    fun flushUnsyncedBlocks() {
+        scope.launch {
+            try {
+                val unsynced = database.blockDao().getUnsyncedBlocksSync()
+                if (unsynced.isEmpty()) return@launch
+                val groupsById = database.groupDao().getGroupsSync().associateBy { it.id }
+                for (entity in unsynced) {
+                    val group = groupsById[entity.groupId] ?: continue
+                    broadcastBlock(entity.toDomainBlock(), group.groupKeyBase64)
+                }
+                Log.d(TAG, "Flushed ${unsynced.size} unsynced block(s) from durable outbox")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error flushing unsynced blocks: ${e.message}")
             }
         }
     }
@@ -97,6 +154,8 @@ class P2PSyncManager(
             relayPool.subscribeGroup(groupId)
             if (broadcastChain) {
                 broadcastGroupChain(groupId)
+            } else {
+                flushUnsyncedBlocks()
             }
             drainPendingBlocks(groupId)
         }
@@ -117,6 +176,9 @@ class P2PSyncManager(
                         broadcastGroupChain(group.id)
                     }
                     drainPendingBlocks(group.id)
+                }
+                if (!broadcastChains) {
+                    flushUnsyncedBlocks()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in syncAllGroupsNow: ${e.message}")
@@ -170,7 +232,15 @@ class P2PSyncManager(
                     content = encryptedContent
                 )
 
-                relayPool.broadcast(event)
+                if (eventIdToBlockHash.size > 2048) {
+                    eventIdToBlockHash.clear()
+                }
+                eventIdToBlockHash[event.id] = block.blockHash
+
+                val published = relayPool.broadcast(event)
+                if (published) {
+                    database.blockDao().markBlockSynced(block.blockHash)
+                }
                 Log.d(TAG, "Broadcasted block #${block.index} (${block.blockType}) for group ${block.groupId}")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to broadcast block: ${e.message}", e)
@@ -180,18 +250,27 @@ class P2PSyncManager(
 
     private suspend fun handleIncomingEvent(event: NostrEvent) {
         try {
-            // Find groupId tag from either "g" or "t" ("peersplit_<groupId>")
+            // 1. Verify outer Nostr event envelope integrity & signature first
+            if (!event.verify()) {
+                Log.w(TAG, "Rejected incoming NostrEvent ${event.id.take(8)}: invalid envelope signature or id")
+                return
+            }
+
+            // 2. Find groupId tag from either "g" or "t" ("peersplit_<groupId>")
             val groupId = event.tags.firstOrNull { it.size >= 2 && it[0] == "g" }?.get(1)
                 ?: event.tags.firstOrNull { it.size >= 2 && it[0] == "t" && it[1].startsWith("peersplit_") }
                     ?.get(1)?.removePrefix("peersplit_")
                 ?: return
 
-            // Look up group encryption key locally
+            // 3. Look up group encryption key locally
             val groupEntity = database.groupDao().getGroupByIdSync(groupId)
             if (groupEntity == null) {
                 synchronized(earlyEvents) {
                     val list = earlyEvents.getOrPut(groupId) { mutableListOf() }
                     if (list.none { it.id == event.id }) {
+                        if (list.size >= MAX_EARLY_EVENTS_PER_GROUP) {
+                            list.removeAt(0)
+                        }
                         list.add(event)
                     }
                 }
@@ -199,20 +278,31 @@ class P2PSyncManager(
             }
             val groupKey = EncryptionUtil.keyFromBase64(groupEntity.groupKeyBase64)
 
-            // Decrypt block payload
+            // 4. Decrypt block payload
             val blockJson = EncryptionUtil.decryptString(event.content, groupKey)
             val block = json.decodeFromString(Block.serializer(), blockJson)
 
-            // Cryptographic verification
+            // 5. Enforce cross-group replay protection, cryptographic integrity, and domain payload schema
+            if (block.groupId != groupId) {
+                Log.w(TAG, "Rejected incoming block #${block.index}: groupId mismatch (${block.groupId} != $groupId)")
+                return
+            }
             if (!block.verifyIntegrity()) {
                 Log.w(TAG, "Rejected incoming block #${block.index}: invalid signature or hash")
                 return
             }
+            if (!BlockchainEngine.validateBlockPayload(block)) {
+                Log.w(TAG, "Rejected incoming block #${block.index} (${block.blockType}): invalid domain payload")
+                return
+            }
 
-            // Buffer block and drain chain
+            // 6. Buffer block (with bounded capacity) and drain chain
             synchronized(pendingBlocks) {
                 val list = pendingBlocks.getOrPut(groupId) { mutableListOf() }
                 if (list.none { it.blockHash == block.blockHash }) {
+                    if (list.size >= MAX_PENDING_BLOCKS_PER_GROUP) {
+                        list.removeAt(0)
+                    }
                     list.add(block)
                 }
             }
@@ -221,6 +311,66 @@ class P2PSyncManager(
         } catch (e: Exception) {
             Log.e(TAG, "Error handling incoming peer event: ${e.message}", e)
         }
+    }
+
+    /**
+     * Verifies that the block's chain signer and origin author are authorized members of the group.
+     */
+    fun isAuthorizedBlockSigner(
+        block: Block,
+        groupEntity: GroupEntity,
+        knownMemberPubkeys: Set<String>
+    ): Boolean {
+        if (block.blockType == BlockType.GENESIS || block.index == 0L) {
+            return block.creatorPubkey == groupEntity.creatorPubkey &&
+                (block.originPubkey.isNullOrBlank() || block.originPubkey == groupEntity.creatorPubkey)
+        }
+
+        val authorizedSet = knownMemberPubkeys + groupEntity.creatorPubkey
+
+        if (block.blockType == BlockType.MEMBER_JOIN) {
+            val joinPayload = try {
+                json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson)
+            } catch (_: Exception) {
+                return false
+            }
+            val validForJoin = authorizedSet + joinPayload.pubkey
+            val creatorOk = block.creatorPubkey in validForJoin
+            val originOk = block.originPubkey.isNullOrBlank() || block.originPubkey in validForJoin
+            return creatorOk && originOk
+        }
+
+        val creatorOk = block.creatorPubkey in authorizedSet
+        val originOk = block.originPubkey.isNullOrBlank() || block.originPubkey in authorizedSet
+        return creatorOk && originOk
+    }
+
+    /**
+     * Collects all known member pubkeys from both the members table and the canonical block chain.
+     */
+    private suspend fun getKnownMemberPubkeys(groupId: String, existingBlocks: List<Block>): Set<String> {
+        val pubkeys = mutableSetOf<String>()
+        database.memberDao().getMembersForGroupSync(groupId).forEach { pubkeys.add(it.pubkey) }
+        for (b in existingBlocks) {
+            pubkeys.add(b.creatorPubkey)
+            b.originPubkey?.takeIf { it.isNotBlank() }?.let { pubkeys.add(it) }
+            when (b.blockType) {
+                BlockType.GENESIS -> {
+                    try {
+                        val p = json.decodeFromString(GroupGenesisPayload.serializer(), b.payloadJson)
+                        p.initialMembers.forEach { pubkeys.add(it.pubkey) }
+                    } catch (_: Exception) {}
+                }
+                BlockType.MEMBER_JOIN -> {
+                    try {
+                        val p = json.decodeFromString(MemberJoinedPayload.serializer(), b.payloadJson)
+                        pubkeys.add(p.pubkey)
+                    } catch (_: Exception) {}
+                }
+                else -> {}
+            }
+        }
+        return pubkeys
     }
 
     /**
@@ -271,11 +421,16 @@ class P2PSyncManager(
             val existingBlocks = existingEntities.map { it.toDomainBlock() }
             val existingHashes = existingBlocks.map { it.blockHash }.toSet()
             val existingLogicalIds = existingBlocks.map { logicalBlockId(it) }.toSet()
+            val knownMembers = getKnownMemberPubkeys(groupId, existingBlocks)
 
-            // Remove any pending candidates whose exact hash or semantic logical ID is already in our chain
+            // Remove any pending candidates whose exact hash or semantic logical ID is already in our chain,
+            // or whose payload/integrity is invalid
             synchronized(pendingBlocks) {
                 pendingBlocks[groupId]?.removeIf {
-                    it.blockHash in existingHashes || logicalBlockId(it) in existingLogicalIds
+                    it.blockHash in existingHashes ||
+                        logicalBlockId(it) in existingLogicalIds ||
+                        !it.verifyIntegrity() ||
+                        !BlockchainEngine.validateBlockPayload(it)
                 }
             }
 
@@ -293,13 +448,21 @@ class P2PSyncManager(
             var appendedDirect = false
             for (candidate in candidates) {
                 val canAppend = when {
-                    existingBlocks.isEmpty() && candidate.index == 0L -> true
+                    existingBlocks.isEmpty() && candidate.index == 0L && candidate.prevHash == Block.GENESIS_PREV_HASH -> true
                     latest != null && candidate.index == latest.index + 1 && candidate.prevHash == latest.blockHash -> true
                     else -> false
                 }
-                if (canAppend) {
-                    database.blockDao().insertBlock(BlockEntity.fromDomainBlock(candidate, isVerified = true))
-                    processBlockSideEffects(groupId, candidate)
+                if (canAppend && isAuthorizedBlockSigner(candidate, groupEntity, knownMembers)) {
+                    var shouldBroadcastChain = false
+                    database.withTransaction {
+                        database.blockDao().insertBlock(
+                            BlockEntity.fromDomainBlock(candidate, isVerified = true, isSynced = true)
+                        )
+                        shouldBroadcastChain = applyBlockSideEffectsInternal(groupId, candidate)
+                    }
+                    if (shouldBroadcastChain) {
+                        broadcastGroupChain(groupId)
+                    }
                     Log.d(TAG, "Committed block #${candidate.index} (${candidate.blockType}) to group $groupId")
                     synchronized(pendingBlocks) {
                         pendingBlocks[groupId]?.removeIf { it.blockHash == candidate.blockHash }
@@ -307,6 +470,11 @@ class P2PSyncManager(
                     appendedDirect = true
                     progress = true
                     break
+                } else if (canAppend) {
+                    Log.w(TAG, "Dropped unauthorized block #${candidate.index} from ${candidate.creatorPubkey.take(8)}")
+                    synchronized(pendingBlocks) {
+                        pendingBlocks[groupId]?.removeIf { it.blockHash == candidate.blockHash }
+                    }
                 }
             }
             if (appendedDirect) continue
@@ -317,17 +485,27 @@ class P2PSyncManager(
                 if (candidate.index <= 0L) continue
                 val existingAtK = existingBlocks.find { it.index == candidate.index } ?: continue
                 if (candidate.prevHash == existingAtK.prevHash && candidate.blockHash != existingAtK.blockHash) {
+                    if (!isAuthorizedBlockSigner(candidate, groupEntity, knownMembers)) {
+                        synchronized(pendingBlocks) {
+                            pendingBlocks[groupId]?.removeIf { it.blockHash == candidate.blockHash }
+                        }
+                        continue
+                    }
                     if (isPeerCanonicalWinner(candidate, existingAtK)) {
                         // Peer block at index k is earlier/canonical -> rollback local blocks >= k into pendingBlocks
                         val displaced = existingBlocks.filter { it.index >= candidate.index }
-                        database.blockDao().deleteBlocksFromIndex(groupId, candidate.index)
-                        database.blockDao().insertBlock(BlockEntity.fromDomainBlock(candidate, isVerified = true))
-                        processBlockSideEffects(groupId, candidate)
+                        database.withTransaction {
+                            database.blockDao().deleteBlocksFromIndex(groupId, candidate.index)
+                            database.blockDao().insertBlock(
+                                BlockEntity.fromDomainBlock(candidate, isVerified = true, isSynced = true)
+                            )
+                            rebuildGroupMembersFromChain(groupId, groupEntity)
+                        }
                         synchronized(pendingBlocks) {
                             val list = pendingBlocks.getOrPut(groupId) { mutableListOf() }
                             list.removeIf { it.blockHash == candidate.blockHash }
                             for (d in displaced) {
-                                if (list.none { it.blockHash == d.blockHash }) {
+                                if (list.none { it.blockHash == d.blockHash } && list.size < MAX_PENDING_BLOCKS_PER_GROUP) {
                                     list.add(d)
                                 }
                             }
@@ -342,28 +520,48 @@ class P2PSyncManager(
             if (resolvedFork) continue
 
             // Step 3: Remaining candidates in pendingBlocks are valid signed blocks (verified by groupKey + Ed25519)
-            // that were built on a losing/stale branch. Rebase the earliest unmerged block onto the current tip
-            // so zero member joins or expenses are ever lost!
+            // that were built on a losing/stale branch. Rebase the earliest unmerged block onto the current tip,
+            // preserving the original author's pubkey, timestamp, and cryptographic signature!
             if (latest != null) {
                 val nextToRebase = candidates
-                    .filter { it.blockType != BlockType.GENESIS && logicalBlockId(it) !in existingLogicalIds }
+                    .filter {
+                        it.blockType != BlockType.GENESIS &&
+                            logicalBlockId(it) !in existingLogicalIds &&
+                            isAuthorizedBlockSigner(it, groupEntity, knownMembers)
+                    }
                     .minWithOrNull(compareBy<Block> { it.timestamp }.thenBy { it.index }.thenBy { it.blockHash })
 
                 if (nextToRebase != null) {
                     val privKeyHex = KeyManager.getPrivateKeyHex(context)
                     val rebasedTimestamp = maxOf(nextToRebase.timestamp, latest.timestamp + 1)
+                    val preservedOriginPubkey = nextToRebase.originPubkey?.takeIf { it.isNotBlank() }
+                        ?: nextToRebase.creatorPubkey
+                    val preservedOriginTimestamp = if (nextToRebase.originTimestamp > 0L) {
+                        nextToRebase.originTimestamp
+                    } else {
+                        nextToRebase.timestamp
+                    }
+                    val preservedOriginSignature = nextToRebase.originSignature?.takeIf { it.isNotBlank() }
+
                     val rebasedBlock = Block.createAndSign(
                         index = latest.index + 1,
                         groupId = groupId,
                         prevHash = latest.blockHash,
                         timestamp = rebasedTimestamp,
                         creatorPubkey = localIdentity.publicKeyHex,
+                        privateKeyHex = privKeyHex,
                         blockType = nextToRebase.blockType,
                         payloadJson = nextToRebase.payloadJson,
-                        privateKeyHex = privKeyHex
+                        originPubkey = preservedOriginPubkey,
+                        originTimestamp = preservedOriginTimestamp,
+                        originSignature = preservedOriginSignature
                     )
-                    database.blockDao().insertBlock(BlockEntity.fromDomainBlock(rebasedBlock, isVerified = true))
-                    processBlockSideEffects(groupId, rebasedBlock)
+                    database.withTransaction {
+                        database.blockDao().insertBlock(
+                            BlockEntity.fromDomainBlock(rebasedBlock, isVerified = true, isSynced = false)
+                        )
+                        applyBlockSideEffectsInternal(groupId, rebasedBlock)
+                    }
                     synchronized(pendingBlocks) {
                         pendingBlocks[groupId]?.removeIf {
                             it.blockHash == nextToRebase.blockHash || logicalBlockId(it) == logicalBlockId(nextToRebase)
@@ -373,12 +571,53 @@ class P2PSyncManager(
                     broadcastGroupChain(groupId)
                     Log.i(TAG, "Rebased block (${rebasedBlock.blockType}) onto #${rebasedBlock.index} for group $groupId")
                     progress = true
+                } else {
+                    // Drop any remaining candidates that failed authorization or cannot be rebased
+                    synchronized(pendingBlocks) {
+                        pendingBlocks[groupId]?.clear()
+                    }
+                    break
                 }
+            } else {
+                break
             }
         }
     }
 
+    /**
+     * Rebuilds the group's members table deterministically from the canonical block chain after a fork rollback,
+     * preserving any local contact (phone/UPI) enrichments.
+     */
+    private suspend fun rebuildGroupMembersFromChain(groupId: String, groupEntity: GroupEntity) {
+        val previousMembers = database.memberDao().getMembersForGroupSync(groupId).associateBy { it.pubkey }
+        database.memberDao().deleteMembersForGroup(groupId)
+
+        // Ensure group creator is always present as baseline
+        val creatorPrev = previousMembers[groupEntity.creatorPubkey]
+        database.memberDao().insertMember(
+            MemberEntity(
+                groupId = groupId,
+                pubkey = groupEntity.creatorPubkey,
+                displayName = creatorPrev?.displayName ?: "Creator",
+                upiId = creatorPrev?.upiId,
+                phone = creatorPrev?.phone
+            )
+        )
+
+        val canonicalBlocks = database.blockDao().getBlocksForGroupSync(groupId).map { it.toDomainBlock() }
+        for (block in canonicalBlocks) {
+            applyBlockSideEffectsInternal(groupId, block)
+        }
+    }
+
     suspend fun processBlockSideEffects(groupId: String, block: Block) {
+        val shouldBroadcast = applyBlockSideEffectsInternal(groupId, block)
+        if (shouldBroadcast) {
+            broadcastGroupChain(groupId)
+        }
+    }
+
+    private suspend fun applyBlockSideEffectsInternal(groupId: String, block: Block): Boolean {
         when (block.blockType) {
             BlockType.GENESIS -> {
                 val payload = json.decodeFromString(GroupGenesisPayload.serializer(), block.payloadJson)
@@ -394,6 +633,7 @@ class P2PSyncManager(
                     )
                 }
                 Log.d(TAG, "Processed Genesis side effects for group $groupId (${payload.initialMembers.size} members)")
+                return false
             }
             BlockType.MEMBER_JOIN -> {
                 val payload = json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson)
@@ -440,12 +680,11 @@ class P2PSyncManager(
 
                 // When a new peer joins, push our full block chain so they immediately receive all group history
                 val localIdentity = KeyManager.getOrCreateIdentity(context)
-                if (isJoiningRealMember && payload.pubkey != localIdentity.publicKeyHex) {
-                    broadcastGroupChain(groupId)
-                }
+                return isJoiningRealMember && payload.pubkey != localIdentity.publicKeyHex
             }
             else -> {
                 // Expenses and settlements are reflected dynamically from the block ledger queries
+                return false
             }
         }
     }

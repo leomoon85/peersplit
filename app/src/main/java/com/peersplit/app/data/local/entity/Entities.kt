@@ -51,7 +51,11 @@ data class BlockEntity(
     val blockType: String,
     val payloadJson: String,
     val signature: String,
-    val isVerified: Boolean = true
+    val isVerified: Boolean = true,
+    val originPubkey: String? = null,
+    val originTimestamp: Long = 0L,
+    val originSignature: String? = null,
+    val isSynced: Boolean = true
 ) {
     fun toDomainBlock(): Block {
         return Block(
@@ -63,12 +67,19 @@ data class BlockEntity(
             blockType = BlockType.valueOf(blockType),
             payloadJson = payloadJson,
             blockHash = blockHash,
-            signature = signature
+            signature = signature,
+            originPubkey = originPubkey,
+            originTimestamp = originTimestamp,
+            originSignature = originSignature
         )
     }
 
     companion object {
-        fun fromDomainBlock(block: Block, isVerified: Boolean = true): BlockEntity {
+        fun fromDomainBlock(
+            block: Block,
+            isVerified: Boolean = true,
+            isSynced: Boolean = true
+        ): BlockEntity {
             return BlockEntity(
                 blockHash = block.blockHash,
                 index = block.index,
@@ -79,7 +90,11 @@ data class BlockEntity(
                 blockType = block.blockType.name,
                 payloadJson = block.payloadJson,
                 signature = block.signature,
-                isVerified = isVerified
+                isVerified = isVerified,
+                originPubkey = block.originPubkey,
+                originTimestamp = block.originTimestamp,
+                originSignature = block.originSignature,
+                isSynced = isSynced
             )
         }
     }

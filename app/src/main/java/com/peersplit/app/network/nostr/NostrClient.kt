@@ -31,6 +31,7 @@ class NostrClient(
 ) {
     companion object {
         private const val TAG = "NostrClient"
+        private const val MAX_PENDING_EVENTS = 256
 
         fun defaultClient(): OkHttpClient {
             return OkHttpClient.Builder()
@@ -48,13 +49,27 @@ class NostrClient(
 
     // Map of subscriptionId to raw JSON REQ message
     private val activeSubscriptions = Collections.synchronizedMap(mutableMapOf<String, String>())
-    // Queue of pending events to send once connection is established
+    // Bounded queue of pending events to send once connection is established
     private val pendingEvents = Collections.synchronizedList(mutableListOf<NostrEvent>())
 
     private val _eventsFlow = MutableSharedFlow<NostrEvent>(replay = 0, extraBufferCapacity = 64)
     val eventsFlow: SharedFlow<NostrEvent> = _eventsFlow.asSharedFlow()
 
+    private val _acksFlow = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 64)
+    val acksFlow: SharedFlow<String> = _acksFlow.asSharedFlow()
+
     private val json = Json { ignoreUnknownKeys = true }
+
+    private fun enqueuePendingEvent(event: NostrEvent) {
+        synchronized(pendingEvents) {
+            if (pendingEvents.none { it.id == event.id }) {
+                if (pendingEvents.size >= MAX_PENDING_EVENTS) {
+                    pendingEvents.removeAt(0)
+                }
+                pendingEvents.add(event)
+            }
+        }
+    }
 
     fun connect() {
         if (webSocket != null) return
@@ -134,6 +149,11 @@ class NostrClient(
                         val accepted = element.getOrNull(2)?.jsonPrimitive?.content
                         val msg = element.getOrNull(3)?.jsonPrimitive?.content
                         Log.d(TAG, "Relay $relayUrl OK for ${eventId?.take(8)}: accepted=$accepted msg=$msg")
+                        if (!eventId.isNullOrBlank() && accepted.equals("true", ignoreCase = true)) {
+                            scope.launch {
+                                _acksFlow.emit(eventId)
+                            }
+                        }
                     }
                     "NOTICE" -> {
                         val notice = element.getOrNull(1)?.jsonPrimitive?.content
@@ -183,11 +203,7 @@ class NostrClient(
             val msg = "[\"EVENT\",$eventJson]"
             val sent = webSocket?.send(msg) ?: false
             if (!sent) {
-                synchronized(pendingEvents) {
-                    if (pendingEvents.none { it.id == event.id }) {
-                        pendingEvents.add(event)
-                    }
-                }
+                enqueuePendingEvent(event)
                 isConnected = false
                 reconnect()
             } else {
@@ -196,11 +212,7 @@ class NostrClient(
             return sent
         } else {
             // Queue for when socket connects
-            synchronized(pendingEvents) {
-                if (pendingEvents.none { it.id == event.id }) {
-                    pendingEvents.add(event)
-                }
-            }
+            enqueuePendingEvent(event)
             connect()
             Log.d(TAG, "Queued event ${event.id.take(8)} for $relayUrl (waiting for connection)")
             return true

@@ -238,6 +238,9 @@ object BlockchainEngine {
         if (!genesis.verifyIntegrity()) {
             return ValidationResult.Invalid(0, "Genesis block signature or hash integrity failure")
         }
+        if (!validateBlockPayload(genesis)) {
+            return ValidationResult.Invalid(0, "Genesis block payload validation failure")
+        }
 
         // Validate subsequent blocks
         for (i in 1 until chain.size) {
@@ -262,9 +265,64 @@ object BlockchainEngine {
             if (!curr.hasValidSignature()) {
                 return ValidationResult.Invalid(curr.index, "Signature verification failed at index ${curr.index}")
             }
+            if (!validateBlockPayload(curr)) {
+                return ValidationResult.Invalid(curr.index, "Payload validation failed at index ${curr.index}")
+            }
         }
 
         return ValidationResult.Valid
+    }
+
+    /**
+     * Validates the domain-level schema and mathematical invariants of a block's payload.
+     */
+    fun validateBlockPayload(block: Block): Boolean {
+        return try {
+            when (block.blockType) {
+                BlockType.GENESIS -> {
+                    val p = json.decodeFromString(GroupGenesisPayload.serializer(), block.payloadJson)
+                    p.groupId == block.groupId &&
+                        p.groupName.isNotBlank() &&
+                        p.currency.isNotBlank() &&
+                        p.creatorPubkey == block.creatorPubkey &&
+                        p.initialMembers.isNotEmpty()
+                }
+                BlockType.MEMBER_JOIN -> {
+                    val p = json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson)
+                    p.pubkey.isNotBlank() && p.displayName.isNotBlank()
+                }
+                BlockType.EXPENSE -> {
+                    val p = json.decodeFromString(ExpensePayload.serializer(), block.payloadJson)
+                    if (p.expenseId.isBlank() || p.description.isBlank()) return false
+                    if (!p.totalAmount.isFinite() || p.totalAmount <= 0.0) return false
+                    if (p.payerPubkey.isBlank() || p.splits.isEmpty()) return false
+                    if (p.splits.any { it.userPubkey.isBlank() || !it.amount.isFinite() || it.amount < 0.0 }) return false
+                    val splitsSum = p.splits.sumOf { it.amount }
+                    if (kotlin.math.abs(splitsSum - p.totalAmount) > 0.05) return false
+                    if (p.payers.isNotEmpty()) {
+                        if (p.payers.any { it.userPubkey.isBlank() || !it.amount.isFinite() || it.amount < 0.0 }) return false
+                        val payersSum = p.payers.sumOf { it.amount }
+                        if (kotlin.math.abs(payersSum - p.totalAmount) > 0.05) return false
+                    }
+                    true
+                }
+                BlockType.EXPENSE_VOID -> {
+                    val p = json.decodeFromString(ExpenseVoidPayload.serializer(), block.payloadJson)
+                    p.voidId.isNotBlank() && p.targetExpenseId.isNotBlank()
+                }
+                BlockType.SETTLEMENT -> {
+                    val p = json.decodeFromString(SettlementPayload.serializer(), block.payloadJson)
+                    p.settlementId.isNotBlank() &&
+                        p.payerPubkey.isNotBlank() &&
+                        p.payeePubkey.isNotBlank() &&
+                        p.payerPubkey != p.payeePubkey &&
+                        p.amount.isFinite() &&
+                        p.amount > 0.0
+                }
+            }
+        } catch (e: Exception) {
+            false
+        }
     }
 
     /**
@@ -293,6 +351,6 @@ object BlockchainEngine {
         if (newBlock.index != currentTip.index + 1) return false
         if (newBlock.prevHash != currentTip.blockHash) return false
         if (newBlock.groupId != currentTip.groupId) return false
-        return newBlock.verifyIntegrity()
+        return newBlock.verifyIntegrity() && validateBlockPayload(newBlock)
     }
 }

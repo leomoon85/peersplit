@@ -465,31 +465,35 @@ class ExpenseRepository(
 
         val pinHash = if (!secretPin.isNullOrBlank()) KeyManager.hashSecretPin(secretPin) else null
 
-        // Store Group and Genesis Block locally
-        database.groupDao().insertGroup(
-            GroupEntity(
-                id = groupId,
-                name = name.trim(),
-                currency = currency.trim(),
-                creatorPubkey = identity.publicKeyHex,
-                groupKeyBase64 = groupKeyBase64,
-                isSecret = isSecret,
-                secretPinHash = pinHash,
-                isPersonalSolo = isPersonalSolo,
-                monthlyBudget = monthlyBudget
+        // Store Group and Genesis Block locally under ledger lock
+        syncManager.withLedgerLock {
+            database.groupDao().insertGroup(
+                GroupEntity(
+                    id = groupId,
+                    name = name.trim(),
+                    currency = currency.trim(),
+                    creatorPubkey = identity.publicKeyHex,
+                    groupKeyBase64 = groupKeyBase64,
+                    isSecret = isSecret,
+                    secretPinHash = pinHash,
+                    isPersonalSolo = isPersonalSolo,
+                    monthlyBudget = monthlyBudget
+                )
             )
-        )
 
-        database.blockDao().insertBlock(BlockEntity.fromDomainBlock(genesisBlock, isVerified = true))
-        database.memberDao().insertMember(
-            MemberEntity(
-                groupId = groupId,
-                pubkey = identity.publicKeyHex,
-                displayName = identity.displayName,
-                upiId = identity.upiId,
-                phone = identity.phone
+            database.blockDao().insertBlock(
+                BlockEntity.fromDomainBlock(genesisBlock, isVerified = true, isSynced = false)
             )
-        )
+            database.memberDao().insertMember(
+                MemberEntity(
+                    groupId = groupId,
+                    pubkey = identity.publicKeyHex,
+                    displayName = identity.displayName,
+                    upiId = identity.upiId,
+                    phone = identity.phone
+                )
+            )
+        }
 
         // Broadcast to P2P relay network
         syncManager.monitorGroup(groupId)
@@ -524,7 +528,6 @@ class ExpenseRepository(
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
-        val latestBlock = database.blockDao().getLatestBlockForGroup(groupId)?.toDomainBlock() ?: return
 
         val cleanName = displayName.trim()
         val cleanPhone = KeyManager.normalizePhone(phone).takeIf { it.isNotBlank() }
@@ -532,28 +535,37 @@ class ExpenseRepository(
         // Generate deterministic 64-char hex pubkey identifier for offline member
         val ghostPubkey = HashUtil.sha256Hex("ghost:$groupId:${cleanName.lowercase()}")
 
-        database.memberDao().insertMember(
-            MemberEntity(
+        val joinBlock = syncManager.withLedgerLock {
+            val latestBlock = database.blockDao().getLatestBlockForGroup(groupId)?.toDomainBlock()
+                ?: return@withLedgerLock null
+
+            database.memberDao().insertMember(
+                MemberEntity(
+                    groupId = groupId,
+                    pubkey = ghostPubkey,
+                    displayName = cleanName,
+                    upiId = cleanUpi,
+                    phone = cleanPhone
+                )
+            )
+
+            val block = BlockchainEngine.createMemberJoinBlock(
                 groupId = groupId,
-                pubkey = ghostPubkey,
-                displayName = cleanName,
+                prevBlock = latestBlock,
+                newMemberPubkey = ghostPubkey,
+                newMemberName = cleanName,
+                authorPubkey = identity.publicKeyHex,
+                authorPrivateKeyHex = privKeyHex,
                 upiId = cleanUpi,
                 phone = cleanPhone
             )
-        )
 
-        val joinBlock = BlockchainEngine.createMemberJoinBlock(
-            groupId = groupId,
-            prevBlock = latestBlock,
-            newMemberPubkey = ghostPubkey,
-            newMemberName = cleanName,
-            authorPubkey = identity.publicKeyHex,
-            authorPrivateKeyHex = privKeyHex,
-            upiId = cleanUpi,
-            phone = cleanPhone
-        )
+            database.blockDao().insertBlock(
+                BlockEntity.fromDomainBlock(block, isVerified = true, isSynced = false)
+            )
+            block
+        } ?: return
 
-        database.blockDao().insertBlock(BlockEntity.fromDomainBlock(joinBlock, isVerified = true))
         syncManager.broadcastBlock(joinBlock, groupEntity.groupKeyBase64)
     }
 
@@ -619,28 +631,34 @@ class ExpenseRepository(
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withContext
 
-        val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withContext
-        val prevBlock = latestBlockEntity.toDomainBlock()
+        val expenseBlock = syncManager.withLedgerLock {
+            val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
+            val prevBlock = latestBlockEntity.toDomainBlock()
 
-        val expenseBlock = BlockchainEngine.createExpenseBlock(
-            groupId = groupId,
-            prevBlock = prevBlock,
-            description = description,
-            totalAmount = amount,
-            currency = currency,
-            payerPubkey = payerPubkey,
-            splits = splits,
-            category = category,
-            note = note,
-            authorPubkey = identity.publicKeyHex,
-            authorPrivateKeyHex = privKeyHex,
-            splitType = splitType,
-            payers = payers,
-            expenseDateMillis = expenseDateMillis,
-            editedFromExpenseId = editedFromExpenseId
-        )
+            val block = BlockchainEngine.createExpenseBlock(
+                groupId = groupId,
+                prevBlock = prevBlock,
+                description = description,
+                totalAmount = amount,
+                currency = currency,
+                payerPubkey = payerPubkey,
+                splits = splits,
+                category = category,
+                note = note,
+                authorPubkey = identity.publicKeyHex,
+                authorPrivateKeyHex = privKeyHex,
+                splitType = splitType,
+                payers = payers,
+                expenseDateMillis = expenseDateMillis,
+                editedFromExpenseId = editedFromExpenseId
+            )
 
-        database.blockDao().insertBlock(BlockEntity.fromDomainBlock(expenseBlock, isVerified = true))
+            database.blockDao().insertBlock(
+                BlockEntity.fromDomainBlock(block, isVerified = true, isSynced = false)
+            )
+            block
+        } ?: return@withContext
+
         syncManager.broadcastBlock(expenseBlock, groupEntity.groupKeyBase64)
     }
 
@@ -666,46 +684,51 @@ class ExpenseRepository(
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withContext
-        val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withContext
-        val prevBlock = latestBlockEntity.toDomainBlock()
 
-        // 1. Mint Void Block for original expense
-        val voidBlock = BlockchainEngine.createExpenseVoidBlock(
-            groupId = groupId,
-            prevBlock = prevBlock,
-            targetExpenseId = originalExpenseId,
-            targetDescription = originalDescription,
-            reason = "Edited & replaced",
-            authorPubkey = identity.publicKeyHex,
-            authorPrivateKeyHex = privKeyHex
-        )
+        val (voidBlock, newExpenseBlock) = syncManager.withLedgerLock {
+            val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
+            val prevBlock = latestBlockEntity.toDomainBlock()
 
-        // 2. Mint Replacement Expense Block chained directly on top of voidBlock
-        val newExpenseBlock = BlockchainEngine.createExpenseBlock(
-            groupId = groupId,
-            prevBlock = voidBlock,
-            description = newDescription,
-            totalAmount = newAmount,
-            currency = currency,
-            payerPubkey = payerPubkey,
-            splits = splits,
-            category = category,
-            note = note,
-            authorPubkey = identity.publicKeyHex,
-            authorPrivateKeyHex = privKeyHex,
-            splitType = splitType,
-            payers = payers,
-            expenseDateMillis = expenseDateMillis,
-            editedFromExpenseId = originalExpenseId
-        )
-
-        // Insert both blocks atomically in a single batch so UI never sees an intermediate "cancelled" state
-        database.blockDao().insertBlocks(
-            listOf(
-                BlockEntity.fromDomainBlock(voidBlock, isVerified = true),
-                BlockEntity.fromDomainBlock(newExpenseBlock, isVerified = true)
+            // 1. Mint Void Block for original expense
+            val vBlock = BlockchainEngine.createExpenseVoidBlock(
+                groupId = groupId,
+                prevBlock = prevBlock,
+                targetExpenseId = originalExpenseId,
+                targetDescription = originalDescription,
+                reason = "Edited & replaced",
+                authorPubkey = identity.publicKeyHex,
+                authorPrivateKeyHex = privKeyHex
             )
-        )
+
+            // 2. Mint Replacement Expense Block chained directly on top of voidBlock
+            val expBlock = BlockchainEngine.createExpenseBlock(
+                groupId = groupId,
+                prevBlock = vBlock,
+                description = newDescription,
+                totalAmount = newAmount,
+                currency = currency,
+                payerPubkey = payerPubkey,
+                splits = splits,
+                category = category,
+                note = note,
+                authorPubkey = identity.publicKeyHex,
+                authorPrivateKeyHex = privKeyHex,
+                splitType = splitType,
+                payers = payers,
+                expenseDateMillis = expenseDateMillis,
+                editedFromExpenseId = originalExpenseId
+            )
+
+            // Insert both blocks atomically in a single batch so UI never sees an intermediate "cancelled" state
+            database.blockDao().insertBlocks(
+                listOf(
+                    BlockEntity.fromDomainBlock(vBlock, isVerified = true, isSynced = false),
+                    BlockEntity.fromDomainBlock(expBlock, isVerified = true, isSynced = false)
+                )
+            )
+            Pair(vBlock, expBlock)
+        } ?: return@withContext
+
         syncManager.broadcastBlock(voidBlock, groupEntity.groupKeyBase64)
         syncManager.broadcastBlock(newExpenseBlock, groupEntity.groupKeyBase64)
     }
@@ -723,20 +746,26 @@ class ExpenseRepository(
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
 
-        val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return
-        val prevBlock = latestBlockEntity.toDomainBlock()
+        val voidBlock = syncManager.withLedgerLock {
+            val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
+            val prevBlock = latestBlockEntity.toDomainBlock()
 
-        val voidBlock = BlockchainEngine.createExpenseVoidBlock(
-            groupId = groupId,
-            prevBlock = prevBlock,
-            targetExpenseId = targetExpenseId,
-            targetDescription = targetDescription,
-            reason = reason,
-            authorPubkey = identity.publicKeyHex,
-            authorPrivateKeyHex = privKeyHex
-        )
+            val block = BlockchainEngine.createExpenseVoidBlock(
+                groupId = groupId,
+                prevBlock = prevBlock,
+                targetExpenseId = targetExpenseId,
+                targetDescription = targetDescription,
+                reason = reason,
+                authorPubkey = identity.publicKeyHex,
+                authorPrivateKeyHex = privKeyHex
+            )
 
-        database.blockDao().insertBlock(BlockEntity.fromDomainBlock(voidBlock, isVerified = true))
+            database.blockDao().insertBlock(
+                BlockEntity.fromDomainBlock(block, isVerified = true, isSynced = false)
+            )
+            block
+        } ?: return
+
         syncManager.broadcastBlock(voidBlock, groupEntity.groupKeyBase64)
     }
 
@@ -754,22 +783,28 @@ class ExpenseRepository(
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
 
-        val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return
-        val prevBlock = latestBlockEntity.toDomainBlock()
+        val settlementBlock = syncManager.withLedgerLock {
+            val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
+            val prevBlock = latestBlockEntity.toDomainBlock()
 
-        val settlementBlock = BlockchainEngine.createSettlementBlock(
-            groupId = groupId,
-            prevBlock = prevBlock,
-            payerPubkey = payerPubkey,
-            payeePubkey = payeePubkey,
-            amount = amount,
-            currency = currency,
-            note = "Direct Settlement",
-            authorPubkey = identity.publicKeyHex,
-            authorPrivateKeyHex = privKeyHex
-        )
+            val block = BlockchainEngine.createSettlementBlock(
+                groupId = groupId,
+                prevBlock = prevBlock,
+                payerPubkey = payerPubkey,
+                payeePubkey = payeePubkey,
+                amount = amount,
+                currency = currency,
+                note = "Direct Settlement",
+                authorPubkey = identity.publicKeyHex,
+                authorPrivateKeyHex = privKeyHex
+            )
 
-        database.blockDao().insertBlock(BlockEntity.fromDomainBlock(settlementBlock, isVerified = true))
+            database.blockDao().insertBlock(
+                BlockEntity.fromDomainBlock(block, isVerified = true, isSynced = false)
+            )
+            block
+        } ?: return
+
         syncManager.broadcastBlock(settlementBlock, groupEntity.groupKeyBase64)
     }
 
@@ -917,30 +952,11 @@ class ExpenseRepository(
     ): Result<String> {
         return try {
             val inviteData = decodeInviteData(inviteUri)
-
-            val existing = database.groupDao().getGroupByIdSync(inviteData.groupId)
-            if (existing == null) {
-                database.groupDao().insertGroup(
-                    GroupEntity(
-                        id = inviteData.groupId,
-                        name = inviteData.groupName,
-                        currency = inviteData.currency,
-                        creatorPubkey = inviteData.creatorPubkey,
-                        groupKeyBase64 = inviteData.groupKeyBase64
-                    )
-                )
+            require(inviteData.groupId.isNotBlank() && inviteData.groupKeyBase64.isNotBlank()) {
+                "Invalid invite credentials"
             }
 
-            // 1. Insert Creator Member first
-            database.memberDao().insertMember(
-                MemberEntity(
-                    groupId = inviteData.groupId,
-                    pubkey = inviteData.creatorPubkey,
-                    displayName = inviteData.creatorDisplayName
-                )
-            )
-
-            // 2. Import all blocks included in the invite link (Genesis, Member Joins, Expenses, Settlements)
+            // 1. Parse and validate all blocks included in the invite link
             val rawBlockJsonList = if (inviteData.blocksJson.isNotEmpty()) {
                 inviteData.blocksJson
             } else {
@@ -949,107 +965,144 @@ class ExpenseRepository(
 
             val importedBlocks = rawBlockJsonList.mapNotNull {
                 try { json.decodeFromString(Block.serializer(), it) } catch (_: Exception) { null }
+            }.filter { block ->
+                block.groupId == inviteData.groupId &&
+                    block.verifyIntegrity() &&
+                    BlockchainEngine.validateBlockPayload(block) &&
+                    (block.index != 0L || (block.prevHash == Block.GENESIS_PREV_HASH && block.creatorPubkey == inviteData.creatorPubkey))
             }.sortedBy { it.index }
 
-            for (block in importedBlocks) {
-                if (block.verifyIntegrity()) {
-                    database.blockDao().insertBlock(BlockEntity.fromDomainBlock(block, isVerified = true))
-                    syncManager.processBlockSideEffects(inviteData.groupId, block)
-                }
-            }
-
-            // 3. Determine if this phone should claim/assume an offline member added by the creator
             val identity = KeyManager.getOrCreateIdentity(context)
             val privKeyHex = KeyManager.getPrivateKeyHex(context)
 
-            val allCurrentBlocks = database.blockDao().getBlocksForGroupSync(inviteData.groupId).map { it.toDomainBlock() }
-            val alreadyClaimedGhosts = allCurrentBlocks
-                .filter { it.blockType == BlockType.MEMBER_JOIN }
-                .mapNotNull {
-                    try {
-                        json.decodeFromString(MemberJoinedPayload.serializer(), it.payloadJson).claimedGhostPubkey
-                    } catch (_: Exception) { null }
+            val mintedJoinBlock = syncManager.withLedgerLock {
+                val existing = database.groupDao().getGroupByIdSync(inviteData.groupId)
+                if (existing == null) {
+                    database.groupDao().insertGroup(
+                        GroupEntity(
+                            id = inviteData.groupId,
+                            name = inviteData.groupName,
+                            currency = inviteData.currency,
+                            creatorPubkey = inviteData.creatorPubkey,
+                            groupKeyBase64 = inviteData.groupKeyBase64
+                        )
+                    )
                 }
-                .toSet()
 
-            val existingMembers = database.memberDao().getMembersForGroupSync(inviteData.groupId)
-            val unclaimedGhosts = existingMembers.filter {
-                isGhostPubkey(inviteData.groupId, it.pubkey, it.displayName) && it.pubkey !in alreadyClaimedGhosts
-            }
-
-            val normMyPhone = KeyManager.normalizePhone(identity.phone)
-            val ghostMatch: MemberEntity? = when {
-                explicitClaimGhostPubkey == "NONE" -> null
-                !explicitClaimGhostPubkey.isNullOrBlank() -> unclaimedGhosts.firstOrNull { it.pubkey == explicitClaimGhostPubkey }
-                else -> {
-                    // 1. Match by normalized 10-digit phone number first
-                    val byPhone = if (normMyPhone.length == 10) {
-                        unclaimedGhosts.firstOrNull { KeyManager.normalizePhone(it.phone) == normMyPhone }
-                    } else null
-                    // 2. Match by displayName
-                    byPhone ?: unclaimedGhosts.firstOrNull {
-                        it.displayName.trim().equals(identity.displayName.trim(), ignoreCase = true)
-                    } ?: unclaimedGhosts.firstOrNull()
-                }
-            }
-
-            val effectiveDisplayName = if (ghostMatch != null &&
-                (identity.displayName.isBlank() ||
-                 identity.displayName == "My Phone" ||
-                 identity.displayName.trim().equals(inviteData.creatorDisplayName.trim(), ignoreCase = true))
-            ) {
-                KeyManager.updateDisplayName(context, ghostMatch.displayName)
-                ghostMatch.displayName
-            } else {
-                identity.displayName
-            }
-
-            val effectivePhone = identity.phone?.takeIf { it.isNotBlank() } ?: ghostMatch?.phone?.also {
-                if (it.isNotBlank()) KeyManager.updatePhone(context, it)
-            }
-            val effectiveUpi = identity.upiId?.takeIf { it.isNotBlank() } ?: ghostMatch?.upiId
-
-            if (ghostMatch != null) {
-                database.memberDao().deleteMember(inviteData.groupId, ghostMatch.pubkey)
-            }
-
-            database.memberDao().insertMember(
-                MemberEntity(
-                    groupId = inviteData.groupId,
-                    pubkey = identity.publicKeyHex,
-                    displayName = effectiveDisplayName,
-                    upiId = effectiveUpi,
-                    phone = effectivePhone
+                // Insert Creator Member first
+                database.memberDao().insertMember(
+                    MemberEntity(
+                        groupId = inviteData.groupId,
+                        pubkey = inviteData.creatorPubkey,
+                        displayName = inviteData.creatorDisplayName
+                    )
                 )
-            )
 
-            // 4. Start monitoring Nostr relays for the group's ledger blocks
+                // Import verified blocks
+                for (block in importedBlocks) {
+                    database.blockDao().insertBlock(
+                        BlockEntity.fromDomainBlock(block, isVerified = true, isSynced = true)
+                    )
+                    syncManager.processBlockSideEffects(inviteData.groupId, block)
+                }
+
+                // Determine if this phone should claim/assume an offline member added by the creator
+                val allCurrentBlocks = database.blockDao().getBlocksForGroupSync(inviteData.groupId).map { it.toDomainBlock() }
+                val alreadyClaimedGhosts = allCurrentBlocks
+                    .filter { it.blockType == BlockType.MEMBER_JOIN }
+                    .mapNotNull {
+                        try {
+                            json.decodeFromString(MemberJoinedPayload.serializer(), it.payloadJson).claimedGhostPubkey
+                        } catch (_: Exception) { null }
+                    }
+                    .toSet()
+
+                val existingMembers = database.memberDao().getMembersForGroupSync(inviteData.groupId)
+                val unclaimedGhosts = existingMembers.filter {
+                    isGhostPubkey(inviteData.groupId, it.pubkey, it.displayName) && it.pubkey !in alreadyClaimedGhosts
+                }
+
+                val normMyPhone = KeyManager.normalizePhone(identity.phone)
+                val ghostMatch: MemberEntity? = when {
+                    explicitClaimGhostPubkey == "NONE" -> null
+                    !explicitClaimGhostPubkey.isNullOrBlank() -> unclaimedGhosts.firstOrNull { it.pubkey == explicitClaimGhostPubkey }
+                    else -> {
+                        // 1. Match by normalized 10-digit phone number first
+                        val byPhone = if (normMyPhone.length == 10) {
+                            unclaimedGhosts.firstOrNull { KeyManager.normalizePhone(it.phone) == normMyPhone }
+                        } else null
+                        // 2. Match by displayName
+                        byPhone ?: unclaimedGhosts.firstOrNull {
+                            it.displayName.trim().equals(identity.displayName.trim(), ignoreCase = true)
+                        } ?: unclaimedGhosts.firstOrNull()
+                    }
+                }
+
+                val effectiveDisplayName = if (ghostMatch != null &&
+                    (identity.displayName.isBlank() ||
+                     identity.displayName == "My Phone" ||
+                     identity.displayName.trim().equals(inviteData.creatorDisplayName.trim(), ignoreCase = true))
+                ) {
+                    KeyManager.updateDisplayName(context, ghostMatch.displayName)
+                    ghostMatch.displayName
+                } else {
+                    identity.displayName
+                }
+
+                val effectivePhone = identity.phone?.takeIf { it.isNotBlank() } ?: ghostMatch?.phone?.also {
+                    if (it.isNotBlank()) KeyManager.updatePhone(context, it)
+                }
+                val effectiveUpi = identity.upiId?.takeIf { it.isNotBlank() } ?: ghostMatch?.upiId
+
+                if (ghostMatch != null) {
+                    database.memberDao().deleteMember(inviteData.groupId, ghostMatch.pubkey)
+                }
+
+                database.memberDao().insertMember(
+                    MemberEntity(
+                        groupId = inviteData.groupId,
+                        pubkey = identity.publicKeyHex,
+                        displayName = effectiveDisplayName,
+                        upiId = effectiveUpi,
+                        phone = effectivePhone
+                    )
+                )
+
+                val alreadyJoinedOnChain = allCurrentBlocks.any { block ->
+                    block.blockType == BlockType.MEMBER_JOIN && try {
+                        json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson).pubkey == identity.publicKeyHex
+                    } catch (_: Exception) { false }
+                }
+
+                val currentTip = database.blockDao().getLatestBlockForGroup(inviteData.groupId)?.toDomainBlock()
+                    ?: importedBlocks.lastOrNull()
+
+                if (currentTip != null && identity.publicKeyHex != inviteData.creatorPubkey && !alreadyJoinedOnChain) {
+                    val joinBlock = BlockchainEngine.createMemberJoinBlock(
+                        groupId = inviteData.groupId,
+                        prevBlock = currentTip,
+                        newMemberPubkey = identity.publicKeyHex,
+                        newMemberName = effectiveDisplayName,
+                        authorPubkey = identity.publicKeyHex,
+                        authorPrivateKeyHex = privKeyHex,
+                        upiId = effectiveUpi,
+                        claimedGhostPubkey = ghostMatch?.pubkey,
+                        phone = effectivePhone
+                    )
+                    database.blockDao().insertBlock(
+                        BlockEntity.fromDomainBlock(joinBlock, isVerified = true, isSynced = false)
+                    )
+                    joinBlock
+                } else {
+                    null
+                }
+            }
+
+            // Start monitoring Nostr relays for the group's ledger blocks
             syncManager.monitorGroup(inviteData.groupId)
 
-            // 5. Broadcast Member Joined block on top of the latest block tip (if not already joined)
-            val alreadyJoinedOnChain = allCurrentBlocks.any { block ->
-                block.blockType == BlockType.MEMBER_JOIN && try {
-                    json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson).pubkey == identity.publicKeyHex
-                } catch (_: Exception) { false }
-            }
-
-            val currentTip = database.blockDao().getLatestBlockForGroup(inviteData.groupId)?.toDomainBlock()
-                ?: importedBlocks.lastOrNull()
-
-            if (currentTip != null && identity.publicKeyHex != inviteData.creatorPubkey && !alreadyJoinedOnChain) {
-                val joinBlock = BlockchainEngine.createMemberJoinBlock(
-                    groupId = inviteData.groupId,
-                    prevBlock = currentTip,
-                    newMemberPubkey = identity.publicKeyHex,
-                    newMemberName = effectiveDisplayName,
-                    authorPubkey = identity.publicKeyHex,
-                    authorPrivateKeyHex = privKeyHex,
-                    upiId = effectiveUpi,
-                    claimedGhostPubkey = ghostMatch?.pubkey,
-                    phone = effectivePhone
-                )
-                database.blockDao().insertBlock(BlockEntity.fromDomainBlock(joinBlock, isVerified = true))
-                syncManager.broadcastBlock(joinBlock, inviteData.groupKeyBase64)
+            if (mintedJoinBlock != null) {
+                syncManager.broadcastBlock(mintedJoinBlock, inviteData.groupKeyBase64)
             }
 
             // Trigger full chain sync with peers
