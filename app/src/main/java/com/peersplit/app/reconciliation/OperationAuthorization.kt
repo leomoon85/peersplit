@@ -36,7 +36,8 @@ object OperationAuthorization {
         activeMembers: Map<String, ProtocolMemberInfo>,
         removedMembers: Set<String>,
         acceptedRemovalsByTarget: Map<String, List<SignedOperation>>,
-        ancestorsOf: Map<String, Set<String>>
+        ancestorsOf: Map<String, Set<String>>,
+        consumedInvitationNonces: Set<String> = emptySet()
     ): AuthOutcome {
         val author = operation.authorPublicKey
 
@@ -95,33 +96,139 @@ object OperationAuthorization {
             is OperationPayload.MemberAdded -> {
                 val authorMember = activeMembers[author]
                 val isCreator = author == trustedGenesis.creatorPublicKey
-                val isActiveMember = authorMember != null && authorMember.role != ProtocolMemberInfo.ROLE_GHOST
-                val isSelfJoinViaInvite = author == payload.memberPublicKey && payload.role == ProtocolMemberInfo.ROLE_MEMBER
+                val isAdmin = authorMember?.role == ProtocolMemberInfo.ROLE_ADMIN || isCreator
+                val isSelfJoin = author == payload.memberPublicKey
 
-                if (payload.role == ProtocolMemberInfo.ROLE_ADMIN && !isCreator && authorMember?.role != ProtocolMemberInfo.ROLE_ADMIN) {
-                    return AuthOutcome(
-                        isAuthorized = false,
-                        rejectionReason = RejectionReason.UNAUTHORIZED_ROLE_CHANGE,
-                        detail = "Only an admin or creator can grant ADMIN role"
-                    )
-                }
+                if (isSelfJoin) {
+                    // Removed members can never self-rejoin via invite token
+                    if (author in removedMembers) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.UNAUTHORIZED_REMOVED_MEMBER,
+                            detail = "Removed member $author cannot self-rejoin; only an admin can re-add them"
+                        )
+                    }
 
-                if (payload.memberPublicKey in removedMembers && !isCreator && authorMember?.role != ProtocolMemberInfo.ROLE_ADMIN) {
-                    return AuthOutcome(
-                        isAuthorized = false,
-                        rejectionReason = RejectionReason.UNAUTHORIZED_REMOVED_MEMBER,
-                        detail = "A removed member can only be re-added by the group creator or an admin"
-                    )
-                }
+                    // Self-join cannot grant ADMIN role
+                    if (payload.role == ProtocolMemberInfo.ROLE_ADMIN) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.UNAUTHORIZED_ROLE_CHANGE,
+                            detail = "Self-joining member cannot claim ADMIN role"
+                        )
+                    }
 
-                if (isCreator || isActiveMember || isSelfJoinViaInvite) {
+                    // Self-join MUST provide an authenticated admin invitation grant
+                    val grant = payload.invitationGrant
+                    if (grant == null) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.INVALID_INVITATION,
+                            detail = "Unrestricted self-join without valid admin invitation grant is forbidden"
+                        )
+                    }
+
+                    // Grant must match group
+                    if (grant.groupId != operation.groupId) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.INVALID_INVITATION,
+                            detail = "Invitation grant groupId mismatch (${grant.groupId} != ${operation.groupId})"
+                        )
+                    }
+
+                    // Inviter must be an active admin or creator
+                    val inviterMember = activeMembers[grant.inviterPublicKey]
+                    val isInviterAdmin = (grant.inviterPublicKey == trustedGenesis.creatorPublicKey) ||
+                        (inviterMember?.role == ProtocolMemberInfo.ROLE_ADMIN)
+                    if (!isInviterAdmin) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.INVALID_INVITATION,
+                            detail = "Invitation grant was not signed by an active group admin or creator (${grant.inviterPublicKey})"
+                        )
+                    }
+
+                    // If invitedPublicKey is specific (not wildcard "*"), author must match
+                    if (grant.invitedPublicKey.isNotBlank() && grant.invitedPublicKey != "*" && grant.invitedPublicKey != author) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.INVALID_INVITATION,
+                            detail = "Invitation grant is bound to ${grant.invitedPublicKey}, but presented by $author"
+                        )
+                    }
+
+                    // Replay protection: nonce cannot be already consumed
+                    val nonce = grant.invitationNonce.trim().lowercase()
+                    if (nonce in consumedInvitationNonces) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.REPLAYED_INVITATION,
+                            detail = "Invitation nonce $nonce has already been consumed"
+                        )
+                    }
+
+                    // Expiry check
+                    if (grant.expiresAtMillis > 0L && operation.createdAtMillis > grant.expiresAtMillis) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.EXPIRED_INVITATION,
+                            detail = "Invitation grant expired at ${grant.expiresAtMillis} (operation timestamp ${operation.createdAtMillis})"
+                        )
+                    }
+
+                    // Cryptographic signature check
+                    if (!com.peersplit.app.protocol.OperationVerifier.verifyInvitationGrant(grant)) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.INVALID_INVITATION,
+                            detail = "Invitation grant cryptographic signature is invalid"
+                        )
+                    }
+
                     AuthOutcome(true)
                 } else {
-                    AuthOutcome(
-                        isAuthorized = false,
-                        rejectionReason = RejectionReason.UNAUTHORIZED_AUTHOR,
-                        detail = "Author $author is not authorized to add member ${payload.memberPublicKey}"
-                    )
+                    // Non-self addition (an existing user is adding someone else)
+                    if (payload.role == ProtocolMemberInfo.ROLE_ADMIN && !isAdmin) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.UNAUTHORIZED_ROLE_CHANGE,
+                            detail = "Only an admin or creator can grant ADMIN role"
+                        )
+                    }
+
+                    if (payload.memberPublicKey in removedMembers && !isAdmin) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.UNAUTHORIZED_REMOVED_MEMBER,
+                            detail = "A removed member can only be re-added by the group creator or an admin"
+                        )
+                    }
+
+                    if (isAdmin) {
+                        AuthOutcome(true)
+                    } else if (payload.invitationGrant != null) {
+                        // Ordinary member presenting an admin-signed grant
+                        val grant = payload.invitationGrant
+                        val inviterMember = activeMembers[grant.inviterPublicKey]
+                        val isInviterAdmin = (grant.inviterPublicKey == trustedGenesis.creatorPublicKey) ||
+                            (inviterMember?.role == ProtocolMemberInfo.ROLE_ADMIN)
+                        if (!isInviterAdmin || !com.peersplit.app.protocol.OperationVerifier.verifyInvitationGrant(grant)) {
+                            AuthOutcome(
+                                isAuthorized = false,
+                                rejectionReason = RejectionReason.INVALID_INVITATION,
+                                detail = "Invalid admin invitation grant presented by member $author"
+                            )
+                        } else {
+                            AuthOutcome(true)
+                        }
+                    } else {
+                        AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.UNAUTHORIZED_AUTHOR,
+                            detail = "Author $author is not authorized to add member ${payload.memberPublicKey} without admin privileges or grant"
+                        )
+                    }
                 }
             }
 

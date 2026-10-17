@@ -66,7 +66,11 @@ android {
 }
 
 dependencies {
+    // Shared Kotlin Multiplatform Core Protocol & Reconciliation
+    implementation(project(":shared"))
+
     implementation(libs.androidx.core.ktx)
+
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
@@ -87,6 +91,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+
+    // Background Retry & Sync Scheduling
+    implementation(libs.androidx.work.runtime.ktx)
 
     // Decentralized P2P Transport (OkHttp WebSocket)
     implementation(libs.okhttp)

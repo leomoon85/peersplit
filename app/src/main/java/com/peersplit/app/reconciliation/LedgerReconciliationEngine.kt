@@ -138,9 +138,10 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                     }
                     is OperationPayload.MemberAdded -> {
                         val authorInfo = simActive[op.authorPublicKey]
+                        val isSelfJoin = op.authorPublicKey == p.memberPublicKey
                         val canAdd = op.authorPublicKey == normCreator ||
-                            (authorInfo != null && authorInfo.role != ProtocolMemberInfo.ROLE_GHOST) ||
-                            (op.authorPublicKey == p.memberPublicKey && p.memberPublicKey !in simRemoved)
+                            (authorInfo != null && authorInfo.role == ProtocolMemberInfo.ROLE_ADMIN) ||
+                            (isSelfJoin && p.invitationGrant != null && p.memberPublicKey !in simRemoved)
                         if (canAdd) {
                             simRemoved.remove(p.memberPublicKey)
                             simActive[p.memberPublicKey] = ProtocolMemberInfo(
@@ -183,6 +184,7 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
         val conflicts = mutableListOf<ConflictRecord>()
         val effectiveExpenses = LinkedHashMap<String, ReconciledExpense>()
         val effectiveSettlements = LinkedHashMap<String, ReconciledSettlement>()
+        val consumedInvitationNonces = LinkedHashSet<String>()
         var rootOperationId: String? = null
         var currentKeyEpoch = 0
 
@@ -235,7 +237,8 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                 activeMembers = activeMembers,
                 removedMembers = removedMembers,
                 acceptedRemovalsByTarget = preAuthorizedRemovalsByTarget,
-                ancestorsOf = causalResult.ancestorsOf
+                ancestorsOf = causalResult.ancestorsOf,
+                consumedInvitationNonces = consumedInvitationNonces
             )
             if (!authOutcome.isAuthorized) {
                 rejected.add(
@@ -335,6 +338,7 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                         claimedGhostPubkey = claimedGhost
                     )
                     allEverKnownMembers.add(normPk)
+                    payload.invitationGrant?.let { consumedInvitationNonces.add(it.invitationNonce.trim().lowercase()) }
                     currentKeyEpoch = maxOf(currentKeyEpoch, payload.newKeyEpoch, op.keyEpoch)
                     accepted = true
                 }

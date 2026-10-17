@@ -23,6 +23,22 @@ data class ProtocolMemberInfo(
 }
 
 /**
+ * Cryptographically authenticated invitation or admin grant.
+ * Allows a new member to self-authorize joining a group only if they present
+ * a valid, unexpired, non-replayed invitation grant signed by an authorized ADMIN or creator.
+ */
+@Serializable
+data class MembershipInvitationGrant(
+    val inviterPublicKey: String,
+    val invitedPublicKey: String = "*",
+    val groupId: String,
+    val targetRole: String = ProtocolMemberInfo.ROLE_MEMBER,
+    val invitationNonce: String,
+    val expiresAtMillis: Long = 0L,
+    val adminSignature: String
+)
+
+/**
  * Sealed hierarchy of V2 operation payloads.
  * All monetary amounts are strictly represented as 64-bit integer minor units (e.g., paise/cents).
  */
@@ -102,18 +118,19 @@ sealed interface OperationPayload {
 
     /**
      * Adds a member (or claims an offline ghost member) and optionally advances the group key epoch.
-     */
-    @Serializable
-    @SerialName("MEMBER_ADDED")
-    data class MemberAdded(
-        val memberPublicKey: String,
-        val displayName: String,
-        val role: String = ProtocolMemberInfo.ROLE_MEMBER,
-        val upiId: String? = null,
-        val phone: String? = null,
-        val claimedGhostPubkey: String? = null,
-        val newKeyEpoch: Int = 0
-    ) : OperationPayload
+ */
+@Serializable
+@SerialName("MEMBER_ADDED")
+data class MemberAdded(
+    val memberPublicKey: String,
+    val displayName: String,
+    val role: String = ProtocolMemberInfo.ROLE_MEMBER,
+    val upiId: String? = null,
+    val phone: String? = null,
+    val claimedGhostPubkey: String? = null,
+    val newKeyEpoch: Int = 0,
+    val invitationGrant: MembershipInvitationGrant? = null
+) : OperationPayload
 
     /**
      * Removes a member from the group and rotates the group key epoch.

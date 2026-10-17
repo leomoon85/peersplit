@@ -69,4 +69,28 @@ object OperationVerifier {
             false
         }
     }
+
+    /**
+     * Cryptographically verifies an admin's Ed25519 signature over a [MembershipInvitationGrant].
+     */
+    fun verifyInvitationGrant(grant: MembershipInvitationGrant): Boolean {
+        return try {
+            if (!isValidHexKey(grant.inviterPublicKey, 64)) return false
+            if (!isValidHexKey(grant.adminSignature, 128)) return false
+            if (grant.groupId.isBlank()) return false
+            if (grant.invitationNonce.isBlank()) return false
+            val message = OperationCanonicalizer.canonicalizeInvitationGrantMessage(
+                inviterPublicKey = grant.inviterPublicKey,
+                invitedPublicKey = grant.invitedPublicKey,
+                groupId = grant.groupId,
+                targetRole = grant.targetRole,
+                invitationNonce = grant.invitationNonce,
+                expiresAtMillis = grant.expiresAtMillis
+            )
+            val digest = HashUtil.sha256(message)
+            KeyManager.verifyHex(digest, grant.adminSignature, grant.inviterPublicKey)
+        } catch (_: Exception) {
+            false
+        }
+    }
 }

@@ -31,6 +31,22 @@ import kotlinx.serialization.json.Json
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
+data class SyncFailureEvent(
+    val timestampMillis: Long = System.currentTimeMillis(),
+    val groupId: String?,
+    val operationId: String?,
+    val errorCode: String,
+    val errorMessage: String
+)
+
+data class OperationDeliveryStatus(
+    val operationId: String,
+    val isRelayAcked: Boolean,
+    val relayAckCount: Int,
+    val isPeerAccepted: Boolean,
+    val status: String
+)
+
 /**
  * Orchestrates zero-server P2P synchronization.
  * Handles End-to-End Encryption of blocks and propagates them via decentralized Nostr relays.
@@ -61,6 +77,10 @@ class P2PSyncManager(
     private val eventIdToBlockHash = ConcurrentHashMap<String, String>()
     private val eventIdToOpId = ConcurrentHashMap<String, String>()
     private val syncMutex = Mutex()
+    private val groupReconcileLocks = ConcurrentHashMap<String, Mutex>()
+
+    private val _syncFailuresFlow = kotlinx.coroutines.flow.MutableSharedFlow<SyncFailureEvent>(replay = 5, extraBufferCapacity = 64)
+    val syncFailuresFlow: kotlinx.coroutines.flow.SharedFlow<SyncFailureEvent> = _syncFailuresFlow
 
     /**
      * Acquires the ledger synchronization lock so local block creation and incoming P2P sync
@@ -70,8 +90,28 @@ class P2PSyncManager(
         action()
     }
 
+    suspend fun getOperationDeliveryStatus(operationId: String): OperationDeliveryStatus {
+        val outbox = database.outboxDao().getOutboxByOperationIdSync(operationId)
+        val op = database.signedOperationDao().getOperationByIdSync(operationId)
+        val relayAcks = database.outboxDao().countAcceptedRelaysForOperationSync(operationId)
+        val isRelayAcked = relayAcks > 0 || outbox?.status == com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_ACKED_ALL
+        val isPeerAccepted = op?.status == com.peersplit.app.data.local.entity.SignedOperationEntity.STATUS_ACCEPTED
+        return OperationDeliveryStatus(
+            operationId = operationId,
+            isRelayAcked = isRelayAcked,
+            relayAckCount = relayAcks,
+            isPeerAccepted = isPeerAccepted,
+            status = op?.status ?: (outbox?.status ?: "UNKNOWN")
+        )
+    }
+
     fun initialize() {
         relayPool.connectAll()
+        try {
+            OutboxRetryWorker.schedule(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to schedule OutboxRetryWorker: ${e.message}")
+        }
 
         // Listen for incoming peer blocks and V2 operations
         scope.launch {
@@ -205,7 +245,9 @@ class P2PSyncManager(
         groupKeyBase64: String
     ) {
         try {
-            val groupKey = EncryptionUtil.keyFromBase64(groupKeyBase64)
+            val epochKeyEntity = database.groupKeyDao().getKeySync(operation.groupId, operation.keyEpoch)
+            val effectiveKeyBase64 = epochKeyEntity?.groupKeyBase64 ?: groupKeyBase64
+            val groupKey = EncryptionUtil.keyFromBase64(effectiveKeyBase64)
             val operationJson = com.peersplit.app.protocol.OperationEntityMapper.json.encodeToString(
                 com.peersplit.app.protocol.SignedOperation.serializer(),
                 operation
@@ -259,6 +301,14 @@ class P2PSyncManager(
             Log.d(TAG, "Broadcasted V2 operation ${operation.operationId.take(8)} for group ${operation.groupId}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to broadcast V2 operation: ${e.message}", e)
+            _syncFailuresFlow.tryEmit(
+                SyncFailureEvent(
+                    groupId = operation.groupId,
+                    operationId = operation.operationId,
+                    errorCode = "BROADCAST_FAILED",
+                    errorMessage = e.message ?: "Unknown broadcast error"
+                )
+            )
         }
     }
 
@@ -326,36 +376,42 @@ class P2PSyncManager(
     }
 
     /**
-     * Reconciles all stored V2 operations for a group and materializes projections.
+     * Reconciles all stored V2 operations for a group and materializes projections atomically.
+     * Uses per-group synchronization to avoid race conditions between local writes and remote sync.
      */
-    suspend fun reconcileV2Group(groupId: String) {
-        try {
-            val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
-            val opEntities = database.signedOperationDao().getOperationsForGroupSync(groupId)
-            if (opEntities.isEmpty()) return
+    suspend fun reconcileV2Group(groupId: String): Boolean {
+        val lock = groupReconcileLocks.computeIfAbsent(groupId) { Mutex() }
+        return lock.withLock {
+            try {
+                val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withLock false
+                val opEntities = database.signedOperationDao().getOperationsForGroupSync(groupId)
+                if (opEntities.isEmpty()) return@withLock false
 
-            val domainOps = opEntities.map { com.peersplit.app.protocol.OperationEntityMapper.toDomain(it) }
-            val meta = database.groupProtocolDao().getGroupProtocolSync(groupId)
-            val trustedGenesis = com.peersplit.app.reconciliation.TrustedGenesis(
-                groupId = groupId,
-                groupName = groupEntity.name,
-                currency = groupEntity.currency,
-                creatorPublicKey = groupEntity.creatorPubkey,
-                genesisOperationId = meta?.genesisOperationId
-            )
+                val domainOps = opEntities.map { com.peersplit.app.protocol.OperationEntityMapper.toDomain(it) }
+                val meta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+                val trustedGenesis = com.peersplit.app.reconciliation.TrustedGenesis(
+                    groupId = groupId,
+                    groupName = groupEntity.name,
+                    currency = groupEntity.currency,
+                    creatorPublicKey = groupEntity.creatorPubkey,
+                    genesisOperationId = meta?.genesisOperationId
+                )
 
-            val result = com.peersplit.app.reconciliation.DefaultLedgerReconciliationEngine.reconcile(
-                trustedGenesis = trustedGenesis,
-                operations = domainOps
-            )
+                val result = com.peersplit.app.reconciliation.DefaultLedgerReconciliationEngine.reconcile(
+                    trustedGenesis = trustedGenesis,
+                    operations = domainOps
+                )
 
-            com.peersplit.app.reconciliation.ReconciliationProjector.persistReconciliationResult(
-                database = database,
-                result = result
-            )
-            Log.d(TAG, "Reconciled V2 group $groupId: ${result.acceptedOperations.size} accepted ops, digest=${result.stateDigest.take(8)}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error reconciling V2 group $groupId: ${e.message}", e)
+                val applied = com.peersplit.app.reconciliation.ReconciliationProjector.persistReconciliationResult(
+                    database = database,
+                    result = result
+                )
+                Log.d(TAG, "Reconciled V2 group $groupId: applied=$applied, ${result.acceptedOperations.size} accepted ops, digest=${result.stateDigest.take(8)}")
+                applied
+            } catch (e: Exception) {
+                Log.e(TAG, "Error reconciling V2 group $groupId: ${e.message}", e)
+                false
+            }
         }
     }
 
@@ -449,7 +505,15 @@ class P2PSyncManager(
                 }
                 return
             }
-            val groupKey = EncryptionUtil.keyFromBase64(groupEntity.groupKeyBase64)
+            val epochTag = event.tags.firstOrNull { it.size >= 2 && it[0] == "epoch" }?.get(1)?.toIntOrNull() ?: 0
+            val epochKeyEntity = database.groupKeyDao().getKeySync(groupId, epochTag)
+            val effectiveKeyBase64 = epochKeyEntity?.groupKeyBase64 ?: if (epochTag == 0) groupEntity.groupKeyBase64 else null
+
+            if (effectiveKeyBase64 == null) {
+                Log.w(TAG, "Quarantined event ${event.id.take(8)}: Key for epoch $epochTag in group $groupId is not available on this device")
+                return
+            }
+            val groupKey = EncryptionUtil.keyFromBase64(effectiveKeyBase64)
 
             // 4. Decrypt payload
             val decryptedJson = EncryptionUtil.decryptString(event.content, groupKey)
@@ -473,6 +537,14 @@ class P2PSyncManager(
 
                     if (!com.peersplit.app.protocol.OperationVerifier.verify(op)) {
                         Log.w(TAG, "Rejected incoming V2 op ${op.operationId}: cryptographic verification or structural validation failed")
+                        _syncFailuresFlow.tryEmit(
+                            SyncFailureEvent(
+                                groupId = groupId,
+                                operationId = op.operationId,
+                                errorCode = "VERIFICATION_FAILED",
+                                errorMessage = "Cryptographic signature or canonical hash verification failed"
+                            )
+                        )
                         return
                     }
 
@@ -490,9 +562,27 @@ class P2PSyncManager(
                     }
                     return
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed to decode/process V2 operation: ${e.message}", e)
-                    // Fallthrough to try V1 decoding if it wasn't valid V2
+                    Log.w(TAG, "Quarantined malformed V2 message for group $groupId: ${e.message}", e)
+                    _syncFailuresFlow.tryEmit(
+                        SyncFailureEvent(
+                            groupId = groupId,
+                            operationId = null,
+                            errorCode = "MALFORMED_V2_MESSAGE",
+                            errorMessage = e.message ?: "Malformed V2 message"
+                        )
+                    )
+                    // Priority 3 & 5: NEVER fall back to V1 decoding for a message tagged as V2!
+                    return
                 }
+            }
+
+            // Priority 3: Legacy Protocol Isolation
+            // If V2 is activated for this group, REJECT/QUARANTINE all incoming legacy V1 events
+            val protoMeta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+            val isV2Active = protoMeta != null && protoMeta.protocolVersion >= com.peersplit.app.protocol.ProtocolVersion.V2_SIGNED_OPERATIONS
+            if (isV2Active) {
+                Log.w(TAG, "Quarantined incoming V1 event ${event.id.take(8)}: Group $groupId is active on V2 protocol")
+                return
             }
 
             // 5. Decrypt block payload
@@ -626,7 +716,26 @@ class P2PSyncManager(
         }
     }
 
+    /**
+     * Checks if a group has transitioned to V2 signed-operation protocol.
+     */
+    suspend fun isV2GroupActive(groupId: String): Boolean {
+        val meta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+        return meta != null && meta.protocolVersion >= com.peersplit.app.protocol.ProtocolVersion.V2_SIGNED_OPERATIONS
+    }
+
     private suspend fun drainPendingBlocks(groupId: String) = syncMutex.withLock {
+        // Priority 3: Legacy Protocol Isolation
+        // Ensure V2 groups never execute V1 fork-rebasing logic.
+        val protoMeta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+        if (protoMeta != null && protoMeta.protocolVersion >= com.peersplit.app.protocol.ProtocolVersion.V2_SIGNED_OPERATIONS) {
+            Log.d(TAG, "Skipping V1 fork-rebasing: Group $groupId is operating on V2 protocol")
+            synchronized(pendingBlocks) {
+                pendingBlocks.remove(groupId)
+            }
+            return@withLock
+        }
+
         val localIdentity = KeyManager.getOrCreateIdentity(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withLock
 

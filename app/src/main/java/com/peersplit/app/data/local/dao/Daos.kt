@@ -240,3 +240,27 @@ interface GroupProtocolDao {
     @Query("DELETE FROM group_protocol_metadata WHERE groupId = :groupId")
     suspend fun deleteGroupProtocol(groupId: String)
 }
+
+@Dao
+interface GroupKeyDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertKey(key: com.peersplit.app.data.local.entity.GroupKeyEntity)
+
+    @Query("SELECT * FROM group_keys WHERE groupId = :groupId AND keyEpoch = :keyEpoch LIMIT 1")
+    suspend fun getKey(groupId: String, keyEpoch: Int): com.peersplit.app.data.local.entity.GroupKeyEntity?
+
+    @Query("SELECT * FROM group_keys WHERE groupId = :groupId AND keyEpoch = :keyEpoch LIMIT 1")
+    fun getKeySync(groupId: String, keyEpoch: Int): com.peersplit.app.data.local.entity.GroupKeyEntity?
+
+    @Query("SELECT * FROM group_keys WHERE groupId = :groupId ORDER BY keyEpoch DESC LIMIT 1")
+    suspend fun getLatestKey(groupId: String): com.peersplit.app.data.local.entity.GroupKeyEntity?
+
+    @Query("SELECT * FROM group_keys WHERE groupId = :groupId ORDER BY keyEpoch DESC LIMIT 1")
+    fun getLatestKeySync(groupId: String): com.peersplit.app.data.local.entity.GroupKeyEntity?
+
+    @Query("SELECT * FROM group_keys WHERE groupId = :groupId ORDER BY keyEpoch ASC")
+    suspend fun getAllKeysForGroup(groupId: String): List<com.peersplit.app.data.local.entity.GroupKeyEntity>
+
+    @Query("DELETE FROM group_keys WHERE groupId = :groupId")
+    suspend fun deleteKeysForGroup(groupId: String)
+}

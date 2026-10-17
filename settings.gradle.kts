@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PeerSplit"
 include(":app")
+include(":shared")

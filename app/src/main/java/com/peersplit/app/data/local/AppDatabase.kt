@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.peersplit.app.data.local.dao.BlockDao
 import com.peersplit.app.data.local.dao.GroupDao
+import com.peersplit.app.data.local.dao.GroupKeyDao
 import com.peersplit.app.data.local.dao.GroupProtocolDao
 import com.peersplit.app.data.local.dao.MemberDao
 import com.peersplit.app.data.local.dao.OutboxDao
@@ -15,6 +16,7 @@ import com.peersplit.app.data.local.entity.BalanceProjectionEntity
 import com.peersplit.app.data.local.entity.BlockEntity
 import com.peersplit.app.data.local.entity.ExpenseProjectionEntity
 import com.peersplit.app.data.local.entity.GroupEntity
+import com.peersplit.app.data.local.entity.GroupKeyEntity
 import com.peersplit.app.data.local.entity.GroupProtocolEntity
 import com.peersplit.app.data.local.entity.MemberEntity
 import com.peersplit.app.data.local.entity.OperationDependencyEntity
@@ -33,9 +35,10 @@ import com.peersplit.app.data.local.entity.SignedOperationEntity
         BalanceProjectionEntity::class,
         OutboxOperationEntity::class,
         RelayDeliveryEntity::class,
-        GroupProtocolEntity::class
+        GroupProtocolEntity::class,
+        GroupKeyEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -47,6 +50,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun projectionDao(): ProjectionDao
     abstract fun outboxDao(): OutboxDao
     abstract fun groupProtocolDao(): GroupProtocolDao
+    abstract fun groupKeyDao(): GroupKeyDao
 
     companion object {
         @Volatile
@@ -234,6 +238,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_7_8 = object : androidx.room.migration.Migration(7, 8) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `group_keys` (
+                        `groupId` TEXT NOT NULL,
+                        `keyEpoch` INTEGER NOT NULL,
+                        `groupKeyBase64` TEXT NOT NULL,
+                        `distributedToPubkeysJson` TEXT NOT NULL,
+                        `createdAtMillis` INTEGER NOT NULL,
+                        PRIMARY KEY(`groupId`, `keyEpoch`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_group_keys_groupId` ON `group_keys` (`groupId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_group_keys_groupId_keyEpoch` ON `group_keys` (`groupId`, `keyEpoch`)")
+
+                // Seed existing group keys into epoch 0
+                db.execSQL("""
+                    INSERT OR IGNORE INTO `group_keys` (`groupId`, `keyEpoch`, `groupKeyBase64`, `distributedToPubkeysJson`, `createdAtMillis`)
+                    SELECT `id`, 0, `groupKeyBase64`, '[]', ${System.currentTimeMillis()} FROM `groups`
+                """.trimIndent())
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -247,7 +274,8 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_3_4,
                         MIGRATION_4_5,
                         MIGRATION_5_6,
-                        MIGRATION_6_7
+                        MIGRATION_6_7,
+                        MIGRATION_7_8
                     )
                     .build()
                 INSTANCE = instance

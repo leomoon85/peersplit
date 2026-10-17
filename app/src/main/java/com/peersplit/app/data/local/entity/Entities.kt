@@ -279,3 +279,25 @@ data class GroupProtocolEntity(
         const val MIGRATION_COMPLETED = "COMPLETED"
     }
 }
+
+/**
+ * Versioned group encryption keys for epoch-based forward secrecy.
+ * Whenever a member is removed, the key epoch is incremented and a new AES-256 key is generated,
+ * ensuring newly removed members cannot decrypt future group events.
+ */
+@Entity(
+    tableName = "group_keys",
+    primaryKeys = ["groupId", "keyEpoch"],
+    indices = [
+        Index(value = ["groupId"]),
+        Index(value = ["groupId", "keyEpoch"])
+    ]
+)
+data class GroupKeyEntity(
+    val groupId: String,
+    val keyEpoch: Int,
+    val groupKeyBase64: String,
+    val distributedToPubkeysJson: String = "[]",
+    val createdAtMillis: Long = System.currentTimeMillis()
+)
+

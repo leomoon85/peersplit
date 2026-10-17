@@ -134,6 +134,7 @@ object OperationCanonicalizer {
                 writeNullableString(out, payload.phone?.trim())
                 writeNullableString(out, payload.claimedGhostPubkey?.trim()?.lowercase())
                 out.writeInt(payload.newKeyEpoch)
+                writeNullableInvitationGrant(out, payload.invitationGrant)
             }
 
             is OperationPayload.MemberRemoved -> {
@@ -246,5 +247,44 @@ object OperationCanonicalizer {
             out.writeBoolean(true)
             writeString(out, normalizeString(value))
         }
+    }
+
+    private fun writeNullableInvitationGrant(out: DataOutputStream, grant: MembershipInvitationGrant?) {
+        if (grant == null) {
+            out.writeBoolean(false)
+        } else {
+            out.writeBoolean(true)
+            writeString(out, normalizeString(grant.inviterPublicKey.trim().lowercase()))
+            writeString(out, normalizeString(grant.invitedPublicKey.trim().lowercase()))
+            writeString(out, normalizeString(grant.groupId.trim()))
+            writeString(out, normalizeString(grant.targetRole.trim().uppercase()))
+            writeString(out, normalizeString(grant.invitationNonce.trim().lowercase()))
+            out.writeLong(grant.expiresAtMillis)
+            writeString(out, normalizeString(grant.adminSignature.trim().lowercase()))
+        }
+    }
+
+    /**
+     * Produces the canonical domain-separated digest message signed by an admin for a membership grant.
+     */
+    fun canonicalizeInvitationGrantMessage(
+        inviterPublicKey: String,
+        invitedPublicKey: String,
+        groupId: String,
+        targetRole: String,
+        invitationNonce: String,
+        expiresAtMillis: Long
+    ): ByteArray {
+        val bos = ByteArrayOutputStream(256)
+        DataOutputStream(bos).use { out ->
+            writeString(out, "PeerSplit/V2/MembershipInvite")
+            writeString(out, normalizeString(inviterPublicKey.trim().lowercase()))
+            writeString(out, normalizeString(invitedPublicKey.trim().lowercase()))
+            writeString(out, normalizeString(groupId.trim()))
+            writeString(out, normalizeString(targetRole.trim().uppercase()))
+            writeString(out, normalizeString(invitationNonce.trim().lowercase()))
+            out.writeLong(expiresAtMillis)
+        }
+        return bos.toByteArray()
     }
 }

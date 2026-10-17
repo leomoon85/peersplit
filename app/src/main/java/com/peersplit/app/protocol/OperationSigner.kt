@@ -69,4 +69,37 @@ object OperationSigner {
             createdAtMillis = createdAtMillis
         )
     }
+
+    /**
+     * Creates and cryptographically signs a [MembershipInvitationGrant] with an admin's Ed25519 private key.
+     */
+    fun createInvitationGrant(
+        inviterPublicKey: String,
+        inviterPrivateKeyHex: String,
+        groupId: String,
+        invitedPublicKey: String = "*",
+        targetRole: String = ProtocolMemberInfo.ROLE_MEMBER,
+        invitationNonce: String = java.util.UUID.randomUUID().toString(),
+        expiresAtMillis: Long = 0L
+    ): MembershipInvitationGrant {
+        val message = OperationCanonicalizer.canonicalizeInvitationGrantMessage(
+            inviterPublicKey = inviterPublicKey,
+            invitedPublicKey = invitedPublicKey,
+            groupId = groupId,
+            targetRole = targetRole,
+            invitationNonce = invitationNonce,
+            expiresAtMillis = expiresAtMillis
+        )
+        val digest = HashUtil.sha256(message)
+        val signature = KeyManager.signHex(digest, inviterPrivateKeyHex)
+        return MembershipInvitationGrant(
+            inviterPublicKey = OperationCanonicalizer.normalizeString(inviterPublicKey.trim().lowercase()),
+            invitedPublicKey = OperationCanonicalizer.normalizeString(invitedPublicKey.trim().lowercase()),
+            groupId = OperationCanonicalizer.normalizeString(groupId.trim()),
+            targetRole = OperationCanonicalizer.normalizeString(targetRole.trim().uppercase()),
+            invitationNonce = OperationCanonicalizer.normalizeString(invitationNonce.trim().lowercase()),
+            expiresAtMillis = expiresAtMillis,
+            adminSignature = signature
+        )
+    }
 }

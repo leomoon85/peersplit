@@ -150,6 +150,21 @@ object OperationValidator {
                 if (!p.claimedGhostPubkey.isNullOrBlank() && !HEX_64_REGEX.matches(p.claimedGhostPubkey)) {
                     return OperationValidationOutcome.Invalid("INVALID_GHOST_PUBKEY", "claimedGhostPubkey must be 64-char lowercase hex")
                 }
+                val grant = p.invitationGrant
+                if (grant != null) {
+                    if (!HEX_64_REGEX.matches(grant.inviterPublicKey)) {
+                        return OperationValidationOutcome.Invalid("INVALID_INVITER_PUBKEY", "inviterPublicKey must be 64-char lowercase hex")
+                    }
+                    if (grant.groupId != operation.groupId) {
+                        return OperationValidationOutcome.Invalid("GRANT_GROUP_MISMATCH", "invitationGrant groupId does not match operation")
+                    }
+                    if (grant.invitationNonce.isBlank() || grant.invitationNonce.length > ProtocolVersion.MAX_ID_LENGTH) {
+                        return OperationValidationOutcome.Invalid("INVALID_INVITATION_NONCE", "invitationNonce is invalid")
+                    }
+                    if (!OperationVerifier.verifyInvitationGrant(grant)) {
+                        return OperationValidationOutcome.Invalid("INVALID_INVITATION_SIGNATURE", "Invitation grant signature verification failed")
+                    }
+                }
                 OperationValidationOutcome.Valid
             }
 

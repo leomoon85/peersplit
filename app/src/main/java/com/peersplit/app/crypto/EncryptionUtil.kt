@@ -1,7 +1,7 @@
 package com.peersplit.app.crypto
 
-import android.util.Base64
 import java.security.SecureRandom
+import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -58,7 +58,7 @@ object EncryptionUtil {
      */
     fun encryptString(plainText: String, keyBytes: ByteArray): String {
         val encrypted = encrypt(plainText.toByteArray(Charsets.UTF_8), keyBytes)
-        return Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        return Base64.getEncoder().encodeToString(encrypted)
     }
 
     /**
@@ -86,7 +86,11 @@ object EncryptionUtil {
      * Decrypts a Base64-encoded string and returns the UTF-8 plaintext string.
      */
     fun decryptString(base64Ciphertext: String, keyBytes: ByteArray): String {
-        val decoded = Base64.decode(base64Ciphertext, Base64.NO_WRAP)
+        val decoded = try {
+            Base64.getDecoder().decode(base64Ciphertext)
+        } catch (_: Exception) {
+            Base64.getUrlDecoder().decode(base64Ciphertext)
+        }
         val decrypted = decrypt(decoded, keyBytes)
         return String(decrypted, Charsets.UTF_8)
     }
@@ -95,13 +99,17 @@ object EncryptionUtil {
      * Formats a byte array as a URL-safe Base64 string for group invites / QR codes.
      */
     fun keyToBase64(keyBytes: ByteArray): String {
-        return Base64.encodeToString(keyBytes, Base64.URL_SAFE or Base64.NO_WRAP)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyBytes)
     }
 
     /**
      * Parses a group key from a Base64 string.
      */
     fun keyFromBase64(base64Key: String): ByteArray {
-        return Base64.decode(base64Key, Base64.URL_SAFE or Base64.NO_WRAP)
+        return try {
+            Base64.getUrlDecoder().decode(base64Key)
+        } catch (_: Exception) {
+            Base64.getDecoder().decode(base64Key)
+        }
     }
 }
