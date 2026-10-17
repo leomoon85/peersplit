@@ -57,14 +57,13 @@ class P2PSyncManager(
             }
         }
 
-        // Subscribe to all currently stored groups and broadcast local blocks
+        // Subscribe to all currently stored groups (without re-encrypting/broadcasting full chains on cold start)
         scope.launch {
             try {
                 val groups = database.groupDao().getAllGroups().first()
                 groups.forEach { group ->
                     Log.d(TAG, "Subscribing to existing group ${group.id}")
                     relayPool.subscribeGroup(group.id)
-                    broadcastGroupChain(group.id)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error subscribing to groups: ${e.message}")

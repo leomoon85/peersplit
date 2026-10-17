@@ -50,6 +50,9 @@ interface MemberDao {
     @Query("SELECT * FROM members WHERE groupId = :groupId")
     suspend fun getMembersForGroupSync(groupId: String): List<MemberEntity>
 
+    @Query("SELECT * FROM members")
+    fun getAllMembersFlow(): Flow<List<MemberEntity>>
+
     @Query("SELECT COUNT(*) FROM members")
     fun getAllMembersCountFlow(): Flow<Long>
 
@@ -79,6 +82,9 @@ interface BlockDao {
 
     @Query("SELECT * FROM blocks WHERE groupId = :groupId ORDER BY `index` ASC")
     suspend fun getBlocksForGroupSync(groupId: String): List<BlockEntity>
+
+    @Query("SELECT * FROM blocks ORDER BY groupId, `index` ASC")
+    fun getAllBlocksFlow(): Flow<List<BlockEntity>>
 
     @Query("SELECT * FROM blocks WHERE groupId = :groupId ORDER BY `index` DESC LIMIT 1")
     suspend fun getLatestBlockForGroup(groupId: String): BlockEntity?

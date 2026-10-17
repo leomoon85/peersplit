@@ -9,7 +9,14 @@ import com.peersplit.app.network.sync.P2PSyncManager
 
 import com.peersplit.app.ui.theme.ThemeManager
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+
 class PeerSplitApp : Application() {
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     lateinit var database: AppDatabase
         private set
@@ -27,22 +34,22 @@ class PeerSplitApp : Application() {
         super.onCreate()
         instance = this
 
-        // Initialize Theme Mode
+        // Initialize Theme Mode (fast in-memory preference read)
         ThemeManager.init(this)
 
-        // Initialize Cryptographic Identity
-        KeyManager.getOrCreateIdentity(this)
-
-        // Initialize Database
+        // Initialize Database builder (lazy SQLite open)
         database = AppDatabase.getInstance(this)
 
-        // Initialize P2P Relay Pool and Sync Manager
+        // Initialize P2P Relay Pool, Sync Manager, and Repository
         relayPool = RelayPool()
         syncManager = P2PSyncManager(this, database, relayPool)
-        syncManager.initialize()
-
-        // Initialize Repository
         repository = ExpenseRepository(this, database, syncManager)
+
+        // Offload Keystore identity init, SQLite warm-up, and WebSocket connections off the Main Thread
+        appScope.launch(Dispatchers.IO) {
+            KeyManager.getOrCreateIdentity(this@PeerSplitApp)
+            syncManager.initialize()
+        }
     }
 
     companion object {

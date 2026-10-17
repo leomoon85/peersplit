@@ -264,6 +264,25 @@ object BlockchainEngine {
     }
 
     /**
+     * Fast O(N) structural chain validation for local database blocks whose Ed25519 signatures
+     * were already verified prior to persistence. Checks sequential indices, hash pointers,
+     * and Genesis anchor without repeating expensive elliptic-curve point multiplications on UI load.
+     */
+    fun verifyStructuralChain(chain: List<Block>): Boolean {
+        if (chain.isEmpty()) return false
+        val genesis = chain.first()
+        if (genesis.index != 0L || genesis.prevHash != Block.GENESIS_PREV_HASH) return false
+
+        for (i in 1 until chain.size) {
+            val prev = chain[i - 1]
+            val curr = chain[i]
+            if (curr.index != prev.index + 1) return false
+            if (curr.prevHash != prev.blockHash) return false
+        }
+        return true
+    }
+
+    /**
      * Validates an incoming block from a peer before appending it to the local chain tip.
      */
     fun validateNextBlock(newBlock: Block, currentTip: Block): Boolean {

@@ -195,50 +195,30 @@ class ExpenseRepository(
         return aliasMap
     }
 
+    private val groupDetailCache = ConcurrentHashMap<String, GroupDetail>()
+
+    fun getCachedGroupDetail(groupId: String): GroupDetail? = groupDetailCache[groupId]
+
     /**
-     * Observes all groups with dynamic user balance computation.
+     * Observes all groups with dynamic user balance computation using bulk SQLite queries (no N+1 loop)
+     * and pre-populates [groupDetailCache] so opening any group is instantaneous (0ms spinner).
      */
     fun getGroups(): Flow<List<Group>> {
         return combine(
             database.groupDao().getAllGroups(),
-            database.memberDao().getAllMembersCountFlow(),
-            database.blockDao().getAllBlocksCountFlow()
-        ) { groupEntities, _, _ ->
+            database.memberDao().getAllMembersFlow(),
+            database.blockDao().getAllBlocksFlow()
+        ) { groupEntities, allMembers, allBlocks ->
             val identity = KeyManager.getOrCreateIdentity(context)
+            val membersByGroup = allMembers.groupBy { it.groupId }
+            val blocksByGroup = allBlocks.groupBy { it.groupId }
+
             groupEntities.map { entity ->
-                val blocks = database.blockDao().getBlocksForGroupSync(entity.id).map { it.toDomainBlock() }
-                val rawMembers = database.memberDao().getMembersForGroupSync(entity.id)
-                val aliasMap = buildAliasMap(entity.id, rawMembers, blocks, identity.publicKeyHex, identity.displayName, identity.phone)
-                val deduplicatedMemberCount = rawMembers
-                    .map { aliasMap[it.pubkey] ?: it.pubkey }
-                    .distinct()
-                    .size
-
-                val expenses = extractExpenses(blocks)
-                val settlements = extractSettlements(blocks)
-                val voidedIds = extractVoidedExpenseIds(blocks)
-                val netBalances = DebtSettlementEngine.calculateNetBalances(expenses, settlements, voidedIds, aliasMap)
-
-                val userBalance = netBalances[identity.publicKeyHex] ?: 0.0
-                val validation = BlockchainEngine.validateChain(blocks)
-
-                Group(
-                    id = entity.id,
-                    name = entity.name,
-                    currency = entity.currency,
-                    creatorPubkey = entity.creatorPubkey,
-                    groupKeyBase64 = entity.groupKeyBase64,
-                    memberCount = deduplicatedMemberCount,
-                    userNetBalance = userBalance,
-                    blockCount = blocks.size.toLong(),
-                    isLedgerValid = validation is ValidationResult.Valid,
-                    isSecret = entity.isSecret,
-                    secretPinHash = entity.secretPinHash,
-                    isPersonalSolo = entity.isPersonalSolo,
-                    monthlyBudget = entity.monthlyBudget,
-                    isArchived = entity.isArchived,
-                    createdAt = entity.createdAt
-                )
+                val rawMembers = membersByGroup[entity.id].orEmpty()
+                val rawBlocks = blocksByGroup[entity.id].orEmpty()
+                val detail = computeGroupDetail(entity, rawMembers, rawBlocks, identity)
+                groupDetailCache[entity.id] = detail
+                detail.group
             }
         }.flowOn(Dispatchers.Default)
     }
@@ -252,184 +232,197 @@ class ExpenseRepository(
             database.memberDao().getMembersForGroup(groupId),
             database.blockDao().getBlocksForGroup(groupId)
         ) { groupEntity, memberEntities, blockEntities ->
-            if (groupEntity == null) return@combine null
+            if (groupEntity == null) {
+                groupDetailCache.remove(groupId)
+                return@combine null
+            }
             val identity = KeyManager.getOrCreateIdentity(context)
+            val detail = computeGroupDetail(groupEntity, memberEntities, blockEntities, identity)
+            groupDetailCache[groupId] = detail
+            detail
+        }.flowOn(Dispatchers.Default)
+    }
 
-            val domainBlocks = blockEntities.map { it.toDomainBlock() }
-            val expensesPayloads = extractExpenses(domainBlocks)
-            val settlementPayloads = extractSettlements(domainBlocks)
-            val voidedIds = extractVoidedExpenseIds(domainBlocks)
+    private fun computeGroupDetail(
+        groupEntity: GroupEntity,
+        memberEntities: List<MemberEntity>,
+        blockEntities: List<BlockEntity>,
+        identity: KeyManager.UserIdentity
+    ): GroupDetail {
+        val groupId = groupEntity.id
+        val domainBlocks = blockEntities.map { it.toDomainBlock() }
+        val expensesPayloads = extractExpenses(domainBlocks)
+        val settlementPayloads = extractSettlements(domainBlocks)
+        val voidedIds = extractVoidedExpenseIds(domainBlocks)
 
-            val aliasMap = buildAliasMap(
-                groupId = groupId,
-                memberEntities = memberEntities,
-                blocks = domainBlocks,
-                currentIdentityPubkey = identity.publicKeyHex,
-                currentIdentityName = identity.displayName,
-                currentIdentityPhone = identity.phone
-            )
-            val resolvePubkey = { pk: String -> aliasMap[pk] ?: pk }
+        val aliasMap = buildAliasMap(
+            groupId = groupId,
+            memberEntities = memberEntities,
+            blocks = domainBlocks,
+            currentIdentityPubkey = identity.publicKeyHex,
+            currentIdentityName = identity.displayName,
+            currentIdentityPhone = identity.phone
+        )
+        val resolvePubkey = { pk: String -> aliasMap[pk] ?: pk }
 
-            val netBalances = DebtSettlementEngine.calculateNetBalances(
-                expensesPayloads,
-                settlementPayloads,
-                voidedIds,
-                aliasMap
-            )
-            val suggestions = DebtSettlementEngine.simplifyDebts(netBalances)
-            val validation = BlockchainEngine.validateChain(domainBlocks)
+        val netBalances = DebtSettlementEngine.calculateNetBalances(
+            expensesPayloads,
+            settlementPayloads,
+            voidedIds,
+            aliasMap
+        )
+        val suggestions = DebtSettlementEngine.simplifyDebts(netBalances)
+        val isStructuralValid = BlockchainEngine.verifyStructuralChain(domainBlocks)
 
-            // Build deduplicated members list (merging any claimed ghost member into the real member)
-            val membersByResolvedPubkey = linkedMapOf<String, MemberEntity>()
-            for (m in memberEntities) {
-                val resolved = resolvePubkey(m.pubkey)
-                val existing = membersByResolvedPubkey[resolved]
-                if (existing == null) {
-                    membersByResolvedPubkey[resolved] = m.copy(pubkey = resolved)
-                } else {
-                    // Prefer real member row over ghost row, while preserving UPI ID and phone if set on ghost row
-                    val isCurrentReal = m.pubkey == resolved
-                    val chosenName = if (isCurrentReal) m.displayName else existing.displayName
-                    val chosenUpi = m.upiId?.takeIf { it.isNotBlank() } ?: existing.upiId
-                    val chosenPhone = m.phone?.takeIf { it.isNotBlank() } ?: existing.phone
-                    membersByResolvedPubkey[resolved] = existing.copy(
-                        pubkey = resolved,
-                        displayName = chosenName,
-                        upiId = chosenUpi,
-                        phone = chosenPhone
-                    )
-                }
-            }
-
-            val memberMap = mutableMapOf<String, String>()
-            for ((resolvedPk, mEntity) in membersByResolvedPubkey) {
-                memberMap[resolvedPk] = mEntity.displayName
-            }
-            for ((ghostPk, realPk) in aliasMap) {
-                memberMap[ghostPk] = memberMap[realPk] ?: "Member"
-            }
-
-            val members = membersByResolvedPubkey.values.map { memberEntity ->
-                Member(
-                    pubkey = memberEntity.pubkey,
-                    displayName = memberEntity.displayName,
-                    isCurrentUser = memberEntity.pubkey == identity.publicKeyHex,
-                    netBalance = netBalances[memberEntity.pubkey] ?: 0.0,
-                    upiId = memberEntity.upiId,
-                    phone = memberEntity.phone
+        // Build deduplicated members list (merging any claimed ghost member into the real member)
+        val membersByResolvedPubkey = linkedMapOf<String, MemberEntity>()
+        for (m in memberEntities) {
+            val resolved = resolvePubkey(m.pubkey)
+            val existing = membersByResolvedPubkey[resolved]
+            if (existing == null) {
+                membersByResolvedPubkey[resolved] = m.copy(pubkey = resolved)
+            } else {
+                val isCurrentReal = m.pubkey == resolved
+                val chosenName = if (isCurrentReal) m.displayName else existing.displayName
+                val chosenUpi = m.upiId?.takeIf { it.isNotBlank() } ?: existing.upiId
+                val chosenPhone = m.phone?.takeIf { it.isNotBlank() } ?: existing.phone
+                membersByResolvedPubkey[resolved] = existing.copy(
+                    pubkey = resolved,
+                    displayName = chosenName,
+                    upiId = chosenUpi,
+                    phone = chosenPhone
                 )
             }
+        }
 
-            val expenseItems = domainBlocks.filter { it.blockType == BlockType.EXPENSE || it.blockType == BlockType.SETTLEMENT }.mapNotNull { block ->
-                try {
-                    if (block.blockType == BlockType.EXPENSE) {
-                        val exp = decodeExpense(block) ?: return@mapNotNull null
-                        val isVoided = exp.expenseId in voidedIds
-                        val resolvedSplits = exp.splits.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
-                        val resolvedPayers = exp.payers.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
-                        val resolvedPrimaryPayer = resolvePubkey(exp.payerPubkey)
+        val memberMap = mutableMapOf<String, String>()
+        for ((resolvedPk, mEntity) in membersByResolvedPubkey) {
+            memberMap[resolvedPk] = mEntity.displayName
+        }
+        for ((ghostPk, realPk) in aliasMap) {
+            memberMap[ghostPk] = memberMap[realPk] ?: "Member"
+        }
 
-                        val userSplit = resolvedSplits.filter { it.userPubkey == identity.publicKeyHex }.sumOf { it.amount }
-                        val userPaid = if (resolvedPayers.size > 1) {
-                            resolvedPayers.filter { it.userPubkey == identity.publicKeyHex }.sumOf { it.amount }
-                        } else if (resolvedPrimaryPayer == identity.publicKeyHex) {
-                            exp.totalAmount
-                        } else {
-                            0.0
-                        }
-                        val share = if (isVoided) 0.0 else (userPaid - userSplit)
+        val members = membersByResolvedPubkey.values.map { memberEntity ->
+            Member(
+                pubkey = memberEntity.pubkey,
+                displayName = memberEntity.displayName,
+                isCurrentUser = memberEntity.pubkey == identity.publicKeyHex,
+                netBalance = netBalances[memberEntity.pubkey] ?: 0.0,
+                upiId = memberEntity.upiId,
+                phone = memberEntity.phone
+            )
+        }
 
-                        val resolvedPayerName = if (resolvedPayers.size > 1) {
-                            resolvedPayers.joinToString(" + ") { p -> memberMap[p.userPubkey] ?: "Member" }
-                        } else {
-                            memberMap[resolvedPrimaryPayer] ?: "Member"
-                        }
+        val expenseItems = domainBlocks.filter { it.blockType == BlockType.EXPENSE || it.blockType == BlockType.SETTLEMENT }.mapNotNull { block ->
+            try {
+                if (block.blockType == BlockType.EXPENSE) {
+                    val exp = decodeExpense(block) ?: return@mapNotNull null
+                    val isVoided = exp.expenseId in voidedIds
+                    val resolvedSplits = exp.splits.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
+                    val resolvedPayers = exp.payers.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
+                    val resolvedPrimaryPayer = resolvePubkey(exp.payerPubkey)
 
-                        ExpenseItem(
-                            id = exp.expenseId,
-                            description = exp.description,
-                            totalAmount = exp.totalAmount,
-                            currency = exp.currency,
-                            payerPubkey = resolvedPrimaryPayer,
-                            payerName = resolvedPayerName,
-                            timestamp = block.timestamp,
-                            userShare = share,
-                            blockIndex = block.index,
-                            category = exp.category,
-                            note = exp.note,
-                            splitType = exp.splitType,
-                            splits = resolvedSplits,
-                            payers = resolvedPayers,
-                            blockHash = block.blockHash,
-                            signature = block.signature,
-                            isVoided = isVoided
-                        )
-                    } else { // BlockType.SETTLEMENT
-                        val stl = decodeSettlement(block) ?: return@mapNotNull null
-                        val payerPub = resolvePubkey(stl.payerPubkey)
-                        val payeePub = resolvePubkey(stl.payeePubkey)
-                        val payerName = memberMap[payerPub] ?: "Member"
-                        val payeeName = memberMap[payeePub] ?: "Member"
-                        val userShare = if (payerPub == identity.publicKeyHex) {
-                            stl.amount // user paid
-                        } else if (payeePub == identity.publicKeyHex) {
-                            -stl.amount // user received
-                        } else {
-                            0.0
-                        }
-
-                        ExpenseItem(
-                            id = stl.settlementId,
-                            description = "$payerName paid $payeeName",
-                            totalAmount = stl.amount,
-                            currency = stl.currency,
-                            payerPubkey = payerPub,
-                            payerName = payerName,
-                            timestamp = block.timestamp,
-                            userShare = userShare,
-                            blockIndex = block.index,
-                            category = "SETTLEMENT",
-                            note = stl.note,
-                            splitType = "SETTLEMENT",
-                            splits = listOf(SplitItem(payeePub, stl.amount)),
-                            payers = listOf(SplitItem(payerPub, stl.amount)),
-                            blockHash = block.blockHash,
-                            signature = block.signature,
-                            isVoided = false
-                        )
+                    val userSplit = resolvedSplits.filter { it.userPubkey == identity.publicKeyHex }.sumOf { it.amount }
+                    val userPaid = if (resolvedPayers.size > 1) {
+                        resolvedPayers.filter { it.userPubkey == identity.publicKeyHex }.sumOf { it.amount }
+                    } else if (resolvedPrimaryPayer == identity.publicKeyHex) {
+                        exp.totalAmount
+                    } else {
+                        0.0
                     }
-                } catch (e: Exception) {
-                    null
+                    val share = if (isVoided) 0.0 else (userPaid - userSplit)
+
+                    val resolvedPayerName = if (resolvedPayers.size > 1) {
+                        resolvedPayers.joinToString(" + ") { p -> memberMap[p.userPubkey] ?: "Member" }
+                    } else {
+                        memberMap[resolvedPrimaryPayer] ?: "Member"
+                    }
+
+                    ExpenseItem(
+                        id = exp.expenseId,
+                        description = exp.description,
+                        totalAmount = exp.totalAmount,
+                        currency = exp.currency,
+                        payerPubkey = resolvedPrimaryPayer,
+                        payerName = resolvedPayerName,
+                        timestamp = block.timestamp,
+                        userShare = share,
+                        blockIndex = block.index,
+                        category = exp.category,
+                        note = exp.note,
+                        splitType = exp.splitType,
+                        splits = resolvedSplits,
+                        payers = resolvedPayers,
+                        blockHash = block.blockHash,
+                        signature = block.signature,
+                        isVoided = isVoided
+                    )
+                } else { // BlockType.SETTLEMENT
+                    val stl = decodeSettlement(block) ?: return@mapNotNull null
+                    val payerPub = resolvePubkey(stl.payerPubkey)
+                    val payeePub = resolvePubkey(stl.payeePubkey)
+                    val payerName = memberMap[payerPub] ?: "Member"
+                    val payeeName = memberMap[payeePub] ?: "Member"
+                    val userShare = if (payerPub == identity.publicKeyHex) {
+                        stl.amount // user paid
+                    } else if (payeePub == identity.publicKeyHex) {
+                        -stl.amount // user received
+                    } else {
+                        0.0
+                    }
+
+                    ExpenseItem(
+                        id = stl.settlementId,
+                        description = "$payerName paid $payeeName",
+                        totalAmount = stl.amount,
+                        currency = stl.currency,
+                        payerPubkey = payerPub,
+                        payerName = payerName,
+                        timestamp = block.timestamp,
+                        userShare = userShare,
+                        blockIndex = block.index,
+                        category = "SETTLEMENT",
+                        note = stl.note,
+                        splitType = "SETTLEMENT",
+                        splits = listOf(SplitItem(payeePub, stl.amount)),
+                        payers = listOf(SplitItem(payerPub, stl.amount)),
+                        blockHash = block.blockHash,
+                        signature = block.signature,
+                        isVoided = false
+                    )
                 }
-            }.reversed()
+            } catch (e: Exception) {
+                null
+            }
+        }.reversed()
 
-            val group = Group(
-                id = groupEntity.id,
-                name = groupEntity.name,
-                currency = groupEntity.currency,
-                creatorPubkey = groupEntity.creatorPubkey,
-                groupKeyBase64 = groupEntity.groupKeyBase64,
-                memberCount = members.size,
-                userNetBalance = netBalances[identity.publicKeyHex] ?: 0.0,
-                blockCount = domainBlocks.size.toLong(),
-                isLedgerValid = validation is ValidationResult.Valid,
-                isSecret = groupEntity.isSecret,
-                secretPinHash = groupEntity.secretPinHash,
-                isPersonalSolo = groupEntity.isPersonalSolo,
-                monthlyBudget = groupEntity.monthlyBudget,
-                isArchived = groupEntity.isArchived,
-                createdAt = groupEntity.createdAt
-            )
+        val group = Group(
+            id = groupEntity.id,
+            name = groupEntity.name,
+            currency = groupEntity.currency,
+            creatorPubkey = groupEntity.creatorPubkey,
+            groupKeyBase64 = groupEntity.groupKeyBase64,
+            memberCount = members.size,
+            userNetBalance = netBalances[identity.publicKeyHex] ?: 0.0,
+            blockCount = domainBlocks.size.toLong(),
+            isLedgerValid = isStructuralValid,
+            isSecret = groupEntity.isSecret,
+            secretPinHash = groupEntity.secretPinHash,
+            isPersonalSolo = groupEntity.isPersonalSolo,
+            monthlyBudget = groupEntity.monthlyBudget,
+            isArchived = groupEntity.isArchived,
+            createdAt = groupEntity.createdAt
+        )
 
-            GroupDetail(
-                group = group,
-                members = members,
-                expenses = expenseItems,
-                settlements = suggestions,
-                blocks = domainBlocks,
-                isLedgerIntact = validation is ValidationResult.Valid
-            )
-        }.flowOn(Dispatchers.Default)
+        return GroupDetail(
+            group = group,
+            members = members,
+            expenses = expenseItems,
+            settlements = suggestions,
+            blocks = domainBlocks,
+            isLedgerIntact = isStructuralValid
+        )
     }
 
     /**
@@ -573,6 +566,7 @@ class ExpenseRepository(
      * Completely deletes a group, its members, and all its transaction blocks.
      */
     suspend fun deleteGroup(groupId: String) {
+        groupDetailCache.remove(groupId)
         database.blockDao().deleteBlocksForGroup(groupId)
         database.memberDao().deleteMembersForGroup(groupId)
         database.groupDao().deleteGroup(groupId)

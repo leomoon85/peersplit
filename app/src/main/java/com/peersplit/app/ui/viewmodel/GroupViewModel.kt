@@ -21,7 +21,7 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
     val groupDetail: StateFlow<GroupDetail?> = repository.getGroupDetail(groupId).stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
-        initialValue = null
+        initialValue = repository.getCachedGroupDetail(groupId)
     )
 
     private val _inviteCode = MutableStateFlow<String?>(null)
@@ -160,7 +160,7 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
     val groupDetail: StateFlow<GroupDetail?> = repository.getGroupDetail(groupId).stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
-        initialValue = null
+        initialValue = repository.getCachedGroupDetail(groupId)
     )
 
     private val _isSubmitting = MutableStateFlow(false)
