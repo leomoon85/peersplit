@@ -346,7 +346,7 @@ class ExpenseRepository(
                         currency = exp.currency,
                         payerPubkey = resolvedPrimaryPayer,
                         payerName = resolvedPayerName,
-                        timestamp = block.timestamp,
+                        timestamp = exp.expenseDateMillis ?: block.timestamp,
                         userShare = share,
                         blockIndex = block.index,
                         category = exp.category,
@@ -356,7 +356,8 @@ class ExpenseRepository(
                         payers = resolvedPayers,
                         blockHash = block.blockHash,
                         signature = block.signature,
-                        isVoided = isVoided
+                        isVoided = isVoided,
+                        editedFromExpenseId = exp.editedFromExpenseId
                     )
                 } else { // BlockType.SETTLEMENT
                     val stl = decodeSettlement(block) ?: return@mapNotNull null
@@ -395,7 +396,7 @@ class ExpenseRepository(
             } catch (e: Exception) {
                 null
             }
-        }.reversed()
+        }.sortedWith(compareByDescending<ExpenseItem> { it.timestamp }.thenByDescending { it.blockIndex })
 
         val group = Group(
             id = groupEntity.id,
@@ -602,7 +603,9 @@ class ExpenseRepository(
         category: String = "General",
         splitType: String = "EQUAL",
         note: String = "",
-        payers: List<SplitItem> = emptyList()
+        payers: List<SplitItem> = emptyList(),
+        expenseDateMillis: Long? = null,
+        editedFromExpenseId: String? = null
     ) {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
@@ -624,11 +627,54 @@ class ExpenseRepository(
             authorPubkey = identity.publicKeyHex,
             authorPrivateKeyHex = privKeyHex,
             splitType = splitType,
-            payers = payers
+            payers = payers,
+            expenseDateMillis = expenseDateMillis,
+            editedFromExpenseId = editedFromExpenseId
         )
 
         database.blockDao().insertBlock(BlockEntity.fromDomainBlock(expenseBlock, isVerified = true))
         syncManager.broadcastBlock(expenseBlock, groupEntity.groupKeyBase64)
+    }
+
+    /**
+     * Edits an existing expense on the immutable ledger by atomically voiding the original expense
+     * and appending the updated expense block, then broadcasting both to peers.
+     */
+    suspend fun editExpense(
+        groupId: String,
+        originalExpenseId: String,
+        originalDescription: String,
+        newDescription: String,
+        newAmount: Double,
+        currency: String,
+        payerPubkey: String,
+        splits: List<SplitItem>,
+        category: String = "General",
+        splitType: String = "EQUAL",
+        note: String = "",
+        payers: List<SplitItem> = emptyList(),
+        expenseDateMillis: Long? = null
+    ) {
+        voidExpense(
+            groupId = groupId,
+            targetExpenseId = originalExpenseId,
+            targetDescription = originalDescription,
+            reason = "Edited & replaced"
+        )
+        addExpense(
+            groupId = groupId,
+            description = newDescription,
+            amount = newAmount,
+            currency = currency,
+            payerPubkey = payerPubkey,
+            splits = splits,
+            category = category,
+            splitType = splitType,
+            note = note,
+            payers = payers,
+            expenseDateMillis = expenseDateMillis,
+            editedFromExpenseId = originalExpenseId
+        )
     }
 
     /**

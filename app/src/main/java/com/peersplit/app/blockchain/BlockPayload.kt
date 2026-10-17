@@ -70,7 +70,9 @@ data class ExpensePayload(
     val category: String = "General",
     val note: String = "",
     val splitType: String = "EQUAL",
-    val payers: List<SplitItem> = emptyList()
+    val payers: List<SplitItem> = emptyList(),
+    val expenseDateMillis: Long? = null,
+    val editedFromExpenseId: String? = null
 )
 
 /**

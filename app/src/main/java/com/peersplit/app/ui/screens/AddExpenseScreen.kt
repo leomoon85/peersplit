@@ -1,5 +1,6 @@
 package com.peersplit.app.ui.screens
 
+import android.app.DatePickerDialog
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,8 +15,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.peersplit.app.blockchain.SplitItem
 import com.peersplit.app.data.model.ExpenseCategory
+import com.peersplit.app.data.model.ExpenseItem
 import com.peersplit.app.data.repository.GroupDetail
 import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
@@ -35,6 +39,9 @@ import com.peersplit.app.ui.theme.BlockchainAccent
 import com.peersplit.app.util.CurrencyUtil
 import com.peersplit.app.util.ReceiptScannerUtil
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 
 enum class SplitMode(val label: String, val icon: String) {
@@ -66,6 +73,7 @@ private val defaultRecurringPresets = listOf(
 fun AddExpenseScreen(
     groupDetail: GroupDetail?,
     isSubmitting: Boolean,
+    editingExpenseId: String? = null,
     onBackClick: () -> Unit,
     onSubmitExpense: (
         description: String,
@@ -76,7 +84,10 @@ fun AddExpenseScreen(
         category: String,
         splitType: String,
         note: String,
-        payers: List<SplitItem>
+        payers: List<SplitItem>,
+        expenseDateMillis: Long,
+        editingExpenseId: String?,
+        originalDescription: String?
     ) -> Unit
 ) {
     if (groupDetail == null) {
@@ -92,12 +103,56 @@ fun AddExpenseScreen(
     val currency = groupDetail.group.currency
     val sym = CurrencyUtil.getSymbol(currency)
 
+    val editingExpense: ExpenseItem? = remember(groupDetail.expenses, editingExpenseId) {
+        if (editingExpenseId.isNullOrBlank()) null
+        else groupDetail.expenses.firstOrNull { it.id == editingExpenseId }
+    }
+    val isEditMode = editingExpense != null
+
     var description by remember { mutableStateOf("") }
     var amountText by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf(ExpenseCategory.FOOD) }
     var splitMode by remember { mutableStateOf(SplitMode.EQUAL) }
     var isOcrScanning by remember { mutableStateOf(false) }
+
+    // Expense Date (Today, Yesterday, or any past date via Calendar picker)
+    var expenseDateMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    val dateFormatter = remember { SimpleDateFormat("EEE, dd MMM yyyy", Locale.getDefault()) }
+
+    val isTodaySelected = remember(expenseDateMillis) {
+        val cal1 = Calendar.getInstance().apply { timeInMillis = expenseDateMillis }
+        val calNow = Calendar.getInstance()
+        cal1.get(Calendar.YEAR) == calNow.get(Calendar.YEAR) &&
+            cal1.get(Calendar.DAY_OF_YEAR) == calNow.get(Calendar.DAY_OF_YEAR)
+    }
+    val isYesterdaySelected = remember(expenseDateMillis) {
+        val cal1 = Calendar.getInstance().apply { timeInMillis = expenseDateMillis }
+        val calYest = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+        cal1.get(Calendar.YEAR) == calYest.get(Calendar.YEAR) &&
+            cal1.get(Calendar.DAY_OF_YEAR) == calYest.get(Calendar.DAY_OF_YEAR)
+    }
+
+    fun openCalendarPicker() {
+        val cal = Calendar.getInstance().apply { timeInMillis = expenseDateMillis }
+        val dialog = DatePickerDialog(
+            context,
+            { _, year, month, dayOfMonth ->
+                val picked = Calendar.getInstance().apply {
+                    timeInMillis = expenseDateMillis
+                    set(Calendar.YEAR, year)
+                    set(Calendar.MONTH, month)
+                    set(Calendar.DAY_OF_MONTH, dayOfMonth)
+                }
+                expenseDateMillis = picked.timeInMillis
+            },
+            cal.get(Calendar.YEAR),
+            cal.get(Calendar.MONTH),
+            cal.get(Calendar.DAY_OF_MONTH)
+        )
+        dialog.datePicker.maxDate = System.currentTimeMillis()
+        dialog.show()
+    }
 
     // Single vs Multiple Payers
     var isMultiPayer by remember { mutableStateOf(false) }
@@ -111,14 +166,74 @@ fun AddExpenseScreen(
     val exactAmounts = remember { mutableStateMapOf<String, String>() }
     val percentageInputs = remember { mutableStateMapOf<String, String>() }
     val sharesInputs = remember { mutableStateMapOf<String, String>() }
+    var hasInitializedFields by remember { mutableStateOf(false) }
 
-    LaunchedEffect(members) {
-        members.forEach { m ->
-            equalSelected[m.pubkey] = true
-            exactAmounts[m.pubkey] = ""
-            percentageInputs[m.pubkey] = ""
-            sharesInputs[m.pubkey] = "1"
-            multiPayerAmounts[m.pubkey] = ""
+    LaunchedEffect(members, editingExpense) {
+        if (!hasInitializedFields && members.isNotEmpty()) {
+            members.forEach { m ->
+                equalSelected[m.pubkey] = true
+                exactAmounts[m.pubkey] = ""
+                percentageInputs[m.pubkey] = ""
+                sharesInputs[m.pubkey] = "1"
+                multiPayerAmounts[m.pubkey] = ""
+            }
+
+            if (editingExpense != null) {
+                description = editingExpense.description
+                amountText = String.format(Locale.US, "%.2f", editingExpense.totalAmount)
+                note = editingExpense.note
+                selectedCategory = ExpenseCategory.fromName(editingExpense.category)
+                expenseDateMillis = editingExpense.timestamp
+
+                if (editingExpense.payers.size > 1) {
+                    isMultiPayer = true
+                    editingExpense.payers.forEach { p ->
+                        multiPayerAmounts[p.userPubkey] = String.format(Locale.US, "%.2f", p.amount)
+                    }
+                } else {
+                    isMultiPayer = false
+                    selectedPayerPubkey = editingExpense.payerPubkey
+                }
+
+                val parsedMode = try {
+                    SplitMode.valueOf(editingExpense.splitType)
+                } catch (_: Exception) {
+                    SplitMode.EQUAL
+                }
+                splitMode = parsedMode
+
+                val splitMap = editingExpense.splits.associate { it.userPubkey to it.amount }
+                when (parsedMode) {
+                    SplitMode.EQUAL -> {
+                        members.forEach { m ->
+                            equalSelected[m.pubkey] = (splitMap[m.pubkey] ?: 0.0) > 0.0
+                        }
+                    }
+                    SplitMode.EXACT -> {
+                        members.forEach { m ->
+                            val amt = splitMap[m.pubkey] ?: 0.0
+                            exactAmounts[m.pubkey] = if (amt > 0) String.format(Locale.US, "%.2f", amt) else ""
+                        }
+                    }
+                    SplitMode.PERCENTAGE -> {
+                        val total = editingExpense.totalAmount.coerceAtLeast(0.01)
+                        members.forEach { m ->
+                            val amt = splitMap[m.pubkey] ?: 0.0
+                            val pct = (amt / total) * 100.0
+                            percentageInputs[m.pubkey] = if (pct > 0) String.format(Locale.US, "%.1f", pct) else ""
+                        }
+                    }
+                    SplitMode.SHARES -> {
+                        val minNonZero = splitMap.values.filter { it > 0.0 }.minOrNull() ?: 1.0
+                        members.forEach { m ->
+                            val amt = splitMap[m.pubkey] ?: 0.0
+                            val sh = if (amt > 0) kotlin.math.round(amt / minNonZero).toInt().coerceAtLeast(1) else 0
+                            sharesInputs[m.pubkey] = sh.toString()
+                        }
+                    }
+                }
+            }
+            hasInitializedFields = true
         }
     }
 
@@ -263,7 +378,7 @@ fun AddExpenseScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Add Expense", fontWeight = FontWeight.Bold) },
+                title = { Text(if (isEditMode) "Edit Expense" else "Add Expense", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -284,63 +399,65 @@ fun AddExpenseScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Receipt OCR Quick Action Banner
-            item {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { photoPickerLauncher.launch("image/*") },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = BlockchainAccent.copy(alpha = 0.12f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
+            if (!isEditMode) {
+                // Receipt OCR Quick Action Banner
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { photoPickerLauncher.launch("image/*") },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = BlockchainAccent.copy(alpha = 0.12f))
                     ) {
-                        Icon(Icons.Default.DocumentScanner, contentDescription = null, tint = BlockchainAccent)
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Auto-Scan Bill / Receipt Photo", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium, color = BlockchainAccent)
-                            Text("Pick a receipt photo to auto-fill title & amount", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (isOcrScanning) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = BlockchainAccent)
-                        }
-                    }
-                }
-            }
-
-            // Quick Recurring / Preset Templates Bar
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Bolt, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Quick Recurring & Templates", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Show group's recent expenses as 1-tap repeat chips (fills title, amount, category)
-                    items(recentCustomTemplates) { prev ->
-                        AssistChip(
-                            onClick = {
-                                description = prev.description
-                                amountText = String.format(Locale.US, "%.2f", prev.totalAmount)
-                                selectedCategory = ExpenseCategory.fromName(prev.category)
-                            },
-                            label = {
-                                Text("↻ ${prev.description} (${CurrencyUtil.formatAmount(prev.totalAmount, currency)})")
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.DocumentScanner, contentDescription = null, tint = BlockchainAccent)
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Auto-Scan Bill / Receipt Photo", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium, color = BlockchainAccent)
+                                Text("Pick a receipt photo to auto-fill title & amount", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                        )
+                            if (isOcrScanning) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = BlockchainAccent)
+                            }
+                        }
                     }
-                    // Standard presets
-                    items(defaultRecurringPresets) { preset ->
-                        AssistChip(
-                            onClick = {
-                                description = preset.title
-                                selectedCategory = preset.category
-                            },
-                            label = { Text("${preset.emoji} ${preset.title}") }
-                        )
+                }
+
+                // Quick Recurring / Preset Templates Bar
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Bolt, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Quick Recurring & Templates", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Show group's recent expenses as 1-tap repeat chips (fills title, amount, category)
+                        items(recentCustomTemplates) { prev ->
+                            AssistChip(
+                                onClick = {
+                                    description = prev.description
+                                    amountText = String.format(Locale.US, "%.2f", prev.totalAmount)
+                                    selectedCategory = ExpenseCategory.fromName(prev.category)
+                                },
+                                label = {
+                                    Text("↻ ${prev.description} (${CurrencyUtil.formatAmount(prev.totalAmount, currency)})")
+                                }
+                            )
+                        }
+                        // Standard presets
+                        items(defaultRecurringPresets) { preset ->
+                            AssistChip(
+                                onClick = {
+                                    description = preset.title
+                                    selectedCategory = preset.category
+                                },
+                                label = { Text("${preset.emoji} ${preset.title}") }
+                            )
+                        }
                     }
                 }
             }
@@ -370,6 +487,51 @@ fun AddExpenseScreen(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true
                 )
+            }
+
+            // Expense Date Selector (Today, Yesterday, or Pick any Past Date)
+            item {
+                Text("Expense Date", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = isTodaySelected,
+                        onClick = { expenseDateMillis = System.currentTimeMillis() },
+                        label = { Text("Today") }
+                    )
+                    FilterChip(
+                        selected = isYesterdaySelected,
+                        onClick = {
+                            val cal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+                            expenseDateMillis = cal.timeInMillis
+                        },
+                        label = { Text("Yesterday") }
+                    )
+                    FilterChip(
+                        selected = !isTodaySelected && !isYesterdaySelected,
+                        onClick = { openCalendarPicker() },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.CalendarMonth,
+                                contentDescription = "Pick Past Date",
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                if (!isTodaySelected && !isYesterdaySelected) {
+                                    dateFormatter.format(Date(expenseDateMillis))
+                                } else {
+                                    "Pick Past Date"
+                                }
+                            )
+                        }
+                    )
+                }
             }
 
             // Category Picker
@@ -676,7 +838,10 @@ fun AddExpenseScreen(
                             selectedCategory.name,
                             splitMode.name,
                             note.trim(),
-                            computedPayers
+                            computedPayers,
+                            expenseDateMillis,
+                            editingExpense?.id,
+                            editingExpense?.description
                         )
                     },
                     modifier = Modifier
@@ -691,9 +856,13 @@ fun AddExpenseScreen(
                             color = MaterialTheme.colorScheme.onPrimary
                         )
                     } else {
-                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(
+                            if (isEditMode) Icons.Default.Edit else Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Save Expense")
+                        Text(if (isEditMode) "Update Expense" else "Save Expense")
                     }
                 }
                 Spacer(modifier = Modifier.height(24.dp))

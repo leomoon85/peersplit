@@ -178,25 +178,47 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
         category: String = "General",
         splitType: String = "EQUAL",
         note: String = "",
-        payers: List<SplitItem> = emptyList()
+        payers: List<SplitItem> = emptyList(),
+        expenseDateMillis: Long? = null,
+        editingExpenseId: String? = null,
+        originalDescription: String? = null
     ) {
         if (amount <= 0 || description.isBlank() || splits.isEmpty()) return
 
         viewModelScope.launch {
             _isSubmitting.value = true
             try {
-                repository.addExpense(
-                    groupId = groupId,
-                    description = description.trim(),
-                    amount = amount,
-                    currency = currency,
-                    payerPubkey = payerPubkey,
-                    splits = splits,
-                    category = category,
-                    splitType = splitType,
-                    note = note,
-                    payers = payers
-                )
+                if (!editingExpenseId.isNullOrBlank()) {
+                    repository.editExpense(
+                        groupId = groupId,
+                        originalExpenseId = editingExpenseId,
+                        originalDescription = originalDescription ?: description.trim(),
+                        newDescription = description.trim(),
+                        newAmount = amount,
+                        currency = currency,
+                        payerPubkey = payerPubkey,
+                        splits = splits,
+                        category = category,
+                        splitType = splitType,
+                        note = note,
+                        payers = payers,
+                        expenseDateMillis = expenseDateMillis
+                    )
+                } else {
+                    repository.addExpense(
+                        groupId = groupId,
+                        description = description.trim(),
+                        amount = amount,
+                        currency = currency,
+                        payerPubkey = payerPubkey,
+                        splits = splits,
+                        category = category,
+                        splitType = splitType,
+                        note = note,
+                        payers = payers,
+                        expenseDateMillis = expenseDateMillis
+                    )
+                }
                 _submissionSuccess.value = true
             } catch (e: Exception) {
                 _isSubmitting.value = false

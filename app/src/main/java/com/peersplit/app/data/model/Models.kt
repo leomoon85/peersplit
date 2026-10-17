@@ -46,5 +46,6 @@ data class ExpenseItem(
     val payers: List<SplitItem> = emptyList(),
     val blockHash: String = "",
     val signature: String = "",
-    val isVoided: Boolean = false
+    val isVoided: Boolean = false,
+    val editedFromExpenseId: String? = null
 )

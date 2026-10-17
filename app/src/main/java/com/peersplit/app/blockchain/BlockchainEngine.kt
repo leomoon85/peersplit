@@ -116,7 +116,9 @@ object BlockchainEngine {
         authorPubkey: String,
         authorPrivateKeyHex: String,
         splitType: String = "EQUAL",
-        payers: List<SplitItem> = emptyList()
+        payers: List<SplitItem> = emptyList(),
+        expenseDateMillis: Long? = null,
+        editedFromExpenseId: String? = null
     ): Block {
         val payload = ExpensePayload(
             expenseId = "exp_${UUID.randomUUID().toString().take(12)}",
@@ -128,7 +130,9 @@ object BlockchainEngine {
             category = category,
             note = note,
             splitType = splitType,
-            payers = payers
+            payers = payers,
+            expenseDateMillis = expenseDateMillis,
+            editedFromExpenseId = editedFromExpenseId
         )
         val payloadJson = json.encodeToString(payload)
 

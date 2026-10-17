@@ -165,6 +165,9 @@ fun NavGraph(
                 onAddExpenseClick = {
                     navController.navigate(Screen.AddExpense.createRoute(groupId))
                 },
+                onEditExpenseClick = { expenseId ->
+                    navController.navigate(Screen.AddExpense.createRoute(groupId, expenseId))
+                },
                 onSettleUpClick = { payer, payee, amount ->
                     navController.navigate(Screen.SettleUp.createRoute(groupId, payer, payee, amount))
                 },
@@ -211,10 +214,14 @@ fun NavGraph(
 
         composable(
             route = Screen.AddExpense.route,
-            arguments = listOf(navArgument("groupId") { type = NavType.StringType })
+            arguments = listOf(
+                navArgument("groupId") { type = NavType.StringType },
+                navArgument("expenseId") { type = NavType.StringType; defaultValue = ""; nullable = true }
+            )
         ) { backStackEntry ->
             val context = LocalContext.current
             val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
+            val editingExpenseId = backStackEntry.arguments?.getString("expenseId")?.takeIf { it.isNotBlank() }
             val addExpenseViewModel = viewModel { AddExpenseViewModel(groupId) }
             val groupDetail by addExpenseViewModel.groupDetail.collectAsState()
             val isSubmitting by addExpenseViewModel.isSubmitting.collectAsState()
@@ -222,19 +229,37 @@ fun NavGraph(
             AddExpenseScreen(
                 groupDetail = groupDetail,
                 isSubmitting = isSubmitting,
+                editingExpenseId = editingExpenseId,
                 onBackClick = { navController.popBackStack() },
-                onSubmitExpense = { desc, amount, currency, payer, splits, category, splitType, note, payers ->
+                onSubmitExpense = { desc, amount, currency, payer, splits, category, splitType, note, payers, expenseDateMillis, editId, origDesc ->
                     val myPubkey = com.peersplit.app.crypto.KeyManager.getOrCreateIdentity(context).publicKeyHex
                     val userPaid = payer == myPubkey || payers.any { it.userPubkey == myPubkey && it.amount > 0 }
-                    val xp = if (userPaid) 45 else 25
-                    com.peersplit.app.util.RewardsEngine.recordAction(
-                        context = context,
-                        xpEarned = xp,
-                        isExpense = true,
-                        userPaidBill = userPaid
+                    if (editId.isNullOrBlank()) {
+                        val xp = if (userPaid) 45 else 25
+                        com.peersplit.app.util.RewardsEngine.recordAction(
+                            context = context,
+                            xpEarned = xp,
+                            isExpense = true,
+                            userPaidBill = userPaid
+                        )
+                        Toast.makeText(context, "⚡ Expense logged! +$xp SplitPoints (XP)", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "✏️ Expense updated & synced!", Toast.LENGTH_SHORT).show()
+                    }
+                    addExpenseViewModel.submitExpense(
+                        description = desc,
+                        amount = amount,
+                        currency = currency,
+                        payerPubkey = payer,
+                        splits = splits,
+                        category = category,
+                        splitType = splitType,
+                        note = note,
+                        payers = payers,
+                        expenseDateMillis = expenseDateMillis,
+                        editingExpenseId = editId,
+                        originalDescription = origDesc
                     )
-                    Toast.makeText(context, "⚡ Expense logged! +$xp SplitPoints (XP)", Toast.LENGTH_SHORT).show()
-                    addExpenseViewModel.submitExpense(desc, amount, currency, payer, splits, category, splitType, note, payers)
                     navController.popBackStack()
                 }
             )

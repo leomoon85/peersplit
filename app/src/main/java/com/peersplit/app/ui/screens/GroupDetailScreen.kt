@@ -70,6 +70,7 @@ fun GroupDetailScreen(
     inviteCode: String?,
     onBackClick: () -> Unit,
     onAddExpenseClick: () -> Unit,
+    onEditExpenseClick: (expenseId: String) -> Unit = {},
     onSettleUpClick: (payer: String?, payee: String?, amount: Double?) -> Unit = { _, _, _ -> },
     onAuditLedgerClick: () -> Unit,
     onGenerateInvite: () -> Unit,
@@ -785,20 +786,40 @@ fun GroupDetailScreen(
                     }
                 }
 
-                // Void / Delete Expense Action
+                // Edit & Void / Delete Expense Actions
                 if (!exp.isVoided) {
                     Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedButton(
-                        onClick = {
-                            showVoidConfirmDialog = exp
-                        },
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Remove / Void Expense")
+                        if (exp.splitType != "SETTLEMENT") {
+                            Button(
+                                onClick = {
+                                    val targetId = exp.id
+                                    selectedExpenseForDetail = null
+                                    onEditExpenseClick(targetId)
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Edit Expense")
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                showVoidConfirmDialog = exp
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Remove")
+                        }
                     }
                 }
             }
