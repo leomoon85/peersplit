@@ -714,19 +714,19 @@ fun GroupDetailScreen(
 
     // Invite Code Dialog
     if (inviteCode != null) {
+        val qrBitmap = remember(inviteCode) {
+            try {
+                QrCodeUtil.generateQrBitmap(inviteCode, 640, 640)
+            } catch (e: Exception) {
+                null
+            }
+        }
+
         AlertDialog(
             onDismissRequest = onDismissInvite,
             title = { Text("Group Invite Link") },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    val qrBitmap = remember(inviteCode) {
-                        try {
-                            QrCodeUtil.generateQrBitmap(inviteCode, 400, 400)
-                        } catch (e: Exception) {
-                            null
-                        }
-                    }
-
                     if (qrBitmap != null) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
@@ -737,7 +737,7 @@ fun GroupDetailScreen(
                                 bitmap = qrBitmap.asImageBitmap(),
                                 contentDescription = "Scan to Join Group",
                                 modifier = Modifier
-                                    .size(180.dp)
+                                    .size(200.dp)
                                     .padding(8.dp)
                             )
                         }
@@ -781,11 +781,6 @@ fun GroupDetailScreen(
                     }
                     Button(
                         onClick = {
-                            val qrBitmap = try {
-                                QrCodeUtil.generateQrBitmap(inviteCode, 600, 600)
-                            } catch (e: Exception) {
-                                null
-                            }
                             val shareText = "Join my expense sharing group *${groupDetail.group.name}* on PeerSplit!\n\n" +
                                     "Tap this link on your phone: $inviteCode\n\n" +
                                     "Or open PeerSplit and scan/pick the attached QR code."

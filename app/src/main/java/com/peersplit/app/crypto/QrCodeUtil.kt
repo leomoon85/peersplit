@@ -24,8 +24,9 @@ object QrCodeUtil {
         widthPx: Int = 512,
         heightPx: Int = 512
     ): Bitmap {
+        val ecLevel = if (content.length > 500) ErrorCorrectionLevel.L else ErrorCorrectionLevel.M
         val hints = mapOf(
-            EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+            EncodeHintType.ERROR_CORRECTION to ecLevel,
             EncodeHintType.MARGIN to 2,
             EncodeHintType.CHARACTER_SET to "UTF-8"
         )
@@ -33,12 +34,15 @@ object QrCodeUtil {
         val writer = QRCodeWriter()
         val bitMatrix = writer.encode(content, BarcodeFormat.QR_CODE, widthPx, heightPx, hints)
 
-        val bitmap = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
-        for (x in 0 until widthPx) {
-            for (y in 0 until heightPx) {
-                bitmap.setPixel(x, y, if (bitMatrix[x, y]) Color.BLACK else Color.WHITE)
+        val pixels = IntArray(widthPx * heightPx)
+        for (y in 0 until heightPx) {
+            val offset = y * widthPx
+            for (x in 0 until widthPx) {
+                pixels[offset + x] = if (bitMatrix[x, y]) Color.BLACK else Color.WHITE
             }
         }
+        val bitmap = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
+        bitmap.setPixels(pixels, 0, widthPx, 0, 0, widthPx, heightPx)
         return bitmap
     }
 

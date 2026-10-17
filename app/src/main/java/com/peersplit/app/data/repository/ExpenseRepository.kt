@@ -31,6 +31,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 
 data class GroupDetail(
     val group: Group,
@@ -642,30 +646,85 @@ class ExpenseRepository(
         syncManager.broadcastBlock(settlementBlock, groupEntity.groupKeyBase64)
     }
 
+    private fun encodeInviteUri(inviteData: GroupInviteData): String {
+        val jsonBytes = json.encodeToString(inviteData).toByteArray(Charsets.UTF_8)
+        val bos = ByteArrayOutputStream()
+        GZIPOutputStream(bos).use { it.write(jsonBytes) }
+        val compressed = bos.toByteArray()
+        return "peersplit://" + Base64.encodeToString(compressed, Base64.URL_SAFE or Base64.NO_WRAP)
+    }
+
+    private fun decodeInviteData(inviteUri: String): GroupInviteData {
+        val cleanUri = Regex("peersplit://\\S+").find(inviteUri)?.value ?: inviteUri.trim()
+        val base64Payload = cleanUri.removePrefix("peersplit://").trim()
+        require(base64Payload.isNotBlank()) { "Empty invite code" }
+        val rawBytes = Base64.decode(base64Payload, Base64.URL_SAFE or Base64.NO_WRAP)
+        val jsonStr = if (rawBytes.size >= 2 && rawBytes[0] == 0x1f.toByte() && rawBytes[1] == 0x8b.toByte()) {
+            GZIPInputStream(ByteArrayInputStream(rawBytes)).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        } else {
+            String(rawBytes, Charsets.UTF_8)
+        }
+        return json.decodeFromString(GroupInviteData.serializer(), jsonStr)
+    }
+
     /**
      * Generates a shareable URL-safe invite string containing group credentials and current ledger blocks.
+     * Uses GZIP compression and caps payload size so the invite always renders cleanly as a QR code.
      */
     suspend fun generateInviteCode(groupId: String): String {
         val group = database.groupDao().getGroupByIdSync(groupId) ?: return ""
-        val blocks = database.blockDao().getBlocksForGroupSync(groupId).map { it.toDomainBlock() }
+        val blocks = database.blockDao().getBlocksForGroupSync(groupId).map { it.toDomainBlock() }.sortedBy { it.index }
         val genesisBlock = blocks.firstOrNull { it.index == 0L }
         val genesisJson = genesisBlock?.let { json.encodeToString(Block.serializer(), it) }
         val allBlocksJson = blocks.map { json.encodeToString(Block.serializer(), it) }
         val members = database.memberDao().getMembersForGroupSync(groupId)
         val creatorName = members.firstOrNull { it.pubkey == group.creatorPubkey }?.displayName ?: "Creator"
 
-        val inviteData = GroupInviteData(
+        val fullInvite = GroupInviteData(
             groupId = group.id,
             groupName = group.name,
             currency = group.currency,
             groupKeyBase64 = group.groupKeyBase64,
             creatorPubkey = group.creatorPubkey,
             creatorDisplayName = creatorName,
-            genesisBlockJson = genesisJson,
+            genesisBlockJson = if (allBlocksJson.isEmpty()) genesisJson else null,
             blocksJson = allBlocksJson
         )
-        val jsonStr = json.encodeToString(inviteData)
-        return "peersplit://" + Base64.encodeToString(jsonStr.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_WRAP)
+        val encodedFull = encodeInviteUri(fullInvite)
+        if (encodedFull.length <= 2200) {
+            return encodedFull
+        }
+
+        // If group has a large history, prioritize GENESIS + MEMBER_JOIN blocks + latest expenses that fit in a QR code
+        val essentialBlocks = blocks.filter {
+            it.blockType == BlockType.GENESIS || it.blockType == BlockType.MEMBER_JOIN
+        }
+        val otherBlocks = blocks.filter {
+            it.blockType != BlockType.GENESIS && it.blockType != BlockType.MEMBER_JOIN
+        }
+        val selectedBlocks = essentialBlocks.toMutableList()
+        for (b in otherBlocks.asReversed()) {
+            val candidate = (selectedBlocks + b).sortedBy { it.index }.map { json.encodeToString(Block.serializer(), it) }
+            val candidateUri = encodeInviteUri(fullInvite.copy(blocksJson = candidate))
+            if (candidateUri.length <= 2200) {
+                selectedBlocks.add(b)
+            } else {
+                break
+            }
+        }
+        val finalBlocksJson = selectedBlocks.sortedBy { it.index }.map { json.encodeToString(Block.serializer(), it) }
+        val trimmedUri = encodeInviteUri(fullInvite.copy(blocksJson = finalBlocksJson))
+        if (trimmedUri.length <= 2500) {
+            return trimmedUri
+        }
+
+        // Ultimate fallback: Genesis block only so QR code never fails
+        return encodeInviteUri(
+            fullInvite.copy(
+                genesisBlockJson = genesisJson,
+                blocksJson = emptyList()
+            )
+        )
     }
 
     /**
@@ -674,11 +733,7 @@ class ExpenseRepository(
      */
     fun parseInvitePreview(inviteUri: String): GroupInvitePreview? {
         return try {
-            val cleanUri = Regex("peersplit://\\S+").find(inviteUri)?.value ?: inviteUri.trim()
-            val base64Payload = cleanUri.removePrefix("peersplit://").trim()
-            if (base64Payload.isBlank()) return null
-            val jsonBytes = Base64.decode(base64Payload, Base64.URL_SAFE or Base64.NO_WRAP)
-            val inviteData = json.decodeFromString(GroupInviteData.serializer(), String(jsonBytes, Charsets.UTF_8))
+            val inviteData = decodeInviteData(inviteUri)
 
             val blockStrings = if (inviteData.blocksJson.isNotEmpty()) {
                 inviteData.blocksJson
@@ -734,10 +789,7 @@ class ExpenseRepository(
         explicitClaimGhostPubkey: String? = null
     ): Result<String> {
         return try {
-            val cleanUri = Regex("peersplit://\\S+").find(inviteUri)?.value ?: inviteUri.trim()
-            val base64Payload = cleanUri.removePrefix("peersplit://").trim()
-            val jsonBytes = Base64.decode(base64Payload, Base64.URL_SAFE or Base64.NO_WRAP)
-            val inviteData = json.decodeFromString(GroupInviteData.serializer(), String(jsonBytes, Charsets.UTF_8))
+            val inviteData = decodeInviteData(inviteUri)
 
             val existing = database.groupDao().getGroupByIdSync(inviteData.groupId)
             if (existing == null) {
