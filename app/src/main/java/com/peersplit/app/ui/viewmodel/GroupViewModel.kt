@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -26,12 +27,25 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
     private val _inviteCode = MutableStateFlow<String?>(null)
     val inviteCode: StateFlow<String?> = _inviteCode.asStateFlow()
 
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
     init {
         viewModelScope.launch {
             while (true) {
                 syncManager.syncGroupNow(groupId)
-                kotlinx.coroutines.delay(5000)
+                kotlinx.coroutines.delay(6000)
             }
+        }
+    }
+
+    fun manualSync(onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            _isSyncing.value = true
+            syncManager.syncGroupNow(groupId)
+            kotlinx.coroutines.delay(700)
+            _isSyncing.value = false
+            onDone()
         }
     }
 
@@ -87,6 +101,57 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
         viewModelScope.launch {
             repository.deleteGroup(groupId)
             onDone()
+        }
+    }
+
+    fun importExpenses(
+        expenses: List<com.peersplit.app.util.ParsedImportExpense>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+        onComplete: (Int) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val detail = repository.getGroupDetail(groupId).first() ?: return@launch
+            val members = detail.members.toMutableList()
+            var importedCount = 0
+
+            // Helper to get or create member pubkey
+            suspend fun getOrCreateMemberPubkey(payerName: String): String {
+                val clean = payerName.trim()
+                val existing = members.firstOrNull { it.displayName.equals(clean, ignoreCase = true) }
+                if (existing != null) return existing.pubkey
+
+                // Auto-create offline member
+                repository.addOfflineMember(groupId, clean)
+                val updatedDetail = repository.getGroupDetail(groupId).first()
+                if (updatedDetail != null) {
+                    members.clear()
+                    members.addAll(updatedDetail.members)
+                    val created = members.firstOrNull { it.displayName.equals(clean, ignoreCase = true) }
+                    if (created != null) return created.pubkey
+                }
+                return detail.group.creatorPubkey
+            }
+
+            for ((index, exp) in expenses.withIndex()) {
+                val payerPubkey = getOrCreateMemberPubkey(exp.payerName)
+                val splitShare = exp.amount / members.size.coerceAtLeast(1)
+                val splits = members.map { SplitItem(it.pubkey, splitShare) }
+
+                repository.addExpense(
+                    groupId = groupId,
+                    description = exp.description,
+                    amount = exp.amount,
+                    currency = detail.group.currency,
+                    payerPubkey = payerPubkey,
+                    splits = splits,
+                    category = exp.category,
+                    splitType = "EQUAL",
+                    note = if (exp.dateString.isNotBlank()) "Imported (${exp.dateString})" else "Imported"
+                )
+                importedCount++
+                onProgress(index + 1, expenses.size)
+            }
+            onComplete(importedCount)
         }
     }
 }

@@ -166,6 +166,13 @@ fun NavGraph(
                 },
                 onUpdateMemberContact = { pubkey, phone, upiId ->
                     groupViewModel.updateMemberContact(pubkey, phone, upiId)
+                },
+                isSyncing = groupViewModel.isSyncing.collectAsState().value,
+                onManualSync = { onDone ->
+                    groupViewModel.manualSync(onDone)
+                },
+                onImportExpenses = { expenses, onProgress, onComplete ->
+                    groupViewModel.importExpenses(expenses, onProgress, onComplete)
                 }
             )
         }

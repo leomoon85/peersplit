@@ -44,6 +44,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        PeerSplitApp.instance.syncManager.syncAllGroupsNow()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleDeepLink(intent)

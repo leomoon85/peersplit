@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -25,7 +26,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.core.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -72,7 +75,10 @@ fun GroupDetailScreen(
     onUpdateBudget: (budget: Double) -> Unit = {},
     onArchiveGroup: (isArchived: Boolean) -> Unit = {},
     onDeleteGroup: () -> Unit = {},
-    onUpdateMemberContact: (pubkey: String, phone: String?, upiId: String?) -> Unit = { _, _, _ -> }
+    onUpdateMemberContact: (pubkey: String, phone: String?, upiId: String?) -> Unit = { _, _, _ -> },
+    isSyncing: Boolean = false,
+    onManualSync: (onDone: () -> Unit) -> Unit = {},
+    onImportExpenses: (List<com.peersplit.app.util.ParsedImportExpense>, (Int, Int) -> Unit, (Int) -> Unit) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(0) }
@@ -118,6 +124,23 @@ fun GroupDetailScreen(
     // Delete Group Confirmation Dialog state
     var showDeleteGroupDialog by remember { mutableStateOf(false) }
 
+    // Import CSV / XLSX State & File Picker Launcher
+    var showImportConfirmDialog by remember { mutableStateOf<com.peersplit.app.util.ImportAnalysisResult?>(null) }
+    var isImportingInProgress by remember { mutableStateOf(false) }
+    var importProgressText by remember { mutableStateOf("") }
+    val coroutineScope = rememberCoroutineScope()
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null && groupDetail != null) {
+            coroutineScope.launch {
+                val analysis = com.peersplit.app.util.ImportUtil.analyzeFile(context, uri, groupDetail)
+                showImportConfirmDialog = analysis
+            }
+        }
+    }
+
     if (groupDetail == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
@@ -155,6 +178,27 @@ fun GroupDetailScreen(
                     }
                 },
                 actions = {
+                    val groupSyncRotation by animateFloatAsState(
+                        targetValue = if (isSyncing) 360f else 0f,
+                        animationSpec = if (isSyncing) infiniteRepeatable(tween(750, easing = LinearEasing)) else tween(300),
+                        label = "groupSyncRotation"
+                    )
+                    IconButton(
+                        onClick = {
+                            if (!isSyncing) {
+                                onManualSync {
+                                    Toast.makeText(context, "Group synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(
+                            Icons.Default.Sync,
+                            contentDescription = "Sync Group Now",
+                            modifier = Modifier.rotate(groupSyncRotation),
+                            tint = if (isSyncing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                     IconButton(onClick = { showAddMemberDialog = true }) {
                         Icon(Icons.Default.PersonAdd, contentDescription = "Add Member")
                     }
@@ -189,6 +233,23 @@ fun GroupDetailScreen(
                                 leadingIcon = { Icon(Icons.Default.AccountBalanceWallet, contentDescription = null) }
                             )
                             HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Import CSV / Excel (.xlsx)") },
+                                onClick = {
+                                    showExportMenu = false
+                                    filePickerLauncher.launch(
+                                        arrayOf(
+                                            "text/comma-separated-values",
+                                            "text/csv",
+                                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                            "application/vnd.ms-excel",
+                                            "application/octet-stream",
+                                            "*/*"
+                                        )
+                                    )
+                                },
+                                leadingIcon = { Icon(Icons.Default.FileOpen, contentDescription = null) }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Share Formatted Statement") },
                                 onClick = {
@@ -871,6 +932,94 @@ fun GroupDetailScreen(
             }
         )
     }
+
+    // Import CSV / Excel Confirmation Dialog
+    if (showImportConfirmDialog != null) {
+        val analysis = showImportConfirmDialog!!
+        AlertDialog(
+            onDismissRequest = { if (!isImportingInProgress) showImportConfirmDialog = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.FileOpen, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Import Expenses")
+                }
+            },
+            text = {
+                if (isImportingInProgress) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = if (importProgressText.isNotBlank()) importProgressText else "Importing and securing expenses...",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else if (analysis.errorMessage != null) {
+                    Text(analysis.errorMessage, color = MaterialTheme.colorScheme.error)
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Found ${analysis.newExpenses.size} new expense(s) totaling ${CurrencyUtil.formatAmount(analysis.totalAmount, groupDetail.group.currency)}.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (analysis.skippedDuplicates > 0) {
+                            Text(
+                                "ℹ️ ${analysis.skippedDuplicates} duplicate expense(s) already in the group will be skipped.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (analysis.detectedPayers.isNotEmpty()) {
+                            Text(
+                                "Detected Payers: ${analysis.detectedPayers.joinToString(", ")}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Text(
+                            "Imported expenses will be signed, added to this group's ledger, and synced to all peers automatically.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (!isImportingInProgress && analysis.errorMessage == null && analysis.newExpenses.isNotEmpty()) {
+                    Button(
+                        onClick = {
+                            isImportingInProgress = true
+                            onImportExpenses(
+                                analysis.newExpenses,
+                                { done, total ->
+                                    importProgressText = "Imported $done of $total..."
+                                },
+                                { count ->
+                                    isImportingInProgress = false
+                                    showImportConfirmDialog = null
+                                    Toast.makeText(context, "Successfully imported $count expenses! ⚡", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        }
+                    ) {
+                        Text("Import ${analysis.newExpenses.size} Expenses")
+                    }
+                }
+            },
+            dismissButton = {
+                if (!isImportingInProgress) {
+                    TextButton(onClick = { showImportConfirmDialog = null }) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1532,7 +1681,7 @@ fun AnalyticsTab(
     if (expenses.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
             Text(
-                "No spending data available yet.\nAdd expenses to see category breakdown and charts.",
+                "No spending data available yet.\nAdd expenses to see category and member breakdown charts.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -1541,11 +1690,41 @@ fun AnalyticsTab(
         return
     }
 
+    var selectedChartMode by remember { mutableStateOf(0) } // 0 = Category, 1 = By Person (Payer)
+
     val categoryBreakdown = remember(expenses) {
         expenses.groupBy { ExpenseCategory.fromName(it.category) }
             .mapValues { entry -> entry.value.sumOf { it.totalAmount } }
             .toList()
             .sortedByDescending { it.second }
+    }
+
+    val memberColors = remember {
+        listOf(
+            Color(0xFF10B981), // Emerald
+            Color(0xFF6366F1), // Indigo
+            Color(0xFFF59E0B), // Amber
+            Color(0xFFEC4899), // Pink
+            Color(0xFF06B6D4), // Cyan
+            Color(0xFF8B5CF6), // Violet
+            Color(0xFFEF4444), // Rose
+            Color(0xFF14B8A6), // Teal
+            Color(0xFFF97316), // Orange
+            Color(0xFF3B82F6)  // Blue
+        )
+    }
+
+    val memberBreakdown = remember(expenses, groupDetail.members) {
+        val memberMap = groupDetail.members.associateBy { it.pubkey }
+        expenses.groupBy { it.payerPubkey }
+            .mapValues { entry -> entry.value.sumOf { it.totalAmount } }
+            .toList()
+            .sortedByDescending { it.second }
+            .mapIndexed { index, (pubkey, amount) ->
+                val memberName = memberMap[pubkey]?.displayName ?: "Member (${pubkey.take(4)})"
+                val color = memberColors[index % memberColors.size]
+                Triple(memberName, amount, color)
+            }
     }
 
     LazyColumn(
@@ -1564,6 +1743,58 @@ fun AnalyticsTab(
             )
         }
 
+        // Toggle Pill: By Category vs By Person
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Surface(
+                    onClick = { selectedChartMode = 0 },
+                    shape = RoundedCornerShape(9.dp),
+                    color = if (selectedChartMode == 0) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    ) {
+                        Text(
+                            "🍕 By Category",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (selectedChartMode == 0) FontWeight.Bold else FontWeight.Normal,
+                            color = if (selectedChartMode == 0) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Surface(
+                    onClick = { selectedChartMode = 1 },
+                    shape = RoundedCornerShape(9.dp),
+                    color = if (selectedChartMode == 1) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    ) {
+                        Text(
+                            "👥 By Person",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (selectedChartMode == 1) FontWeight.Bold else FontWeight.Normal,
+                            color = if (selectedChartMode == 1) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
         // Visual Donut Chart Card
         item {
             Card(
@@ -1578,7 +1809,7 @@ fun AnalyticsTab(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        "SPENDING BY CATEGORY",
+                        if (selectedChartMode == 0) "SPENDING BY CATEGORY" else "SPENDING BY PERSON (WHO PAID)",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1590,16 +1821,30 @@ fun AnalyticsTab(
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                             var startAngle = -90f
-                            categoryBreakdown.forEach { (cat, catAmount) ->
-                                val sweep = if (totalSpend > 0) ((catAmount / totalSpend) * 360f).toFloat() else 0f
-                                drawArc(
-                                    color = cat.composeColor(),
-                                    startAngle = startAngle,
-                                    sweepAngle = sweep,
-                                    useCenter = false,
-                                    style = Stroke(width = 28.dp.toPx(), cap = StrokeCap.Butt)
-                                )
-                                startAngle += sweep
+                            if (selectedChartMode == 0) {
+                                categoryBreakdown.forEach { (cat, catAmount) ->
+                                    val sweep = if (totalSpend > 0) ((catAmount / totalSpend) * 360f).toFloat() else 0f
+                                    drawArc(
+                                        color = cat.composeColor(),
+                                        startAngle = startAngle,
+                                        sweepAngle = sweep,
+                                        useCenter = false,
+                                        style = Stroke(width = 28.dp.toPx(), cap = StrokeCap.Butt)
+                                    )
+                                    startAngle += sweep
+                                }
+                            } else {
+                                memberBreakdown.forEach { (_, memberAmount, color) ->
+                                    val sweep = if (totalSpend > 0) ((memberAmount / totalSpend) * 360f).toFloat() else 0f
+                                    drawArc(
+                                        color = color,
+                                        startAngle = startAngle,
+                                        sweepAngle = sweep,
+                                        useCenter = false,
+                                        style = Stroke(width = 28.dp.toPx(), cap = StrokeCap.Butt)
+                                    )
+                                    startAngle += sweep
+                                }
                             }
                         }
 
@@ -1620,54 +1865,104 @@ fun AnalyticsTab(
             }
         }
 
-        // Category Breakdown List
+        // Breakdown List Header
         item {
             Text(
-                "Category Breakdown",
+                if (selectedChartMode == 0) "Category Breakdown" else "Member Contribution Breakdown",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
         }
 
-        items(categoryBreakdown) { (cat, catAmount) ->
-            val percentage = if (totalSpend > 0) (catAmount / totalSpend) * 100 else 0.0
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+        if (selectedChartMode == 0) {
+            items(categoryBreakdown) { (cat, catAmount) ->
+                val percentage = if (totalSpend > 0) (catAmount / totalSpend) * 100 else 0.0
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(cat.composeColor().copy(alpha = 0.15f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(cat.iconEmoji, fontSize = 18.sp)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(cat.composeColor().copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(cat.iconEmoji, fontSize = 18.sp)
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(cat.displayName, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    "${String.format(Locale.US, "%.1f", percentage)}% of total",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(cat.displayName, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                "${String.format(Locale.US, "%.1f", percentage)}% of total",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
 
-                    Text(
-                        CurrencyUtil.formatAmount(catAmount, currency),
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.bodyLarge
-                    )
+                        Text(
+                            CurrencyUtil.formatAmount(catAmount, currency),
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                }
+            }
+        } else {
+            items(memberBreakdown) { (memberName, memberAmount, color) ->
+                val percentage = if (totalSpend > 0) (memberAmount / totalSpend) * 100 else 0.0
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(color.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    NameUtil.getInitials(memberName),
+                                    fontWeight = FontWeight.Bold,
+                                    color = color,
+                                    fontSize = 14.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(memberName, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    "${String.format(Locale.US, "%.1f", percentage)}% of total paid",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Text(
+                            CurrencyUtil.formatAmount(memberAmount, currency),
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
                 }
             }
         }

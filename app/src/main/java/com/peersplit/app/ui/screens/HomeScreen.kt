@@ -1,6 +1,8 @@
 package com.peersplit.app.ui.screens
 
 import android.widget.Toast
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
@@ -27,6 +29,7 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -35,6 +38,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -89,6 +93,8 @@ fun HomeScreen(
     var showArchivedSection by remember { mutableStateOf(false) }
     var showRewardsSheet by remember { mutableStateOf(false) }
     var showThemeMenu by remember { mutableStateOf(false) }
+    var isManualSyncing by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     val rewardsVersion by RewardsEngine.version.collectAsState()
     val currentThemeMode by ThemeManager.themeMode.collectAsState()
@@ -185,6 +191,33 @@ fun HomeScreen(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
+                    }
+
+                    // 1-Tap Sync Now button
+                    val syncRotation by animateFloatAsState(
+                        targetValue = if (isManualSyncing) 360f else 0f,
+                        animationSpec = if (isManualSyncing) infiniteRepeatable(tween(750, easing = LinearEasing)) else tween(300),
+                        label = "syncRotation"
+                    )
+                    IconButton(
+                        onClick = {
+                            if (!isManualSyncing) {
+                                isManualSyncing = true
+                                coroutineScope.launch {
+                                    com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow()
+                                    kotlinx.coroutines.delay(800)
+                                    isManualSyncing = false
+                                    Toast.makeText(context, "All groups synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(
+                            Icons.Default.Sync,
+                            contentDescription = "Sync All Groups",
+                            modifier = Modifier.rotate(syncRotation),
+                            tint = if (isManualSyncing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
                     // 1-Tap Theme Mode Selector (Default: System Theme, switchable to Light or Dark)
