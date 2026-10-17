@@ -59,6 +59,7 @@ class P2PSyncManager(
         }
     )
     private val eventIdToBlockHash = ConcurrentHashMap<String, String>()
+    private val eventIdToOpId = ConcurrentHashMap<String, String>()
     private val syncMutex = Mutex()
 
     /**
@@ -72,16 +73,17 @@ class P2PSyncManager(
     fun initialize() {
         relayPool.connectAll()
 
-        // Listen for incoming peer blocks
+        // Listen for incoming peer blocks and V2 operations
         scope.launch {
             relayPool.incomingEvents.collect { event ->
                 handleIncomingEvent(event)
             }
         }
 
-        // Listen for relay OK acknowledgments to mark durable outbox blocks as synced
+        // Listen for relay OK acknowledgments to mark durable outbox blocks and operations as synced
         scope.launch {
             relayPool.ackedEventIds.collect { eventId ->
+                // 1. Check V1 Block outbox
                 val blockHash = eventIdToBlockHash.remove(eventId)
                 if (!blockHash.isNullOrBlank()) {
                     try {
@@ -90,10 +92,34 @@ class P2PSyncManager(
                         Log.w(TAG, "Failed to mark block synced for ack $eventId: ${e.message}")
                     }
                 }
+
+                // 2. Check V2 Operation outbox
+                val opId = eventIdToOpId.remove(eventId) ?: database.outboxDao().getOutboxByEventIdSync(eventId)?.operationId
+                if (!opId.isNullOrBlank()) {
+                    try {
+                        database.outboxDao().insertRelayDelivery(
+                            com.peersplit.app.data.local.entity.RelayDeliveryEntity(
+                                operationId = opId,
+                                relayUrl = "nostr_pool",
+                                nostrEventId = eventId,
+                                accepted = true
+                            )
+                        )
+                        database.outboxDao().updateOutboxRetryState(
+                            operationId = opId,
+                            attemptCount = 1,
+                            nextAttemptAtMillis = 0L,
+                            status = com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_ACKED_ALL
+                        )
+                        Log.d(TAG, "Relay ACK verified for V2 operation $opId")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to process outbox ack for op $opId: ${e.message}")
+                    }
+                }
             }
         }
 
-        // Subscribe to all currently stored groups and flush any unsynced outbox blocks
+        // Subscribe to all currently stored groups and flush any unsynced outbox blocks/operations
         scope.launch {
             try {
                 val groups = database.groupDao().getAllGroups().first()
@@ -102,6 +128,7 @@ class P2PSyncManager(
                     relayPool.subscribeGroup(group.id)
                 }
                 flushUnsyncedBlocks()
+                flushOutboxOperations()
             } catch (e: Exception) {
                 Log.e(TAG, "Error subscribing to groups: ${e.message}")
             }
@@ -129,6 +156,113 @@ class P2PSyncManager(
     }
 
     /**
+     * Flushes any due V2 outbox operations with bounded exponential backoff and jitter.
+     */
+    fun flushOutboxOperations() {
+        scope.launch {
+            try {
+                val now = System.currentTimeMillis()
+                val due = database.outboxDao().getDueOutboxOperationsSync(now, limit = 32)
+                if (due.isEmpty()) return@launch
+
+                for (outboxItem in due) {
+                    val event = try {
+                        json.decodeFromString(NostrEvent.serializer(), outboxItem.signedEventJson)
+                    } catch (_: Exception) { null } ?: continue
+
+                    eventIdToOpId[outboxItem.nostrEventId] = outboxItem.operationId
+                    val published = relayPool.broadcast(event)
+
+                    val nextAttempt = if (published) {
+                        now + 60_000L // check back in 1 min if no ACK
+                    } else {
+                        // Exponential backoff: 2s, 4s, 8s, 16s, up to 60s + jitter
+                        val backoffSecs = (2 shl (outboxItem.attemptCount.coerceAtMost(5))).toLong()
+                        val jitter = (0..2000).random()
+                        now + (backoffSecs * 1000L) + jitter
+                    }
+
+                    database.outboxDao().updateOutboxRetryState(
+                        operationId = outboxItem.operationId,
+                        attemptCount = outboxItem.attemptCount + 1,
+                        nextAttemptAtMillis = nextAttempt,
+                        status = if (published) com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_ACKED_PARTIAL
+                                 else com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_QUEUED
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in flushOutboxOperations: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Broadcasts a V2 SignedOperation by persisting it in the durable outbox and transmitting
+     * the encrypted wire envelope via Nostr.
+     */
+    suspend fun broadcastOperation(
+        operation: com.peersplit.app.protocol.SignedOperation,
+        groupKeyBase64: String
+    ) {
+        try {
+            val groupKey = EncryptionUtil.keyFromBase64(groupKeyBase64)
+            val operationJson = com.peersplit.app.protocol.OperationEntityMapper.json.encodeToString(
+                com.peersplit.app.protocol.SignedOperation.serializer(),
+                operation
+            )
+            val wireEnvelope = com.peersplit.app.protocol.WireOperationEnvelope(
+                version = operation.protocolVersion,
+                groupId = operation.groupId,
+                operationId = operation.operationId,
+                keyEpoch = operation.keyEpoch,
+                serializedOperationJson = operationJson
+            )
+            val wireJson = json.encodeToString(com.peersplit.app.protocol.WireOperationEnvelope.serializer(), wireEnvelope)
+            val encryptedContent = EncryptionUtil.encryptString(wireJson, groupKey)
+
+            val identity = KeyManager.getOrCreateIdentity(context)
+            val privKeyHex = KeyManager.getPrivateKeyHex(context)
+
+            val tags = listOf(
+                listOf("t", "peersplit_${operation.groupId}"),
+                listOf("t", "peersplit_v2"),
+                listOf("g", operation.groupId),
+                listOf("op", operation.operationId),
+                listOf("v", operation.protocolVersion.toString()),
+                listOf("epoch", operation.keyEpoch.toString())
+            )
+
+            val event = NostrEvent.createAndSign(
+                pubkey = identity.publicKeyHex,
+                privateKeyHex = privKeyHex,
+                kind = NostrEvent.KIND_PEERSPLIT_BLOCK,
+                tags = tags,
+                content = encryptedContent
+            )
+
+            val eventJson = json.encodeToString(NostrEvent.serializer(), event)
+            database.outboxDao().insertOutboxOperation(
+                com.peersplit.app.data.local.entity.OutboxOperationEntity(
+                    operationId = operation.operationId,
+                    groupId = operation.groupId,
+                    nostrEventId = event.id,
+                    signedEventJson = eventJson,
+                    keyEpoch = operation.keyEpoch,
+                    attemptCount = 0,
+                    nextAttemptAtMillis = System.currentTimeMillis() + 5000L,
+                    status = com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_QUEUED
+                )
+            )
+
+            eventIdToOpId[event.id] = operation.operationId
+            relayPool.broadcast(event)
+            Log.d(TAG, "Broadcasted V2 operation ${operation.operationId.take(8)} for group ${operation.groupId}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to broadcast V2 operation: ${e.message}", e)
+        }
+    }
+
+    /**
      * Subscribes to updates for a newly created or joined group and processes any early events.
      */
     fun monitorGroup(groupId: String) {
@@ -142,6 +276,7 @@ class P2PSyncManager(
                 handleIncomingEvent(ev)
             }
             drainPendingBlocks(groupId)
+            reconcileV2Group(groupId)
         }
     }
 
@@ -156,8 +291,10 @@ class P2PSyncManager(
                 broadcastGroupChain(groupId)
             } else {
                 flushUnsyncedBlocks()
+                flushOutboxOperations()
             }
             drainPendingBlocks(groupId)
+            reconcileV2Group(groupId)
         }
     }
 
@@ -176,13 +313,49 @@ class P2PSyncManager(
                         broadcastGroupChain(group.id)
                     }
                     drainPendingBlocks(group.id)
+                    reconcileV2Group(group.id)
                 }
                 if (!broadcastChains) {
                     flushUnsyncedBlocks()
+                    flushOutboxOperations()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in syncAllGroupsNow: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Reconciles all stored V2 operations for a group and materializes projections.
+     */
+    suspend fun reconcileV2Group(groupId: String) {
+        try {
+            val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
+            val opEntities = database.signedOperationDao().getOperationsForGroupSync(groupId)
+            if (opEntities.isEmpty()) return
+
+            val domainOps = opEntities.map { com.peersplit.app.protocol.OperationEntityMapper.toDomain(it) }
+            val meta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+            val trustedGenesis = com.peersplit.app.reconciliation.TrustedGenesis(
+                groupId = groupId,
+                groupName = groupEntity.name,
+                currency = groupEntity.currency,
+                creatorPublicKey = groupEntity.creatorPubkey,
+                genesisOperationId = meta?.genesisOperationId
+            )
+
+            val result = com.peersplit.app.reconciliation.DefaultLedgerReconciliationEngine.reconcile(
+                trustedGenesis = trustedGenesis,
+                operations = domainOps
+            )
+
+            com.peersplit.app.reconciliation.ReconciliationProjector.persistReconciliationResult(
+                database = database,
+                result = result
+            )
+            Log.d(TAG, "Reconciled V2 group $groupId: ${result.acceptedOperations.size} accepted ops, digest=${result.stateDigest.take(8)}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reconciling V2 group $groupId: ${e.message}", e)
         }
     }
 
@@ -278,11 +451,54 @@ class P2PSyncManager(
             }
             val groupKey = EncryptionUtil.keyFromBase64(groupEntity.groupKeyBase64)
 
-            // 4. Decrypt block payload
-            val blockJson = EncryptionUtil.decryptString(event.content, groupKey)
-            val block = json.decodeFromString(Block.serializer(), blockJson)
+            // 4. Decrypt payload
+            val decryptedJson = EncryptionUtil.decryptString(event.content, groupKey)
 
-            // 5. Enforce cross-group replay protection, cryptographic integrity, and domain payload schema
+            // Check if this is a V2 operation or legacy V1 block
+            val isV2 = event.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "peersplit_v2" } ||
+                       event.tags.any { it.size >= 2 && it[0] == "op" }
+
+            if (isV2) {
+                try {
+                    val wireEnv = json.decodeFromString(com.peersplit.app.protocol.WireOperationEnvelope.serializer(), decryptedJson)
+                    val op = com.peersplit.app.protocol.OperationEntityMapper.json.decodeFromString(
+                        com.peersplit.app.protocol.SignedOperation.serializer(),
+                        wireEnv.serializedOperationJson
+                    )
+
+                    if (op.groupId != groupId) {
+                        Log.w(TAG, "Rejected incoming V2 op ${op.operationId}: groupId mismatch (${op.groupId} != $groupId)")
+                        return
+                    }
+
+                    if (!com.peersplit.app.protocol.OperationVerifier.verify(op)) {
+                        Log.w(TAG, "Rejected incoming V2 op ${op.operationId}: cryptographic verification or structural validation failed")
+                        return
+                    }
+
+                    val entity = com.peersplit.app.protocol.OperationEntityMapper.toEntity(op)
+                    val inserted = database.signedOperationDao().insertOperationIgnore(entity)
+                    if (inserted != -1L) {
+                        val deps = com.peersplit.app.protocol.OperationEntityMapper.toDependencyEntities(op)
+                        if (deps.isNotEmpty()) {
+                            database.signedOperationDao().insertDependenciesIgnore(deps)
+                        }
+                        Log.d(TAG, "Stored incoming V2 operation ${op.operationId.take(8)} for group $groupId")
+                        reconcileV2Group(groupId)
+                    } else {
+                        Log.d(TAG, "V2 operation ${op.operationId.take(8)} already exists in local DB")
+                    }
+                    return
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to decode/process V2 operation: ${e.message}", e)
+                    // Fallthrough to try V1 decoding if it wasn't valid V2
+                }
+            }
+
+            // 5. Decrypt block payload
+            val block = json.decodeFromString(Block.serializer(), decryptedJson)
+
+            // 6. Enforce cross-group replay protection, cryptographic integrity, and domain payload schema
             if (block.groupId != groupId) {
                 Log.w(TAG, "Rejected incoming block #${block.index}: groupId mismatch (${block.groupId} != $groupId)")
                 return
