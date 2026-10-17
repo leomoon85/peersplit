@@ -155,13 +155,21 @@ class NostrClient(
      * Persists subscription so it will automatically be sent whenever the socket opens/reconnects.
      */
     fun subscribeGroup(groupId: String, subscriptionId: String = "sub_$groupId") {
-        // Nostr REQ format: ["REQ", subscription_id, {"#g": [groupId], "kinds": [1]}]
-        val reqMsg = "[\"REQ\",\"$subscriptionId\",{\"#g\":[\"$groupId\"],\"kinds\":[${NostrEvent.KIND_PEERSPLIT_BLOCK}]}]"
+        // Nostr REQ format with dual #g and #t filters for maximum relay compatibility
+        val reqMsg = "[\"REQ\",\"$subscriptionId\",{\"#g\":[\"$groupId\"],\"kinds\":[${NostrEvent.KIND_PEERSPLIT_BLOCK}]},{\"#t\":[\"peersplit_$groupId\"],\"kinds\":[${NostrEvent.KIND_PEERSPLIT_BLOCK}]}]"
         activeSubscriptions[subscriptionId] = reqMsg
 
-        if (isConnected) {
-            webSocket?.send(reqMsg)
-            Log.d(TAG, "Directly sent subscription $subscriptionId to $relayUrl")
+        if (isConnected && webSocket != null) {
+            webSocket?.send("[\"CLOSE\",\"$subscriptionId\"]")
+            val sent = webSocket?.send(reqMsg) ?: false
+            if (!sent) {
+                isConnected = false
+                reconnect()
+            } else {
+                Log.d(TAG, "Directly sent subscription $subscriptionId to $relayUrl")
+            }
+        } else {
+            connect()
         }
     }
 
@@ -174,11 +182,26 @@ class NostrClient(
             val eventJson = json.encodeToString(NostrEvent.serializer(), event)
             val msg = "[\"EVENT\",$eventJson]"
             val sent = webSocket?.send(msg) ?: false
-            Log.d(TAG, "Published event ${event.id.take(8)} to $relayUrl (sent=$sent)")
+            if (!sent) {
+                synchronized(pendingEvents) {
+                    if (pendingEvents.none { it.id == event.id }) {
+                        pendingEvents.add(event)
+                    }
+                }
+                isConnected = false
+                reconnect()
+            } else {
+                Log.d(TAG, "Published event ${event.id.take(8)} to $relayUrl (sent=$sent)")
+            }
             return sent
         } else {
             // Queue for when socket connects
-            pendingEvents.add(event)
+            synchronized(pendingEvents) {
+                if (pendingEvents.none { it.id == event.id }) {
+                    pendingEvents.add(event)
+                }
+            }
+            connect()
             Log.d(TAG, "Queued event ${event.id.take(8)} for $relayUrl (waiting for connection)")
             return true
         }

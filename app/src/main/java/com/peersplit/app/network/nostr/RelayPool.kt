@@ -59,6 +59,7 @@ class RelayPool(
      */
     fun subscribeGroup(groupId: String) {
         subscribedGroups.add(groupId)
+        seenEventIds.clear()
         clients.forEach { client ->
             client.subscribeGroup(groupId)
         }
@@ -68,7 +69,6 @@ class RelayPool(
      * Broadcasts a signed event to all relays in the pool.
      */
     fun broadcast(event: NostrEvent) {
-        seenEventIds.add(event.id)
         clients.forEach { client ->
             client.publishEvent(event)
         }

@@ -9,6 +9,8 @@ import com.peersplit.app.blockchain.DebtSettlementEngine
 import com.peersplit.app.blockchain.ExpensePayload
 import com.peersplit.app.blockchain.ExpenseVoidPayload
 import com.peersplit.app.blockchain.GroupGenesisPayload
+import com.peersplit.app.blockchain.MemberInfo
+import com.peersplit.app.blockchain.MemberJoinedPayload
 import com.peersplit.app.blockchain.SettlementPayload
 import com.peersplit.app.blockchain.SettlementSuggestion
 import com.peersplit.app.blockchain.SplitItem
@@ -47,7 +49,17 @@ data class GroupInviteData(
     val groupKeyBase64: String,
     val creatorPubkey: String,
     val creatorDisplayName: String = "Creator",
-    val genesisBlockJson: String? = null
+    val genesisBlockJson: String? = null,
+    val blocksJson: List<String> = emptyList()
+)
+
+data class GroupInvitePreview(
+    val groupId: String,
+    val groupName: String,
+    val currency: String,
+    val creatorDisplayName: String,
+    val unclaimedGhostMembers: List<MemberInfo>,
+    val expenseCount: Int
 )
 
 class ExpenseRepository(
@@ -57,23 +69,80 @@ class ExpenseRepository(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    private fun isGhostPubkey(groupId: String, pubkey: String, displayName: String): Boolean {
+        val expectedHash = HashUtil.sha256Hex("ghost:$groupId:${displayName.trim().lowercase()}")
+        return pubkey == expectedHash || pubkey.startsWith("ghost:")
+    }
+
+    /**
+     * Builds a comprehensive map of [ghostPubkey -> realMemberPubkey] from:
+     * 1. Explicit `claimedGhostPubkey` recorded in MEMBER_JOIN blocks on the chain.
+     * 2. Matching displayName between an offline ghost member and a real member.
+     */
+    private fun buildAliasMap(
+        groupId: String,
+        memberEntities: List<MemberEntity>,
+        blocks: List<Block>,
+        currentIdentityPubkey: String,
+        currentIdentityName: String
+    ): Map<String, String> {
+        val aliasMap = mutableMapOf<String, String>()
+
+        // 1. Explicit claims recorded in MEMBER_JOIN blocks
+        for (block in blocks) {
+            if (block.blockType == BlockType.MEMBER_JOIN) {
+                try {
+                    val payload = json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson)
+                    if (!payload.claimedGhostPubkey.isNullOrBlank() && payload.claimedGhostPubkey != payload.pubkey) {
+                        aliasMap[payload.claimedGhostPubkey] = payload.pubkey
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        // 2. Real members claiming ghost members with the same displayName
+        val realMembers = memberEntities.filter { !isGhostPubkey(groupId, it.pubkey, it.displayName) }
+        val ghostMembers = memberEntities.filter { isGhostPubkey(groupId, it.pubkey, it.displayName) }
+
+        for (ghost in ghostMembers) {
+            if (ghost.pubkey in aliasMap) continue
+            val matchingReal = realMembers.firstOrNull {
+                it.displayName.trim().equals(ghost.displayName.trim(), ignoreCase = true)
+            }
+            if (matchingReal != null) {
+                aliasMap[ghost.pubkey] = matchingReal.pubkey
+            } else if (ghost.displayName.trim().equals(currentIdentityName.trim(), ignoreCase = true)) {
+                aliasMap[ghost.pubkey] = currentIdentityPubkey
+            }
+        }
+
+        return aliasMap
+    }
+
     /**
      * Observes all groups with dynamic user balance computation.
      */
     fun getGroups(): Flow<List<Group>> {
-        val identity = KeyManager.getOrCreateIdentity(context)
         return combine(
             database.groupDao().getAllGroups(),
             database.memberDao().getAllMembersCountFlow(),
             database.blockDao().getAllBlocksCountFlow()
         ) { groupEntities, _, _ ->
+            val identity = KeyManager.getOrCreateIdentity(context)
             groupEntities.map { entity ->
                 val blocks = database.blockDao().getBlocksForGroupSync(entity.id).map { it.toDomainBlock() }
-                val members = database.memberDao().getMembersForGroupSync(entity.id)
+                val rawMembers = database.memberDao().getMembersForGroupSync(entity.id)
+                val aliasMap = buildAliasMap(entity.id, rawMembers, blocks, identity.publicKeyHex, identity.displayName)
+                val deduplicatedMemberCount = rawMembers
+                    .map { aliasMap[it.pubkey] ?: it.pubkey }
+                    .distinct()
+                    .size
+
                 val expenses = extractExpenses(blocks)
                 val settlements = extractSettlements(blocks)
                 val voidedIds = extractVoidedExpenseIds(blocks)
-                val netBalances = DebtSettlementEngine.calculateNetBalances(expenses, settlements, voidedIds)
+                val netBalances = DebtSettlementEngine.calculateNetBalances(expenses, settlements, voidedIds, aliasMap)
 
                 val userBalance = netBalances[identity.publicKeyHex] ?: 0.0
                 val validation = BlockchainEngine.validateChain(blocks)
@@ -84,7 +153,7 @@ class ExpenseRepository(
                     currency = entity.currency,
                     creatorPubkey = entity.creatorPubkey,
                     groupKeyBase64 = entity.groupKeyBase64,
-                    memberCount = members.size,
+                    memberCount = deduplicatedMemberCount,
                     userNetBalance = userBalance,
                     blockCount = blocks.size.toLong(),
                     isLedgerValid = validation is ValidationResult.Valid,
@@ -103,38 +172,71 @@ class ExpenseRepository(
      * Observes a specific group's detail view, member list, and settlements.
      */
     fun getGroupDetail(groupId: String): Flow<GroupDetail?> {
-        val identity = KeyManager.getOrCreateIdentity(context)
         return combine(
             database.groupDao().getGroupById(groupId),
             database.memberDao().getMembersForGroup(groupId),
             database.blockDao().getBlocksForGroup(groupId)
         ) { groupEntity, memberEntities, blockEntities ->
             if (groupEntity == null) return@combine null
+            val identity = KeyManager.getOrCreateIdentity(context)
 
             val domainBlocks = blockEntities.map { it.toDomainBlock() }
             val expensesPayloads = extractExpenses(domainBlocks)
             val settlementPayloads = extractSettlements(domainBlocks)
             val voidedIds = extractVoidedExpenseIds(domainBlocks)
-            val ghostPubkeyHash = HashUtil.sha256Hex("ghost:$groupId:${identity.displayName.trim().lowercase()}")
-            val aliasMap = mutableMapOf<String, String>()
-            for (m in memberEntities) {
-                if (m.pubkey == ghostPubkeyHash || (m.displayName.equals(identity.displayName.trim(), ignoreCase = true) && m.pubkey != identity.publicKeyHex)) {
-                    aliasMap[m.pubkey] = identity.publicKeyHex
-                }
-            }
 
-            val netBalances = DebtSettlementEngine.calculateNetBalances(expensesPayloads, settlementPayloads, voidedIds, aliasMap)
+            val aliasMap = buildAliasMap(
+                groupId = groupId,
+                memberEntities = memberEntities,
+                blocks = domainBlocks,
+                currentIdentityPubkey = identity.publicKeyHex,
+                currentIdentityName = identity.displayName
+            )
+            val resolvePubkey = { pk: String -> aliasMap[pk] ?: pk }
+
+            val netBalances = DebtSettlementEngine.calculateNetBalances(
+                expensesPayloads,
+                settlementPayloads,
+                voidedIds,
+                aliasMap
+            )
             val suggestions = DebtSettlementEngine.simplifyDebts(netBalances)
             val validation = BlockchainEngine.validateChain(domainBlocks)
 
-            val memberMap = memberEntities.associate { it.pubkey to it.displayName }
-            val members = memberEntities.map { memberEntity ->
-                val resolvedPubkey = aliasMap[memberEntity.pubkey] ?: memberEntity.pubkey
+            // Build deduplicated members list (merging any claimed ghost member into the real member)
+            val membersByResolvedPubkey = linkedMapOf<String, MemberEntity>()
+            for (m in memberEntities) {
+                val resolved = resolvePubkey(m.pubkey)
+                val existing = membersByResolvedPubkey[resolved]
+                if (existing == null) {
+                    membersByResolvedPubkey[resolved] = m.copy(pubkey = resolved)
+                } else {
+                    // Prefer real member row over ghost row, while preserving UPI ID if set on ghost row
+                    val isCurrentReal = m.pubkey == resolved
+                    val chosenName = if (isCurrentReal) m.displayName else existing.displayName
+                    val chosenUpi = m.upiId?.takeIf { it.isNotBlank() } ?: existing.upiId
+                    membersByResolvedPubkey[resolved] = existing.copy(
+                        pubkey = resolved,
+                        displayName = chosenName,
+                        upiId = chosenUpi
+                    )
+                }
+            }
+
+            val memberMap = mutableMapOf<String, String>()
+            for ((resolvedPk, mEntity) in membersByResolvedPubkey) {
+                memberMap[resolvedPk] = mEntity.displayName
+            }
+            for ((ghostPk, realPk) in aliasMap) {
+                memberMap[ghostPk] = memberMap[realPk] ?: "Member"
+            }
+
+            val members = membersByResolvedPubkey.values.map { memberEntity ->
                 Member(
                     pubkey = memberEntity.pubkey,
                     displayName = memberEntity.displayName,
-                    isCurrentUser = resolvedPubkey == identity.publicKeyHex,
-                    netBalance = netBalances[resolvedPubkey] ?: 0.0,
+                    isCurrentUser = memberEntity.pubkey == identity.publicKeyHex,
+                    netBalance = netBalances[memberEntity.pubkey] ?: 0.0,
                     upiId = memberEntity.upiId
                 )
             }
@@ -144,20 +246,24 @@ class ExpenseRepository(
                     if (block.blockType == BlockType.EXPENSE) {
                         val exp = json.decodeFromString(ExpensePayload.serializer(), block.payloadJson)
                         val isVoided = exp.expenseId in voidedIds
-                        val userSplit = exp.splits.find { (aliasMap[it.userPubkey] ?: it.userPubkey) == identity.publicKeyHex }?.amount ?: 0.0
-                        val userPaid = if (exp.payers.size > 1) {
-                            exp.payers.find { (aliasMap[it.userPubkey] ?: it.userPubkey) == identity.publicKeyHex }?.amount ?: 0.0
-                        } else if ((aliasMap[exp.payerPubkey] ?: exp.payerPubkey) == identity.publicKeyHex) {
+                        val resolvedSplits = exp.splits.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
+                        val resolvedPayers = exp.payers.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
+                        val resolvedPrimaryPayer = resolvePubkey(exp.payerPubkey)
+
+                        val userSplit = resolvedSplits.filter { it.userPubkey == identity.publicKeyHex }.sumOf { it.amount }
+                        val userPaid = if (resolvedPayers.size > 1) {
+                            resolvedPayers.filter { it.userPubkey == identity.publicKeyHex }.sumOf { it.amount }
+                        } else if (resolvedPrimaryPayer == identity.publicKeyHex) {
                             exp.totalAmount
                         } else {
                             0.0
                         }
                         val share = if (isVoided) 0.0 else (userPaid - userSplit)
 
-                        val resolvedPayerName = if (exp.payers.size > 1) {
-                            exp.payers.joinToString(" + ") { p -> memberMap[p.userPubkey] ?: "Member" }
+                        val resolvedPayerName = if (resolvedPayers.size > 1) {
+                            resolvedPayers.joinToString(" + ") { p -> memberMap[p.userPubkey] ?: "Member" }
                         } else {
-                            memberMap[exp.payerPubkey] ?: "Member"
+                            memberMap[resolvedPrimaryPayer] ?: "Member"
                         }
 
                         ExpenseItem(
@@ -165,7 +271,7 @@ class ExpenseRepository(
                             description = exp.description,
                             totalAmount = exp.totalAmount,
                             currency = exp.currency,
-                            payerPubkey = exp.payerPubkey,
+                            payerPubkey = resolvedPrimaryPayer,
                             payerName = resolvedPayerName,
                             timestamp = block.timestamp,
                             userShare = share,
@@ -173,18 +279,18 @@ class ExpenseRepository(
                             category = exp.category,
                             note = exp.note,
                             splitType = exp.splitType,
-                            splits = exp.splits,
-                            payers = exp.payers,
+                            splits = resolvedSplits,
+                            payers = resolvedPayers,
                             blockHash = block.blockHash,
                             signature = block.signature,
                             isVoided = isVoided
                         )
                     } else { // BlockType.SETTLEMENT
                         val stl = json.decodeFromString(SettlementPayload.serializer(), block.payloadJson)
-                        val payerPub = aliasMap[stl.payerPubkey] ?: stl.payerPubkey
-                        val payeePub = aliasMap[stl.payeePubkey] ?: stl.payeePubkey
-                        val payerName = memberMap[stl.payerPubkey] ?: "Member"
-                        val payeeName = memberMap[stl.payeePubkey] ?: "Member"
+                        val payerPub = resolvePubkey(stl.payerPubkey)
+                        val payeePub = resolvePubkey(stl.payeePubkey)
+                        val payerName = memberMap[payerPub] ?: "Member"
+                        val payeeName = memberMap[payeePub] ?: "Member"
                         val userShare = if (payerPub == identity.publicKeyHex) {
                             stl.amount // user paid
                         } else if (payeePub == identity.publicKeyHex) {
@@ -198,7 +304,7 @@ class ExpenseRepository(
                             description = "$payerName paid $payeeName",
                             totalAmount = stl.amount,
                             currency = stl.currency,
-                            payerPubkey = stl.payerPubkey,
+                            payerPubkey = payerPub,
                             payerName = payerName,
                             timestamp = block.timestamp,
                             userShare = userShare,
@@ -206,8 +312,8 @@ class ExpenseRepository(
                             category = "SETTLEMENT",
                             note = stl.note,
                             splitType = "SETTLEMENT",
-                            splits = listOf(SplitItem(stl.payeePubkey, stl.amount)),
-                            payers = listOf(SplitItem(stl.payerPubkey, stl.amount)),
+                            splits = listOf(SplitItem(payeePub, stl.amount)),
+                            payers = listOf(SplitItem(payerPub, stl.amount)),
                             blockHash = block.blockHash,
                             signature = block.signature,
                             isVoided = false
@@ -310,7 +416,7 @@ class ExpenseRepository(
         if (!isPersonalSolo) {
             for (friendName in initialMemberNames) {
                 val clean = friendName.trim()
-                if (clean.isNotBlank() && !clean.equals(identity.displayName.trim(), ignoreCase = true)) {
+                if (clean.isNotBlank()) {
                     addOfflineMember(groupId, clean, null)
                 }
             }
@@ -498,13 +604,14 @@ class ExpenseRepository(
     }
 
     /**
-     * Generates a shareable URL-safe invite string containing group credentials.
+     * Generates a shareable URL-safe invite string containing group credentials and current ledger blocks.
      */
     suspend fun generateInviteCode(groupId: String): String {
         val group = database.groupDao().getGroupByIdSync(groupId) ?: return ""
-        val blocks = database.blockDao().getBlocksForGroupSync(groupId)
-        val genesisBlock = blocks.firstOrNull { it.index == 0L }?.toDomainBlock()
+        val blocks = database.blockDao().getBlocksForGroupSync(groupId).map { it.toDomainBlock() }
+        val genesisBlock = blocks.firstOrNull { it.index == 0L }
         val genesisJson = genesisBlock?.let { json.encodeToString(Block.serializer(), it) }
+        val allBlocksJson = blocks.map { json.encodeToString(Block.serializer(), it) }
         val members = database.memberDao().getMembersForGroupSync(groupId)
         val creatorName = members.firstOrNull { it.pubkey == group.creatorPubkey }?.displayName ?: "Creator"
 
@@ -515,18 +622,81 @@ class ExpenseRepository(
             groupKeyBase64 = group.groupKeyBase64,
             creatorPubkey = group.creatorPubkey,
             creatorDisplayName = creatorName,
-            genesisBlockJson = genesisJson
+            genesisBlockJson = genesisJson,
+            blocksJson = allBlocksJson
         )
         val jsonStr = json.encodeToString(inviteData)
         return "peersplit://" + Base64.encodeToString(jsonStr.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_WRAP)
     }
 
     /**
-     * Joins a group via invite string / QR code, registers member, and monitors sync.
+     * Parses an invite URI to preview the group name, currency, and any unclaimed offline members
+     * before joining.
      */
-    suspend fun joinGroup(inviteUri: String): Result<String> {
+    fun parseInvitePreview(inviteUri: String): GroupInvitePreview? {
         return try {
-            val base64Payload = inviteUri.removePrefix("peersplit://").trim()
+            val cleanUri = Regex("peersplit://\\S+").find(inviteUri)?.value ?: inviteUri.trim()
+            val base64Payload = cleanUri.removePrefix("peersplit://").trim()
+            if (base64Payload.isBlank()) return null
+            val jsonBytes = Base64.decode(base64Payload, Base64.URL_SAFE or Base64.NO_WRAP)
+            val inviteData = json.decodeFromString(GroupInviteData.serializer(), String(jsonBytes, Charsets.UTF_8))
+
+            val blockStrings = if (inviteData.blocksJson.isNotEmpty()) {
+                inviteData.blocksJson
+            } else {
+                listOfNotNull(inviteData.genesisBlockJson)
+            }
+            val blocks = blockStrings.mapNotNull {
+                try { json.decodeFromString(Block.serializer(), it) } catch (_: Exception) { null }
+            }.sortedBy { it.index }
+
+            val claimedGhosts = mutableSetOf<String>()
+            val ghostMap = linkedMapOf<String, MemberInfo>()
+            var expenseCount = 0
+
+            for (b in blocks) {
+                when (b.blockType) {
+                    BlockType.MEMBER_JOIN -> {
+                        try {
+                            val p = json.decodeFromString(MemberJoinedPayload.serializer(), b.payloadJson)
+                            if (!p.claimedGhostPubkey.isNullOrBlank()) {
+                                claimedGhosts.add(p.claimedGhostPubkey)
+                                ghostMap.remove(p.claimedGhostPubkey)
+                            }
+                            if (isGhostPubkey(inviteData.groupId, p.pubkey, p.displayName) && p.pubkey !in claimedGhosts) {
+                                ghostMap[p.pubkey] = MemberInfo(p.pubkey, p.displayName, p.upiId)
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    BlockType.EXPENSE -> expenseCount++
+                    else -> {}
+                }
+            }
+
+            GroupInvitePreview(
+                groupId = inviteData.groupId,
+                groupName = inviteData.groupName,
+                currency = inviteData.currency,
+                creatorDisplayName = inviteData.creatorDisplayName,
+                unclaimedGhostMembers = ghostMap.values.toList(),
+                expenseCount = expenseCount
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Joins a group via invite string / QR code, imports all embedded blocks,
+     * claims matching/selected offline member, and broadcasts Member Join block.
+     */
+    suspend fun joinGroup(
+        inviteUri: String,
+        explicitClaimGhostPubkey: String? = null
+    ): Result<String> {
+        return try {
+            val cleanUri = Regex("peersplit://\\S+").find(inviteUri)?.value ?: inviteUri.trim()
+            val base64Payload = cleanUri.removePrefix("peersplit://").trim()
             val jsonBytes = Base64.decode(base64Payload, Base64.URL_SAFE or Base64.NO_WRAP)
             val inviteData = json.decodeFromString(GroupInviteData.serializer(), String(jsonBytes, Charsets.UTF_8))
 
@@ -543,15 +713,7 @@ class ExpenseRepository(
                 )
             }
 
-            // 1. Insert Genesis Block if available
-            var genesisBlock: Block? = null
-            if (!inviteData.genesisBlockJson.isNullOrBlank()) {
-                val block = json.decodeFromString(Block.serializer(), inviteData.genesisBlockJson)
-                database.blockDao().insertBlock(BlockEntity.fromDomainBlock(block, isVerified = true))
-                genesisBlock = block
-            }
-
-            // 2. Insert Creator Member
+            // 1. Insert Creator Member first
             database.memberDao().insertMember(
                 MemberEntity(
                     groupId = inviteData.groupId,
@@ -560,16 +722,67 @@ class ExpenseRepository(
                 )
             )
 
-            // 3. Insert Current User Member & clean up matching ghost member
+            // 2. Import all blocks included in the invite link (Genesis, Member Joins, Expenses, Settlements)
+            val rawBlockJsonList = if (inviteData.blocksJson.isNotEmpty()) {
+                inviteData.blocksJson
+            } else {
+                listOfNotNull(inviteData.genesisBlockJson)
+            }
+
+            val importedBlocks = rawBlockJsonList.mapNotNull {
+                try { json.decodeFromString(Block.serializer(), it) } catch (_: Exception) { null }
+            }.sortedBy { it.index }
+
+            for (block in importedBlocks) {
+                if (block.verifyIntegrity()) {
+                    database.blockDao().insertBlock(BlockEntity.fromDomainBlock(block, isVerified = true))
+                    syncManager.processBlockSideEffects(inviteData.groupId, block)
+                }
+            }
+
+            // 3. Determine if this phone should claim/assume an offline member added by the creator
             val identity = KeyManager.getOrCreateIdentity(context)
             val privKeyHex = KeyManager.getPrivateKeyHex(context)
 
-            val ghostPubkeyHash = HashUtil.sha256Hex("ghost:${inviteData.groupId}:${identity.displayName.trim().lowercase()}")
+            val allCurrentBlocks = database.blockDao().getBlocksForGroupSync(inviteData.groupId).map { it.toDomainBlock() }
+            val alreadyClaimedGhosts = allCurrentBlocks
+                .filter { it.blockType == BlockType.MEMBER_JOIN }
+                .mapNotNull {
+                    try {
+                        json.decodeFromString(MemberJoinedPayload.serializer(), it.payloadJson).claimedGhostPubkey
+                    } catch (_: Exception) { null }
+                }
+                .toSet()
+
             val existingMembers = database.memberDao().getMembersForGroupSync(inviteData.groupId)
-            val ghostMatch = existingMembers.firstOrNull {
-                it.pubkey == ghostPubkeyHash || 
-                ((it.pubkey.startsWith("ghost:") || it.displayName.equals(identity.displayName.trim(), ignoreCase = true)) && it.pubkey != identity.publicKeyHex)
+            val unclaimedGhosts = existingMembers.filter {
+                isGhostPubkey(inviteData.groupId, it.pubkey, it.displayName) && it.pubkey !in alreadyClaimedGhosts
             }
+
+            val ghostMatch: MemberEntity? = when {
+                explicitClaimGhostPubkey == "NONE" -> null
+                !explicitClaimGhostPubkey.isNullOrBlank() -> unclaimedGhosts.firstOrNull { it.pubkey == explicitClaimGhostPubkey }
+                else -> {
+                    // Match by displayName first; otherwise if creator added an offline member for this 2nd phone, assume it automatically
+                    unclaimedGhosts.firstOrNull {
+                        it.displayName.trim().equals(identity.displayName.trim(), ignoreCase = true)
+                    } ?: unclaimedGhosts.firstOrNull()
+                }
+            }
+
+            val effectiveDisplayName = if (ghostMatch != null &&
+                (identity.displayName.isBlank() ||
+                 identity.displayName == "My Phone" ||
+                 identity.displayName.trim().equals(inviteData.creatorDisplayName.trim(), ignoreCase = true))
+            ) {
+                KeyManager.updateDisplayName(context, ghostMatch.displayName)
+                ghostMatch.displayName
+            } else {
+                identity.displayName
+            }
+
+            val effectiveUpi = identity.upiId?.takeIf { it.isNotBlank() } ?: ghostMatch?.upiId
+
             if (ghostMatch != null) {
                 database.memberDao().deleteMember(inviteData.groupId, ghostMatch.pubkey)
             }
@@ -578,31 +791,41 @@ class ExpenseRepository(
                 MemberEntity(
                     groupId = inviteData.groupId,
                     pubkey = identity.publicKeyHex,
-                    displayName = identity.displayName,
-                    upiId = identity.upiId
+                    displayName = effectiveDisplayName,
+                    upiId = effectiveUpi
                 )
             )
 
             // 4. Start monitoring Nostr relays for the group's ledger blocks
             syncManager.monitorGroup(inviteData.groupId)
 
-            // 5. Broadcast Member Joined block if joining a group created by someone else
-            val currentTip = database.blockDao().getLatestBlockForGroup(inviteData.groupId)?.toDomainBlock()
-                ?: genesisBlock
+            // 5. Broadcast Member Joined block on top of the latest block tip (if not already joined)
+            val alreadyJoinedOnChain = allCurrentBlocks.any { block ->
+                block.blockType == BlockType.MEMBER_JOIN && try {
+                    json.decodeFromString(MemberJoinedPayload.serializer(), block.payloadJson).pubkey == identity.publicKeyHex
+                } catch (_: Exception) { false }
+            }
 
-            if (currentTip != null && identity.publicKeyHex != inviteData.creatorPubkey) {
+            val currentTip = database.blockDao().getLatestBlockForGroup(inviteData.groupId)?.toDomainBlock()
+                ?: importedBlocks.lastOrNull()
+
+            if (currentTip != null && identity.publicKeyHex != inviteData.creatorPubkey && !alreadyJoinedOnChain) {
                 val joinBlock = BlockchainEngine.createMemberJoinBlock(
                     groupId = inviteData.groupId,
                     prevBlock = currentTip,
                     newMemberPubkey = identity.publicKeyHex,
-                    newMemberName = identity.displayName,
+                    newMemberName = effectiveDisplayName,
                     authorPubkey = identity.publicKeyHex,
                     authorPrivateKeyHex = privKeyHex,
-                    upiId = identity.upiId
+                    upiId = effectiveUpi,
+                    claimedGhostPubkey = ghostMatch?.pubkey
                 )
                 database.blockDao().insertBlock(BlockEntity.fromDomainBlock(joinBlock, isVerified = true))
                 syncManager.broadcastBlock(joinBlock, inviteData.groupKeyBase64)
             }
+
+            // Trigger full chain sync with peers
+            syncManager.syncGroupNow(inviteData.groupId)
 
             Result.success(inviteData.groupId)
         } catch (e: Exception) {

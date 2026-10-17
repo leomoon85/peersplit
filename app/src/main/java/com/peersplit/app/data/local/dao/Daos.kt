@@ -86,6 +86,9 @@ interface BlockDao {
     @Query("SELECT COUNT(*) FROM blocks")
     fun getAllBlocksCountFlow(): Flow<Long>
 
+    @Query("DELETE FROM blocks WHERE groupId = :groupId AND `index` >= :fromIndex")
+    suspend fun deleteBlocksFromIndex(groupId: String, fromIndex: Long)
+
     @Query("DELETE FROM blocks WHERE groupId = :groupId")
     suspend fun deleteBlocksForGroup(groupId: String)
 }

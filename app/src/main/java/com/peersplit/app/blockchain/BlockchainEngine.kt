@@ -69,13 +69,15 @@ object BlockchainEngine {
         newMemberName: String,
         authorPubkey: String,
         authorPrivateKeyHex: String,
-        upiId: String? = null
+        upiId: String? = null,
+        claimedGhostPubkey: String? = null
     ): Block {
         val payload = MemberJoinedPayload(
             pubkey = newMemberPubkey,
             displayName = newMemberName,
             joinedAt = System.currentTimeMillis(),
-            upiId = upiId
+            upiId = upiId,
+            claimedGhostPubkey = claimedGhostPubkey
         )
         val payloadJson = json.encodeToString(payload)
 

@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 class GroupViewModel(private val groupId: String) : ViewModel() {
 
     private val repository = PeerSplitApp.instance.repository
+    private val syncManager = PeerSplitApp.instance.syncManager
 
     val groupDetail: StateFlow<GroupDetail?> = repository.getGroupDetail(groupId).stateIn(
         scope = viewModelScope,
@@ -24,6 +25,15 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
 
     private val _inviteCode = MutableStateFlow<String?>(null)
     val inviteCode: StateFlow<String?> = _inviteCode.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            while (true) {
+                syncManager.syncGroupNow(groupId)
+                kotlinx.coroutines.delay(5000)
+            }
+        }
+    }
 
     fun generateInvite() {
         viewModelScope.launch {

@@ -49,7 +49,8 @@ data class MemberJoinedPayload(
     val pubkey: String,
     val displayName: String,
     val joinedAt: Long,
-    val upiId: String? = null
+    val upiId: String? = null,
+    val claimedGhostPubkey: String? = null
 )
 
 /**

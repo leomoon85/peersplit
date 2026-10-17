@@ -97,9 +97,9 @@ fun NavGraph(
             val context = LocalContext.current
             JoinGroupScreen(
                 onBackClick = { navController.popBackStack() },
-                onJoinGroup = { inviteUri, onFailed ->
+                onJoinGroup = { inviteUri, claimedGhostPubkey, onFailed ->
                     scope.launch {
-                        val result = repository.joinGroup(inviteUri)
+                        val result = repository.joinGroup(inviteUri, claimedGhostPubkey)
                         result.onSuccess { groupId ->
                             navController.popBackStack()
                             navController.navigate(Screen.GroupDetail.createRoute(groupId))
