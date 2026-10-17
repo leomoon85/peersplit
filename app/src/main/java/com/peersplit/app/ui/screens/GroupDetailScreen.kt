@@ -83,6 +83,10 @@ fun GroupDetailScreen(
 
     // Expense Detail Bottom Sheet state
     var selectedExpenseForDetail by remember { mutableStateOf<ExpenseItem?>(null) }
+    var showVoidConfirmDialog by remember { mutableStateOf<ExpenseItem?>(null) }
+
+    // Delete Group Confirmation Dialog state
+    var showDeleteGroupDialog by remember { mutableStateOf(false) }
 
     if (groupDetail == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -124,9 +128,6 @@ fun GroupDetailScreen(
                     IconButton(onClick = { showAddMemberDialog = true }) {
                         Icon(Icons.Default.PersonAdd, contentDescription = "Add Member")
                     }
-                    IconButton(onClick = onAuditLedgerClick) {
-                        Icon(Icons.Default.Analytics, contentDescription = "Audit Blockchain Ledger")
-                    }
                     IconButton(onClick = onGenerateInvite) {
                         Icon(Icons.Default.Share, contentDescription = "Invite Members")
                     }
@@ -139,7 +140,7 @@ fun GroupDetailScreen(
                             onDismissRequest = { showExportMenu = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Add Offline Member") },
+                                text = { Text("Add Member") },
                                 onClick = {
                                     showExportMenu = false
                                     showAddMemberDialog = true
@@ -174,6 +175,14 @@ fun GroupDetailScreen(
                                 },
                                 leadingIcon = { Icon(Icons.Default.TableChart, contentDescription = null) }
                             )
+                            DropdownMenuItem(
+                                text = { Text("Verify Security & History") },
+                                onClick = {
+                                    showExportMenu = false
+                                    onAuditLedgerClick()
+                                },
+                                leadingIcon = { Icon(Icons.Default.Shield, contentDescription = null) }
+                            )
                             HorizontalDivider()
                             DropdownMenuItem(
                                 text = { Text(if (groupDetail.group.isArchived) "Unarchive Group" else "Archive Group") },
@@ -187,7 +196,7 @@ fun GroupDetailScreen(
                                 text = { Text("Delete Group", color = MaterialTheme.colorScheme.error) },
                                 onClick = {
                                     showExportMenu = false
-                                    onDeleteGroup()
+                                    showDeleteGroupDialog = true
                                 },
                                 leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) }
                             )
@@ -218,7 +227,7 @@ fun GroupDetailScreen(
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text("Ledger ($activeExpensesCount)") }
+                    text = { Text("Expenses ($activeExpensesCount)") }
                 )
                 Tab(
                     selected = selectedTab == 2,
@@ -291,13 +300,13 @@ fun GroupDetailScreen(
                     enabled = newMemberName.isNotBlank(),
                     onClick = {
                         onAddOfflineMember(newMemberName.trim(), newMemberUpi.trim().takeIf { it.isNotBlank() })
-                        Toast.makeText(context, "${newMemberName.trim()} added to group ledger!", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "${newMemberName.trim()} added to group!", Toast.LENGTH_SHORT).show()
                         newMemberName = ""
                         newMemberUpi = ""
                         showAddMemberDialog = false
                     }
                 ) {
-                    Text("Add to Ledger")
+                    Text("Add Member")
                 }
             },
             dismissButton = {
@@ -418,7 +427,7 @@ fun GroupDetailScreen(
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            "⚠️ This expense was voided on the blockchain ledger and is excluded from balances.",
+                            "⚠️ This expense was cancelled and is excluded from balances.",
                             modifier = Modifier.padding(10.dp),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
@@ -498,9 +507,7 @@ fun GroupDetailScreen(
                     Spacer(modifier = Modifier.height(4.dp))
                     OutlinedButton(
                         onClick = {
-                            onVoidExpense(exp.id, exp.description)
-                            Toast.makeText(context, "Expense removed!", Toast.LENGTH_SHORT).show()
-                            selectedExpenseForDetail = null
+                            showVoidConfirmDialog = exp
                         },
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                         modifier = Modifier.fillMaxWidth(),
@@ -553,7 +560,7 @@ fun GroupDetailScreen(
                     }
 
                     Text(
-                        "Share this link with friends to let them join this serverless group. It contains the peer group ID and the AES-256 group encryption key.",
+                        "Share this link or QR code with friends so they can join this group securely.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -612,6 +619,69 @@ fun GroupDetailScreen(
             dismissButton = {
                 TextButton(onClick = onDismissInvite) {
                     Text("Close")
+                }
+            }
+        )
+    }
+
+    // Delete Group Confirmation Dialog
+    if (showDeleteGroupDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteGroupDialog = false },
+            title = { Text("Delete '${groupDetail.group.name}'?") },
+            text = {
+                Text(
+                    "Are you sure you want to permanently delete this group? All expenses and balances for this group will be wiped from your device.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteGroupDialog = false
+                        onDeleteGroup()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteGroupDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Void Expense Confirmation Dialog
+    if (showVoidConfirmDialog != null) {
+        val targetExp = showVoidConfirmDialog!!
+        AlertDialog(
+            onDismissRequest = { showVoidConfirmDialog = null },
+            title = { Text("Remove '${targetExp.description}'?") },
+            text = {
+                Text(
+                    "This expense will be reversed and excluded from all member balances.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onVoidExpense(targetExp.id, targetExp.description)
+                        Toast.makeText(context, "Expense removed!", Toast.LENGTH_SHORT).show()
+                        showVoidConfirmDialog = null
+                        selectedExpenseForDetail = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Remove")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showVoidConfirmDialog = null }) {
+                    Text("Cancel")
                 }
             }
         )
@@ -744,7 +814,7 @@ fun BalancesAndDebtsTab(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
-                                    "Min-Cash-Flow Plan",
+                                    "Who Owes Whom",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -906,12 +976,6 @@ fun MemberBalanceRow(member: Member, currency: String = "USD") {
                         text = if (member.isCurrentUser) "${member.displayName} (You)" else member.displayName,
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        "${member.pubkey.take(6)}...${member.pubkey.takeLast(4)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontFamily = FontFamily.Monospace
                     )
                     if (!member.upiId.isNullOrBlank()) {
                         Text(
@@ -1117,10 +1181,9 @@ fun ExpenseItemRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = if (expense.isVoided) "⛓️ Block #${expense.blockIndex} • VOIDED" else "⛓️ Block #${expense.blockIndex} • Tap for details",
+                        text = if (expense.isVoided) "Cancelled" else "Tap for details",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (expense.isVoided) MaterialTheme.colorScheme.error else BlockchainAccent,
-                        fontFamily = FontFamily.Monospace
+                        color = if (expense.isVoided) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                     )
                 }
             }
@@ -1128,7 +1191,7 @@ fun ExpenseItemRow(
             Column(horizontalAlignment = Alignment.End) {
                 if (expense.isVoided) {
                     Text(
-                        text = "VOIDED",
+                        text = "CANCELLED",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.error

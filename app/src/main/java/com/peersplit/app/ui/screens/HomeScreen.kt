@@ -67,6 +67,15 @@ fun HomeScreen(
     onLockVault: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val currentIdentity = remember { KeyManager.getOrCreateIdentity(context) }
+    var showWelcomeDialog by remember {
+        mutableStateOf(currentIdentity.displayName.isBlank() || currentIdentity.displayName == "My Phone")
+    }
+    var welcomeNameInput by remember {
+        mutableStateOf(if (currentIdentity.displayName == "My Phone") "" else currentIdentity.displayName)
+    }
+    var welcomeUpiInput by remember { mutableStateOf(currentIdentity.upiId ?: "") }
+
     var showPinDialog by remember { mutableStateOf(false) }
     var enteredPin by remember { mutableStateOf("") }
     var pinError by remember { mutableStateOf(false) }
@@ -125,7 +134,8 @@ fun HomeScreen(
                     }
                 },
                 actions = {
-                    val userInitials = remember {
+                    val identityVersion by KeyManager.identityVersion.collectAsState()
+                    val userInitials = remember(identityVersion) {
                         NameUtil.getInitials(KeyManager.getOrCreateIdentity(context).displayName)
                     }
                     if (uiState.isSecretVaultUnlocked) {
@@ -415,6 +425,72 @@ fun HomeScreen(
             dismissButton = {
                 TextButton(onClick = { groupToDelete = null }) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // First Launch Welcome Onboarding Dialog
+    if (showWelcomeDialog) {
+        AlertDialog(
+            onDismissRequest = { /* force setup or require skip */ },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Welcome to PeerSplit")
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Set your display name so friends can recognize who you are in shared expense groups.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = welcomeNameInput,
+                        onValueChange = { welcomeNameInput = it },
+                        label = { Text("Your Name") },
+                        placeholder = { Text("e.g. Rajesh Balakrishnan") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    OutlinedTextField(
+                        value = welcomeUpiInput,
+                        onValueChange = { welcomeUpiInput = it },
+                        label = { Text("UPI ID (Optional for Direct Settlements)") },
+                        placeholder = { Text("e.g. yourname@okhdfcbank") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val finalName = if (welcomeNameInput.isNotBlank()) welcomeNameInput.trim() else "My Phone"
+                        KeyManager.updateDisplayName(context, finalName)
+                        if (welcomeUpiInput.isNotBlank()) {
+                            KeyManager.updateUpiId(context, welcomeUpiInput.trim())
+                        }
+                        showWelcomeDialog = false
+                        Toast.makeText(context, "Profile saved!", Toast.LENGTH_SHORT).show()
+                    },
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Get Started")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showWelcomeDialog = false
+                    }
+                ) {
+                    Text("Later")
                 }
             }
         )

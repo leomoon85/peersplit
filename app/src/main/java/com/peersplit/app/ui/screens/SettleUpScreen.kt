@@ -92,7 +92,7 @@ fun SettleUpScreen(
         }
     }
 
-    val amount = amountText.toDoubleOrNull() ?: 0.0
+    val amount = amountText.replace(',', '.').toDoubleOrNull() ?: 0.0
     val payeeMember = members.find { it.pubkey == selectedPayee }
 
     // Resolve payee UPI ID with fallbacks (member upiId or local profile upiId if payee is current user)
@@ -408,7 +408,7 @@ fun SettleUpScreen(
                 ) {
                     Icon(Icons.Default.Handshake, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Mint Settlement Block")
+                    Text("Record Payment")
                 }
                 Spacer(modifier = Modifier.height(24.dp))
             }

@@ -1,5 +1,6 @@
 package com.peersplit.app.network.nostr
 
+import com.peersplit.app.crypto.Bip340Util
 import com.peersplit.app.crypto.HashUtil
 import com.peersplit.app.crypto.KeyManager
 import kotlinx.serialization.SerialName
@@ -57,12 +58,14 @@ data class NostrEvent(
             content: String,
             createdAt: Long = System.currentTimeMillis() / 1000
         ): NostrEvent {
-            val id = calculateEventId(pubkey, createdAt, kind, tags, content)
-            val sig = KeyManager.signHex(HashUtil.fromHex(id), privateKeyHex)
+            // Nostr pubkey and Schnorr signature derived according to BIP-340 / NIP-01
+            val nostrPubkey = Bip340Util.getPublicKeyHex(privateKeyHex)
+            val id = calculateEventId(nostrPubkey, createdAt, kind, tags, content)
+            val sig = Bip340Util.signHex(id, privateKeyHex)
 
             return NostrEvent(
                 id = id,
-                pubkey = pubkey,
+                pubkey = nostrPubkey,
                 createdAt = createdAt,
                 kind = kind,
                 tags = tags,
@@ -73,11 +76,11 @@ data class NostrEvent(
     }
 
     /**
-     * Verifies the authenticity of this Nostr event.
+     * Verifies the authenticity of this Nostr event according to BIP-340 / NIP-01.
      */
     fun verify(): Boolean {
         val expectedId = calculateEventId(pubkey, createdAt, kind, tags, content)
         if (!expectedId.equals(id, ignoreCase = true)) return false
-        return KeyManager.verifyHex(HashUtil.fromHex(id), sig, pubkey)
+        return Bip340Util.verifyHex(id, sig, pubkey)
     }
 }

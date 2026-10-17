@@ -30,8 +30,10 @@ object DebtSettlementEngine {
     fun calculateNetBalances(
         expenses: List<ExpensePayload>,
         settlements: List<SettlementPayload>,
-        voidedExpenseIds: Set<String> = emptySet()
+        voidedExpenseIds: Set<String> = emptySet(),
+        pubkeyAliases: Map<String, String> = emptyMap()
     ): Map<String, Double> {
+        val resolve = { key: String -> pubkeyAliases[key] ?: key }
         // Use integer cents to eliminate floating-point drift
         val balanceCents = mutableMapOf<String, Long>()
 
@@ -41,28 +43,32 @@ object DebtSettlementEngine {
 
             if (exp.payers.size > 1) {
                 for (payerItem in exp.payers) {
+                    val key = resolve(payerItem.userPubkey)
                     val paidCents = (payerItem.amount * CENTS_FACTOR).roundToLong()
-                    balanceCents[payerItem.userPubkey] = (balanceCents[payerItem.userPubkey] ?: 0L) + paidCents
+                    balanceCents[key] = (balanceCents[key] ?: 0L) + paidCents
                 }
             } else {
-                val payer = exp.payerPubkey
+                val payer = resolve(exp.payerPubkey)
                 val totalCents = (exp.totalAmount * CENTS_FACTOR).roundToLong()
                 balanceCents[payer] = (balanceCents[payer] ?: 0L) + totalCents
             }
 
             for (split in exp.splits) {
+                val key = resolve(split.userPubkey)
                 val owedCents = (split.amount * CENTS_FACTOR).roundToLong()
-                balanceCents[split.userPubkey] = (balanceCents[split.userPubkey] ?: 0L) - owedCents
+                balanceCents[key] = (balanceCents[key] ?: 0L) - owedCents
             }
         }
 
         // 2. Process Settlements (Direct repayments)
         for (stl in settlements) {
+            val payer = resolve(stl.payerPubkey)
+            val payee = resolve(stl.payeePubkey)
             val stlCents = (stl.amount * CENTS_FACTOR).roundToLong()
             // Payer gave money, so their debt decreases (balance goes up)
-            balanceCents[stl.payerPubkey] = (balanceCents[stl.payerPubkey] ?: 0L) + stlCents
+            balanceCents[payer] = (balanceCents[payer] ?: 0L) + stlCents
             // Payee received money, so their credit decreases (balance goes down)
-            balanceCents[stl.payeePubkey] = (balanceCents[stl.payeePubkey] ?: 0L) - stlCents
+            balanceCents[payee] = (balanceCents[payee] ?: 0L) - stlCents
         }
 
         return balanceCents.mapValues { it.value / CENTS_FACTOR }

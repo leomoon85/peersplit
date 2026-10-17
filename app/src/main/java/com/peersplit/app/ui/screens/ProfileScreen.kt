@@ -54,6 +54,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
 
     var displayName by remember { mutableStateOf(identity.displayName) }
     var upiId by remember { mutableStateOf(KeyManager.getUpiId(context)) }
+    var showAdvancedInfo by remember { mutableStateOf(false) }
 
     // Backup state
     var showExportPasswordDialog by remember { mutableStateOf(false) }
@@ -114,7 +115,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Identity & Security", fontWeight = FontWeight.Bold) },
+                title = { Text("Profile & Settings", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -163,7 +164,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "Hardware-Bound Ed25519 Identity",
+                            "End-to-End Encrypted Account",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -268,43 +269,10 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                 }
             }
 
-            // Device Public Key
+            // Encrypted Backup & Restore Card
             item {
-                Text("Cryptographic Public Key", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(8.dp))
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text(
-                            identity.publicKeyHex,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = {
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                val clip = ClipData.newPlainText("Public Key", identity.publicKeyHex)
-                                clipboard.setPrimaryClip(clip)
-                                Toast.makeText(context, "Public key copied!", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.align(Alignment.End)
-                        ) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Copy PubKey")
-                        }
-                    }
-                }
-            }
-
-            // Encrypted Vault Backup & Restore Card
-            item {
-                Text("Vault Backup & Migration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("Export an AES-256 encrypted .peersplit vault file to migrate to a new phone or keep offline backups.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Backup & Restore", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("Export a password-protected backup file to migrate to a new phone or keep offline backups.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Card(
@@ -315,11 +283,11 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.CloudSync, contentDescription = null, tint = BlockchainAccent)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Encrypted One-File Vault", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = BlockchainAccent)
+                            Text("Encrypted Backup File", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = BlockchainAccent)
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "Includes your Ed25519 identity, private keys, secret groups, and full tamper-proof blockchain ledgers. Protected by your master password.",
+                            "Securely packages all your expense groups, members, payment history, and profile into an encrypted file protected by your password.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -343,48 +311,94 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                             ) {
                                 Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Restore Vault")
+                                Text("Restore Backup")
                             }
                         }
                     }
                 }
             }
 
-            // Decentralized Nostr Relays
+            // Advanced & Connection Info (Collapsed by default for regular users)
             item {
-                Text("Connected Decentralized Relays", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            }
-
-            items(RelayPool.DEFAULT_RELAYS) { relay ->
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showAdvancedInfo = !showAdvancedInfo },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            relay,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(BalancePositive)
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Advanced / Connection Info", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall)
+                            }
+                            Icon(
+                                if (showAdvancedInfo) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+
+                        if (showAdvancedInfo) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            HorizontalDivider()
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Text("Device Identity Key", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                "Connected",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = BalancePositive
+                                identity.publicKeyHex,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("Public Key", identity.publicKeyHex)
+                                    clipboard.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Public key copied!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.align(Alignment.End),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Copy Key", fontSize = 12.sp)
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Network Relays (${RelayPool.DEFAULT_RELAYS.size})", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(6.dp))
+                            RelayPool.DEFAULT_RELAYS.forEach { relay ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(relay, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 1)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(7.dp)
+                                                .clip(CircleShape)
+                                                .background(BalancePositive)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Connected", style = MaterialTheme.typography.labelSmall, color = BalancePositive, fontSize = 10.sp)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -408,7 +422,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            "PeerSplit is completely serverless. Your private key, financial ledgers, and secret vaults never leave your phone unencrypted.",
+                            "PeerSplit is completely private and peer-to-peer. Your personal identity, expenses, and private groups are saved directly on your phone and encrypted before syncing.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

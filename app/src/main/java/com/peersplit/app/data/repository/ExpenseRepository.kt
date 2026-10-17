@@ -115,60 +115,104 @@ class ExpenseRepository(
             val expensesPayloads = extractExpenses(domainBlocks)
             val settlementPayloads = extractSettlements(domainBlocks)
             val voidedIds = extractVoidedExpenseIds(domainBlocks)
-            val netBalances = DebtSettlementEngine.calculateNetBalances(expensesPayloads, settlementPayloads, voidedIds)
+            val ghostPubkeyHash = HashUtil.sha256Hex("ghost:$groupId:${identity.displayName.trim().lowercase()}")
+            val aliasMap = mutableMapOf<String, String>()
+            for (m in memberEntities) {
+                if (m.pubkey == ghostPubkeyHash || (m.displayName.equals(identity.displayName.trim(), ignoreCase = true) && m.pubkey != identity.publicKeyHex)) {
+                    aliasMap[m.pubkey] = identity.publicKeyHex
+                }
+            }
+
+            val netBalances = DebtSettlementEngine.calculateNetBalances(expensesPayloads, settlementPayloads, voidedIds, aliasMap)
             val suggestions = DebtSettlementEngine.simplifyDebts(netBalances)
             val validation = BlockchainEngine.validateChain(domainBlocks)
 
             val memberMap = memberEntities.associate { it.pubkey to it.displayName }
             val members = memberEntities.map { memberEntity ->
+                val resolvedPubkey = aliasMap[memberEntity.pubkey] ?: memberEntity.pubkey
                 Member(
                     pubkey = memberEntity.pubkey,
                     displayName = memberEntity.displayName,
-                    isCurrentUser = memberEntity.pubkey == identity.publicKeyHex,
-                    netBalance = netBalances[memberEntity.pubkey] ?: 0.0,
+                    isCurrentUser = resolvedPubkey == identity.publicKeyHex,
+                    netBalance = netBalances[resolvedPubkey] ?: 0.0,
                     upiId = memberEntity.upiId
                 )
             }
 
-            val expenseItems = domainBlocks.filter { it.blockType == BlockType.EXPENSE }.mapNotNull { block ->
+            val expenseItems = domainBlocks.filter { it.blockType == BlockType.EXPENSE || it.blockType == BlockType.SETTLEMENT }.mapNotNull { block ->
                 try {
-                    val exp = json.decodeFromString(ExpensePayload.serializer(), block.payloadJson)
-                    val isVoided = exp.expenseId in voidedIds
-                    val userSplit = exp.splits.find { it.userPubkey == identity.publicKeyHex }?.amount ?: 0.0
-                    val userPaid = if (exp.payers.size > 1) {
-                        exp.payers.find { it.userPubkey == identity.publicKeyHex }?.amount ?: 0.0
-                    } else if (exp.payerPubkey == identity.publicKeyHex) {
-                        exp.totalAmount
-                    } else {
-                        0.0
-                    }
-                    val share = if (isVoided) 0.0 else (userPaid - userSplit)
+                    if (block.blockType == BlockType.EXPENSE) {
+                        val exp = json.decodeFromString(ExpensePayload.serializer(), block.payloadJson)
+                        val isVoided = exp.expenseId in voidedIds
+                        val userSplit = exp.splits.find { (aliasMap[it.userPubkey] ?: it.userPubkey) == identity.publicKeyHex }?.amount ?: 0.0
+                        val userPaid = if (exp.payers.size > 1) {
+                            exp.payers.find { (aliasMap[it.userPubkey] ?: it.userPubkey) == identity.publicKeyHex }?.amount ?: 0.0
+                        } else if ((aliasMap[exp.payerPubkey] ?: exp.payerPubkey) == identity.publicKeyHex) {
+                            exp.totalAmount
+                        } else {
+                            0.0
+                        }
+                        val share = if (isVoided) 0.0 else (userPaid - userSplit)
 
-                    val resolvedPayerName = if (exp.payers.size > 1) {
-                        exp.payers.joinToString(" + ") { p -> memberMap[p.userPubkey] ?: "Member" }
-                    } else {
-                        memberMap[exp.payerPubkey] ?: "Member"
-                    }
+                        val resolvedPayerName = if (exp.payers.size > 1) {
+                            exp.payers.joinToString(" + ") { p -> memberMap[p.userPubkey] ?: "Member" }
+                        } else {
+                            memberMap[exp.payerPubkey] ?: "Member"
+                        }
 
-                    ExpenseItem(
-                        id = exp.expenseId,
-                        description = exp.description,
-                        totalAmount = exp.totalAmount,
-                        currency = exp.currency,
-                        payerPubkey = exp.payerPubkey,
-                        payerName = resolvedPayerName,
-                        timestamp = block.timestamp,
-                        userShare = share,
-                        blockIndex = block.index,
-                        category = exp.category,
-                        note = exp.note,
-                        splitType = exp.splitType,
-                        splits = exp.splits,
-                        payers = exp.payers,
-                        blockHash = block.blockHash,
-                        signature = block.signature,
-                        isVoided = isVoided
-                    )
+                        ExpenseItem(
+                            id = exp.expenseId,
+                            description = exp.description,
+                            totalAmount = exp.totalAmount,
+                            currency = exp.currency,
+                            payerPubkey = exp.payerPubkey,
+                            payerName = resolvedPayerName,
+                            timestamp = block.timestamp,
+                            userShare = share,
+                            blockIndex = block.index,
+                            category = exp.category,
+                            note = exp.note,
+                            splitType = exp.splitType,
+                            splits = exp.splits,
+                            payers = exp.payers,
+                            blockHash = block.blockHash,
+                            signature = block.signature,
+                            isVoided = isVoided
+                        )
+                    } else { // BlockType.SETTLEMENT
+                        val stl = json.decodeFromString(SettlementPayload.serializer(), block.payloadJson)
+                        val payerPub = aliasMap[stl.payerPubkey] ?: stl.payerPubkey
+                        val payeePub = aliasMap[stl.payeePubkey] ?: stl.payeePubkey
+                        val payerName = memberMap[stl.payerPubkey] ?: "Member"
+                        val payeeName = memberMap[stl.payeePubkey] ?: "Member"
+                        val userShare = if (payerPub == identity.publicKeyHex) {
+                            stl.amount // user paid
+                        } else if (payeePub == identity.publicKeyHex) {
+                            -stl.amount // user received
+                        } else {
+                            0.0
+                        }
+
+                        ExpenseItem(
+                            id = stl.settlementId,
+                            description = "$payerName paid $payeeName",
+                            totalAmount = stl.amount,
+                            currency = stl.currency,
+                            payerPubkey = stl.payerPubkey,
+                            payerName = payerName,
+                            timestamp = block.timestamp,
+                            userShare = userShare,
+                            blockIndex = block.index,
+                            category = "SETTLEMENT",
+                            note = stl.note,
+                            splitType = "SETTLEMENT",
+                            splits = listOf(SplitItem(stl.payeePubkey, stl.amount)),
+                            payers = listOf(SplitItem(stl.payerPubkey, stl.amount)),
+                            blockHash = block.blockHash,
+                            signature = block.signature,
+                            isVoided = false
+                        )
+                    }
                 } catch (e: Exception) {
                     null
                 }
@@ -505,9 +549,20 @@ class ExpenseRepository(
                 )
             )
 
-            // 3. Insert Current User Member
+            // 3. Insert Current User Member & clean up matching ghost member
             val identity = KeyManager.getOrCreateIdentity(context)
             val privKeyHex = KeyManager.getPrivateKeyHex(context)
+
+            val ghostPubkeyHash = HashUtil.sha256Hex("ghost:${inviteData.groupId}:${identity.displayName.trim().lowercase()}")
+            val existingMembers = database.memberDao().getMembersForGroupSync(inviteData.groupId)
+            val ghostMatch = existingMembers.firstOrNull {
+                it.pubkey == ghostPubkeyHash || 
+                ((it.pubkey.startsWith("ghost:") || it.displayName.equals(identity.displayName.trim(), ignoreCase = true)) && it.pubkey != identity.publicKeyHex)
+            }
+            if (ghostMatch != null) {
+                database.memberDao().deleteMember(inviteData.groupId, ghostMatch.pubkey)
+            }
+
             database.memberDao().insertMember(
                 MemberEntity(
                     groupId = inviteData.groupId,

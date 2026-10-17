@@ -14,6 +14,7 @@ enum class ExpenseCategory(
     ENTERTAINMENT("Entertainment", "🎬", 0xFFAB47BC),
     SHOPPING("Shopping", "🛍️", 0xFFEC407A),
     HEALTH("Healthcare", "💊", 0xFF26A69A),
+    SETTLEMENT("Payment", "💸", 0xFF10B981),
     GENERAL("General", "📦", 0xFF78909C);
 
     fun composeColor(): Color = Color(colorHex)

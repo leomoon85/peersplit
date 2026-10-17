@@ -5,6 +5,9 @@ import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
 import org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
@@ -34,6 +37,13 @@ object KeyManager {
     private const val PIN_KDF_SALT = "PeerSplit_Vault_Salt_v1:"
 
     private val secureRandom = SecureRandom()
+
+    private val _identityVersion = MutableStateFlow(0L)
+    val identityVersion: StateFlow<Long> = _identityVersion.asStateFlow()
+
+    fun notifyIdentityChanged() {
+        _identityVersion.value = System.currentTimeMillis()
+    }
 
     data class KeyPair(
         val privateKey: ByteArray,
@@ -224,6 +234,7 @@ object KeyManager {
      */
     fun updateDisplayName(context: Context, newName: String) {
         getPrefs(context).edit().putString(KEY_USER_NAME, newName.trim()).apply()
+        notifyIdentityChanged()
     }
 
     /**
@@ -231,6 +242,7 @@ object KeyManager {
      */
     fun updateUpiId(context: Context, newUpiId: String) {
         getPrefs(context).edit().putString(KEY_UPI_ID, newUpiId.trim()).apply()
+        notifyIdentityChanged()
     }
 
     fun getUpiId(context: Context): String {
@@ -249,6 +261,7 @@ object KeyManager {
             .putString(KEY_USER_NAME, displayName)
             .putString(KEY_UPI_ID, upiId)
             .apply()
+        notifyIdentityChanged()
     }
 
     private fun storePrivateKeyEncrypted(prefs: SharedPreferences, privHex: String) {

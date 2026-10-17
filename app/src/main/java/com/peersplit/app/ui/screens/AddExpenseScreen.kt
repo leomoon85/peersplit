@@ -153,7 +153,7 @@ fun AddExpenseScreen(
         }
     }
 
-    val totalAmount = amountText.toDoubleOrNull() ?: 0.0
+    val totalAmount = amountText.replace(',', '.').toDoubleOrNull() ?: 0.0
 
     // Multiple Payers validation
     val (computedPayers, isValidPayer, payerStatusText) = remember(
@@ -165,7 +165,7 @@ fun AddExpenseScreen(
             var sumPaid = 0.0
             val list = mutableListOf<SplitItem>()
             for (m in members) {
-                val paid = multiPayerAmounts[m.pubkey]?.toDoubleOrNull() ?: 0.0
+                val paid = multiPayerAmounts[m.pubkey]?.replace(',', '.')?.toDoubleOrNull() ?: 0.0
                 sumPaid += paid
                 if (paid > 0) {
                     list.add(SplitItem(userPubkey = m.pubkey, amount = paid))
@@ -193,9 +193,15 @@ fun AddExpenseScreen(
                 if (active.isEmpty()) {
                     Triple(emptyList(), false, "Select at least 1 member")
                 } else {
-                    val perPerson = totalAmount / active.size
-                    val list = active.map { SplitItem(userPubkey = it, amount = perPerson) }
-                    Triple(list, true, "${CurrencyUtil.formatAmount(perPerson, currency)} / person")
+                    val totalCents = kotlin.math.round(totalAmount * 100).toLong()
+                    val baseCents = totalCents / active.size
+                    val remainderCents = (totalCents % active.size).toInt()
+                    val list = active.mapIndexed { index, pubkey ->
+                        val centsForUser = baseCents + (if (index < remainderCents) 1 else 0)
+                        SplitItem(userPubkey = pubkey, amount = centsForUser / 100.0)
+                    }
+                    val perPersonAvg = totalAmount / active.size
+                    Triple(list, true, "${CurrencyUtil.formatAmount(perPersonAvg, currency)} / person")
                 }
             }
             SplitMode.EXACT -> {
@@ -684,9 +690,9 @@ fun AddExpenseScreen(
                             color = MaterialTheme.colorScheme.onPrimary
                         )
                     } else {
-                        Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Sign & Mint Expense Block")
+                        Text("Save Expense")
                     }
                 }
                 Spacer(modifier = Modifier.height(24.dp))
