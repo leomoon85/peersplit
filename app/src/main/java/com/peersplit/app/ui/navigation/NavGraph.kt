@@ -258,9 +258,11 @@ fun NavGraph(
                         payers = payers,
                         expenseDateMillis = expenseDateMillis,
                         editingExpenseId = editId,
-                        originalDescription = origDesc
+                        originalDescription = origDesc,
+                        onComplete = {
+                            navController.popBackStack()
+                        }
                     )
-                    navController.popBackStack()
                 }
             )
         }

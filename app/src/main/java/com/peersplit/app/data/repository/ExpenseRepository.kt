@@ -314,10 +314,18 @@ class ExpenseRepository(
             )
         }
 
+        val replacedExpenseIds = domainBlocks
+            .filter { it.blockType == BlockType.EXPENSE }
+            .mapNotNull { decodeExpense(it)?.editedFromExpenseId }
+            .toSet()
+
         val expenseItems = domainBlocks.filter { it.blockType == BlockType.EXPENSE || it.blockType == BlockType.SETTLEMENT }.mapNotNull { block ->
             try {
                 if (block.blockType == BlockType.EXPENSE) {
                     val exp = decodeExpense(block) ?: return@mapNotNull null
+                    // If this expense was superseded by an Edit, hide the superseded version from the UI list
+                    // so the user sees the updated expense cleanly in place instead of a cancelled row
+                    if (exp.expenseId in replacedExpenseIds) return@mapNotNull null
                     val isVoided = exp.expenseId in voidedIds
                     val resolvedSplits = exp.splits.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
                     val resolvedPayers = exp.payers.map { it.copy(userPubkey = resolvePubkey(it.userPubkey)) }
@@ -606,12 +614,12 @@ class ExpenseRepository(
         payers: List<SplitItem> = emptyList(),
         expenseDateMillis: Long? = null,
         editedFromExpenseId: String? = null
-    ) {
+    ) = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
-        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
+        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withContext
 
-        val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return
+        val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withContext
         val prevBlock = latestBlockEntity.toDomainBlock()
 
         val expenseBlock = BlockchainEngine.createExpenseBlock(
@@ -638,7 +646,7 @@ class ExpenseRepository(
 
     /**
      * Edits an existing expense on the immutable ledger by atomically voiding the original expense
-     * and appending the updated expense block, then broadcasting both to peers.
+     * and appending the updated expense block in a single NonCancellable block, then broadcasting both to peers.
      */
     suspend fun editExpense(
         groupId: String,
@@ -654,27 +662,52 @@ class ExpenseRepository(
         note: String = "",
         payers: List<SplitItem> = emptyList(),
         expenseDateMillis: Long? = null
-    ) {
-        voidExpense(
+    ) = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+        val identity = KeyManager.getOrCreateIdentity(context)
+        val privKeyHex = KeyManager.getPrivateKeyHex(context)
+        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withContext
+        val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withContext
+        val prevBlock = latestBlockEntity.toDomainBlock()
+
+        // 1. Mint Void Block for original expense
+        val voidBlock = BlockchainEngine.createExpenseVoidBlock(
             groupId = groupId,
+            prevBlock = prevBlock,
             targetExpenseId = originalExpenseId,
             targetDescription = originalDescription,
-            reason = "Edited & replaced"
+            reason = "Edited & replaced",
+            authorPubkey = identity.publicKeyHex,
+            authorPrivateKeyHex = privKeyHex
         )
-        addExpense(
+
+        // 2. Mint Replacement Expense Block chained directly on top of voidBlock
+        val newExpenseBlock = BlockchainEngine.createExpenseBlock(
             groupId = groupId,
+            prevBlock = voidBlock,
             description = newDescription,
-            amount = newAmount,
+            totalAmount = newAmount,
             currency = currency,
             payerPubkey = payerPubkey,
             splits = splits,
             category = category,
-            splitType = splitType,
             note = note,
+            authorPubkey = identity.publicKeyHex,
+            authorPrivateKeyHex = privKeyHex,
+            splitType = splitType,
             payers = payers,
             expenseDateMillis = expenseDateMillis,
             editedFromExpenseId = originalExpenseId
         )
+
+        // Insert both blocks atomically in a single batch so UI never sees an intermediate "cancelled" state
+        database.blockDao().insertBlocks(
+            listOf(
+                BlockEntity.fromDomainBlock(voidBlock, isVerified = true),
+                BlockEntity.fromDomainBlock(newExpenseBlock, isVerified = true)
+            )
+        )
+        syncManager.broadcastBlock(voidBlock, groupEntity.groupKeyBase64)
+        syncManager.broadcastBlock(newExpenseBlock, groupEntity.groupKeyBase64)
     }
 
     /**

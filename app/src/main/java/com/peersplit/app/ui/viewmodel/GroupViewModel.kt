@@ -181,7 +181,8 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
         payers: List<SplitItem> = emptyList(),
         expenseDateMillis: Long? = null,
         editingExpenseId: String? = null,
-        originalDescription: String? = null
+        originalDescription: String? = null,
+        onComplete: () -> Unit = {}
     ) {
         if (amount <= 0 || description.isBlank() || splits.isEmpty()) return
 
@@ -220,6 +221,7 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
                     )
                 }
                 _submissionSuccess.value = true
+                onComplete()
             } catch (e: Exception) {
                 _isSubmitting.value = false
             }
