@@ -12,6 +12,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -451,6 +452,29 @@ fun HomeScreen(
                             )
                         }
                     }
+                }
+
+                item {
+                    HomeBottomEngagementSection(
+                        rewardProfile = rewardProfile,
+                        totalGroupsCount = allGroupsCount,
+                        totalBlocksCount = totalBlocksCount,
+                        onCreateGroupClick = onCreateGroupClick,
+                        onJoinGroupClick = onJoinGroupClick,
+                        onProfileClick = onProfileClick,
+                        onOpenRewardsClick = { showRewardsSheet = true },
+                        onSyncNowClick = {
+                            if (!isManualSyncing) {
+                                isManualSyncing = true
+                                coroutineScope.launch {
+                                    com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow()
+                                    delay(800)
+                                    isManualSyncing = false
+                                    Toast.makeText(context, "All groups synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    )
                 }
 
                 item {
@@ -1159,4 +1183,267 @@ fun RewardsBottomSheet(
         }
     }
 }
+
+@Composable
+fun HomeBottomEngagementSection(
+    rewardProfile: RewardProfile,
+    totalGroupsCount: Int,
+    totalBlocksCount: Int,
+    onCreateGroupClick: () -> Unit,
+    onJoinGroupClick: () -> Unit,
+    onProfileClick: () -> Unit,
+    onOpenRewardsClick: () -> Unit,
+    onSyncNowClick: () -> Unit
+) {
+    val nextBadge = rewardProfile.badges.firstOrNull { !it.isUnlocked }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Spacer(modifier = Modifier.height(2.dp))
+
+        // 1. Quick Actions Grid (Fills lower half with instant 1-tap actions)
+        Text(
+            "Quick Actions",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            HomeQuickActionTile(
+                emoji = "➕",
+                title = "New Group",
+                subtitle = "Trips, Rent & Friends",
+                modifier = Modifier.weight(1f),
+                onClick = onCreateGroupClick
+            )
+            HomeQuickActionTile(
+                emoji = "📷",
+                title = "Scan / Join",
+                subtitle = "QR Code or Link",
+                modifier = Modifier.weight(1f),
+                onClick = onJoinGroupClick
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            HomeQuickActionTile(
+                emoji = "🔄",
+                title = "Sync Now",
+                subtitle = "Refresh All Phones",
+                modifier = Modifier.weight(1f),
+                onClick = onSyncNowClick
+            )
+            HomeQuickActionTile(
+                emoji = "💳",
+                title = "UPI & Profile",
+                subtitle = "Phone & Backup",
+                modifier = Modifier.weight(1f),
+                onClick = onProfileClick
+            )
+        }
+
+        // 2. Next Achievement Goal & Badge Strip Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpenRewardsClick),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
+            ),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "YOUR ACHIEVEMENTS",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        letterSpacing = 1.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "View All →",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(rewardProfile.badges) { badge ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (badge.isUnlocked) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (badge.isUnlocked) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                                else Color.Transparent
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (badge.isUnlocked) badge.emoji else "🔒",
+                                    fontSize = 15.sp
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = badge.title,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = if (badge.isUnlocked) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (badge.isUnlocked) MaterialTheme.colorScheme.onSurface
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (nextBadge != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f))
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(nextBadge.emoji, fontSize = 18.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    "Next Goal: ${nextBadge.title}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    "${nextBadge.description} (${nextBadge.progressText})",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Text(
+                            "+${nextBadge.xpReward} XP",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+
+        // 3. P2P Security & Network Status Pill Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+            ),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        "🔒 End-to-End Encrypted P2P Ledger",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "$totalGroupsCount Groups • $totalBlocksCount Verified Blocks • Zero Cloud Tracking",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    "100% Free",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = BalancePositive,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun HomeQuickActionTile(
+    emoji: String,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(emoji, fontSize = 18.sp)
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
 

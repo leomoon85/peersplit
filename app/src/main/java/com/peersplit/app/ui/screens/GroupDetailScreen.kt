@@ -327,6 +327,19 @@ fun GroupDetailScreen(
                 )
             }
 
+            val launchImportPicker = {
+                filePickerLauncher.launch(
+                    arrayOf(
+                        "text/comma-separated-values",
+                        "text/csv",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "application/vnd.ms-excel",
+                        "application/octet-stream",
+                        "*/*"
+                    )
+                )
+            }
+
             when (selectedTab) {
                 0 -> BalancesAndDebtsTab(
                     groupDetail = groupDetail,
@@ -343,11 +356,18 @@ fun GroupDetailScreen(
                             String.format(Locale.US, "%.0f", groupDetail.group.monthlyBudget)
                         } else ""
                         showBudgetDialog = true
-                    }
+                    },
+                    onAddExpenseClick = onAddExpenseClick,
+                    onImportClick = launchImportPicker,
+                    onViewAllExpensesClick = { selectedTab = 1 },
+                    onExpenseClick = { selectedExpenseForDetail = it },
+                    onAuditLedgerClick = onAuditLedgerClick
                 )
                 1 -> ExpensesTab(
                     groupDetail = groupDetail,
-                    onExpenseClick = { selectedExpenseForDetail = it }
+                    onExpenseClick = { selectedExpenseForDetail = it },
+                    onAddExpenseClick = onAddExpenseClick,
+                    onImportClick = launchImportPicker
                 )
                 2 -> AnalyticsTab(
                     groupDetail = groupDetail,
@@ -1106,7 +1126,12 @@ fun BalancesAndDebtsTab(
     onAddMemberClick: () -> Unit = {},
     onShareInviteClick: () -> Unit = {},
     onEditMemberUpi: (Member) -> Unit = {},
-    onSetBudgetClick: () -> Unit = {}
+    onSetBudgetClick: () -> Unit = {},
+    onAddExpenseClick: () -> Unit = {},
+    onImportClick: () -> Unit = {},
+    onViewAllExpensesClick: () -> Unit = {},
+    onExpenseClick: (ExpenseItem) -> Unit = {},
+    onAuditLedgerClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val totalSpent = groupDetail.expenses.filter { !it.isVoided && it.splitType != "SETTLEMENT" }.sumOf { it.totalAmount }
@@ -1348,6 +1373,179 @@ fun BalancesAndDebtsTab(
             )
         }
 
+        // Group Quick Actions Grid (Fills lower half of screen with 1-tap actions)
+        item {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Group Quick Actions",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                HomeQuickActionTile(
+                    emoji = "➕",
+                    title = "Add Expense",
+                    subtitle = "Log bill • +25 XP",
+                    modifier = Modifier.weight(1f),
+                    onClick = onAddExpenseClick
+                )
+                HomeQuickActionTile(
+                    emoji = "📲",
+                    title = "Invite Friends",
+                    subtitle = "QR Code or Link",
+                    modifier = Modifier.weight(1f),
+                    onClick = onShareInviteClick
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                HomeQuickActionTile(
+                    emoji = "📥",
+                    title = "Import Sheet",
+                    subtitle = "CSV / Excel (.xlsx)",
+                    modifier = Modifier.weight(1f),
+                    onClick = onImportClick
+                )
+                HomeQuickActionTile(
+                    emoji = "📊",
+                    title = "Share Summary",
+                    subtitle = "WhatsApp / CSV",
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        ExportUtil.shareStatement(context, groupDetail, asCsv = false)
+                    }
+                )
+            }
+        }
+
+        // Recent Expenses Preview on Overview / Debts Tab
+        val recentActiveExpenses = groupDetail.expenses.filter { !it.isVoided }.take(3)
+        if (recentActiveExpenses.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Recent Activity",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    TextButton(onClick = onViewAllExpensesClick) {
+                        Text("See All (${groupDetail.expenses.count { !it.isVoided }}) →")
+                    }
+                }
+            }
+            items(recentActiveExpenses) { exp ->
+                ExpenseItemRow(
+                    expense = exp,
+                    currency = groupDetail.group.currency,
+                    onClick = { onExpenseClick(exp) }
+                )
+            }
+        } else {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("🧾", fontSize = 28.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            "No Expenses Logged Yet",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Add your first group bill or import an existing CSV/Excel spreadsheet to start tracking balances.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Button(onClick = onAddExpenseClick) {
+                                Text("+ Add Expense")
+                            }
+                            OutlinedButton(onClick = onImportClick) {
+                                Text("Import CSV/Excel")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cryptographic Ledger Status Footer Card
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onAuditLedgerClick() },
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Shield,
+                            contentDescription = null,
+                            tint = BalancePositive,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                "Verified P2P Ledger • ${groupDetail.group.blockCount} Signed Blocks",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                "Tap to inspect cryptographic signatures & block history",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Text(
+                        "Audit →",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
         item {
             Spacer(modifier = Modifier.height(80.dp))
         }
@@ -1456,7 +1654,9 @@ fun MemberBalanceRow(
 @Composable
 fun ExpensesTab(
     groupDetail: GroupDetail,
-    onExpenseClick: (ExpenseItem) -> Unit = {}
+    onExpenseClick: (ExpenseItem) -> Unit = {},
+    onAddExpenseClick: () -> Unit = {},
+    onImportClick: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategoryFilter by remember { mutableStateOf<ExpenseCategory?>(null) }
@@ -1480,12 +1680,45 @@ fun ExpensesTab(
                 .padding(24.dp),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                "No expenses yet! Tap + below to add your first shared expense.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("🧾", fontSize = 36.sp)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        "No Expenses Logged Yet",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Split a bill with your group to earn +25 to +45 SplitPoints (XP), or import an existing CSV / Excel sheet in one tap.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(18.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(onClick = onAddExpenseClick) {
+                            Text("+ Add Expense")
+                        }
+                        OutlinedButton(onClick = onImportClick) {
+                            Text("Import CSV / Excel")
+                        }
+                    }
+                }
+            }
         }
     } else {
         Column(modifier = Modifier.fillMaxSize()) {
