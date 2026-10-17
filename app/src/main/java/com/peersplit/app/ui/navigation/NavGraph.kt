@@ -140,8 +140,8 @@ fun NavGraph(
                 onDismissInvite = {
                     groupViewModel.dismissInviteDialog()
                 },
-                onAddOfflineMember = { displayName, upiId ->
-                    groupViewModel.addOfflineMember(displayName, upiId)
+                onAddOfflineMember = { displayName, upiId, phone ->
+                    groupViewModel.addOfflineMember(displayName, upiId, phone)
                 },
                 onVoidExpense = { expenseId, description ->
                     groupViewModel.voidExpense(expenseId, description)
@@ -159,8 +159,8 @@ fun NavGraph(
                         navController.popBackStack()
                     }
                 },
-                onUpdateMemberUpi = { pubkey, upiId ->
-                    groupViewModel.updateMemberUpiId(pubkey, upiId)
+                onUpdateMemberContact = { pubkey, phone, upiId ->
+                    groupViewModel.updateMemberContact(pubkey, phone, upiId)
                 }
             )
         }

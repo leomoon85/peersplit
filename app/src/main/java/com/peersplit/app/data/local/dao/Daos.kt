@@ -56,6 +56,9 @@ interface MemberDao {
     @Query("UPDATE members SET upiId = :upiId WHERE groupId = :groupId AND pubkey = :pubkey")
     suspend fun updateMemberUpiId(groupId: String, pubkey: String, upiId: String)
 
+    @Query("UPDATE members SET phone = :phone, upiId = :upiId WHERE groupId = :groupId AND pubkey = :pubkey")
+    suspend fun updateMemberContact(groupId: String, pubkey: String, phone: String?, upiId: String?)
+
     @Query("DELETE FROM members WHERE groupId = :groupId AND pubkey = :pubkey")
     suspend fun deleteMember(groupId: String, pubkey: String)
 

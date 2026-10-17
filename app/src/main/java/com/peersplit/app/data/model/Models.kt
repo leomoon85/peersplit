@@ -25,7 +25,8 @@ data class Member(
     val displayName: String,
     val isCurrentUser: Boolean = false,
     val netBalance: Double = 0.0,
-    val upiId: String? = null
+    val upiId: String? = null,
+    val phone: String? = null
 )
 
 data class ExpenseItem(

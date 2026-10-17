@@ -38,7 +38,8 @@ data class GroupGenesisPayload(
 data class MemberInfo(
     val pubkey: String,
     val displayName: String,
-    val upiId: String? = null
+    val upiId: String? = null,
+    val phone: String? = null
 )
 
 /**
@@ -50,7 +51,8 @@ data class MemberJoinedPayload(
     val displayName: String,
     val joinedAt: Long,
     val upiId: String? = null,
-    val claimedGhostPubkey: String? = null
+    val claimedGhostPubkey: String? = null,
+    val phone: String? = null
 )
 
 /**

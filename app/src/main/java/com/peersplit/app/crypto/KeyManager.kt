@@ -33,6 +33,7 @@ object KeyManager {
     private const val KEY_PUB_HEX = "pub_key_hex"
     private const val KEY_USER_NAME = "user_display_name"
     private const val KEY_UPI_ID = "user_upi_id"
+    private const val KEY_PHONE = "user_phone_number"
     private const val KEYSTORE_ALIAS = "peersplit_master_identity_key"
     private const val PIN_KDF_SALT = "PeerSplit_Vault_Salt_v1:"
 
@@ -43,6 +44,16 @@ object KeyManager {
 
     fun notifyIdentityChanged() {
         _identityVersion.value = System.currentTimeMillis()
+    }
+
+    /**
+     * Normalizes a phone number to its canonical 10-digit suffix (e.g. "+91 98765-43210" -> "9876543210")
+     * so matching works seamlessly regardless of country code or formatting.
+     */
+    fun normalizePhone(raw: String?): String {
+        if (raw.isNullOrBlank()) return ""
+        val digits = raw.filter { it.isDigit() }
+        return if (digits.length >= 10) digits.takeLast(10) else digits
     }
 
     data class KeyPair(
@@ -69,7 +80,8 @@ object KeyManager {
     data class UserIdentity(
         val publicKeyHex: String,
         val displayName: String,
-        val upiId: String? = null
+        val upiId: String? = null,
+        val phone: String? = null
     ) {
         val shortPubkey: String
             get() = if (publicKeyHex.length > 12) {
@@ -181,6 +193,7 @@ object KeyManager {
         val existingPubHex = prefs.getString(KEY_PUB_HEX, null)
         val existingName = prefs.getString(KEY_USER_NAME, "My Phone") ?: "My Phone"
         val existingUpi = prefs.getString(KEY_UPI_ID, null)
+        val existingPhone = prefs.getString(KEY_PHONE, null)
 
         if (existingPubHex != null) {
             // Migrate legacy plaintext private key if present
@@ -189,7 +202,12 @@ object KeyManager {
                 storePrivateKeyEncrypted(prefs, legacyPriv)
                 prefs.edit().remove(KEY_PRIV_HEX_LEGACY).apply()
             }
-            return UserIdentity(publicKeyHex = existingPubHex, displayName = existingName, upiId = existingUpi)
+            return UserIdentity(
+                publicKeyHex = existingPubHex,
+                displayName = existingName,
+                upiId = existingUpi,
+                phone = existingPhone
+            )
         }
 
         // Generate brand new identity
@@ -250,9 +268,29 @@ object KeyManager {
     }
 
     /**
+     * Updates the user's local phone number (optional, used for member matching & UPI).
+     */
+    fun updatePhone(context: Context, newPhone: String) {
+        val clean = normalizePhone(newPhone)
+        getPrefs(context).edit().putString(KEY_PHONE, clean).apply()
+        notifyIdentityChanged()
+    }
+
+    fun getPhone(context: Context): String {
+        return getPrefs(context).getString(KEY_PHONE, "") ?: ""
+    }
+
+    /**
      * Restores cryptographic identity from backup.
      */
-    fun restoreIdentity(context: Context, privHex: String, pubHex: String, displayName: String, upiId: String? = null) {
+    fun restoreIdentity(
+        context: Context,
+        privHex: String,
+        pubHex: String,
+        displayName: String,
+        upiId: String? = null,
+        phone: String? = null
+    ) {
         val prefs = getPrefs(context)
         storePrivateKeyEncrypted(prefs, privHex)
         prefs.edit()
@@ -260,6 +298,7 @@ object KeyManager {
             .putString(KEY_PUB_HEX, pubHex)
             .putString(KEY_USER_NAME, displayName)
             .putString(KEY_UPI_ID, upiId)
+            .putString(KEY_PHONE, normalizePhone(phone))
             .apply()
         notifyIdentityChanged()
     }

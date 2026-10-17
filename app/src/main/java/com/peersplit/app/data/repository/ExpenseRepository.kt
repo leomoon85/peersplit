@@ -77,14 +77,16 @@ class ExpenseRepository(
     /**
      * Builds a comprehensive map of [ghostPubkey -> realMemberPubkey] from:
      * 1. Explicit `claimedGhostPubkey` recorded in MEMBER_JOIN blocks on the chain.
-     * 2. Matching displayName between an offline ghost member and a real member.
+     * 2. Matching normalized 10-digit phone number between an offline ghost member and a real member.
+     * 3. Matching displayName between an offline ghost member and a real member.
      */
     private fun buildAliasMap(
         groupId: String,
         memberEntities: List<MemberEntity>,
         blocks: List<Block>,
         currentIdentityPubkey: String,
-        currentIdentityName: String
+        currentIdentityName: String,
+        currentIdentityPhone: String? = null
     ): Map<String, String> {
         val aliasMap = mutableMapOf<String, String>()
 
@@ -101,12 +103,27 @@ class ExpenseRepository(
             }
         }
 
-        // 2. Real members claiming ghost members with the same displayName
+        // 2. Real members claiming ghost members by 10-digit phone number FIRST, then by displayName
         val realMembers = memberEntities.filter { !isGhostPubkey(groupId, it.pubkey, it.displayName) }
         val ghostMembers = memberEntities.filter { isGhostPubkey(groupId, it.pubkey, it.displayName) }
+        val normMyPhone = KeyManager.normalizePhone(currentIdentityPhone)
 
         for (ghost in ghostMembers) {
             if (ghost.pubkey in aliasMap) continue
+            val normGhostPhone = KeyManager.normalizePhone(ghost.phone)
+            if (normGhostPhone.length == 10) {
+                val matchingByPhone = realMembers.firstOrNull {
+                    KeyManager.normalizePhone(it.phone) == normGhostPhone
+                }
+                if (matchingByPhone != null) {
+                    aliasMap[ghost.pubkey] = matchingByPhone.pubkey
+                    continue
+                } else if (normMyPhone == normGhostPhone) {
+                    aliasMap[ghost.pubkey] = currentIdentityPubkey
+                    continue
+                }
+            }
+
             val matchingReal = realMembers.firstOrNull {
                 it.displayName.trim().equals(ghost.displayName.trim(), ignoreCase = true)
             }
@@ -133,7 +150,7 @@ class ExpenseRepository(
             groupEntities.map { entity ->
                 val blocks = database.blockDao().getBlocksForGroupSync(entity.id).map { it.toDomainBlock() }
                 val rawMembers = database.memberDao().getMembersForGroupSync(entity.id)
-                val aliasMap = buildAliasMap(entity.id, rawMembers, blocks, identity.publicKeyHex, identity.displayName)
+                val aliasMap = buildAliasMap(entity.id, rawMembers, blocks, identity.publicKeyHex, identity.displayName, identity.phone)
                 val deduplicatedMemberCount = rawMembers
                     .map { aliasMap[it.pubkey] ?: it.pubkey }
                     .distinct()
@@ -190,7 +207,8 @@ class ExpenseRepository(
                 memberEntities = memberEntities,
                 blocks = domainBlocks,
                 currentIdentityPubkey = identity.publicKeyHex,
-                currentIdentityName = identity.displayName
+                currentIdentityName = identity.displayName,
+                currentIdentityPhone = identity.phone
             )
             val resolvePubkey = { pk: String -> aliasMap[pk] ?: pk }
 
@@ -211,14 +229,16 @@ class ExpenseRepository(
                 if (existing == null) {
                     membersByResolvedPubkey[resolved] = m.copy(pubkey = resolved)
                 } else {
-                    // Prefer real member row over ghost row, while preserving UPI ID if set on ghost row
+                    // Prefer real member row over ghost row, while preserving UPI ID and phone if set on ghost row
                     val isCurrentReal = m.pubkey == resolved
                     val chosenName = if (isCurrentReal) m.displayName else existing.displayName
                     val chosenUpi = m.upiId?.takeIf { it.isNotBlank() } ?: existing.upiId
+                    val chosenPhone = m.phone?.takeIf { it.isNotBlank() } ?: existing.phone
                     membersByResolvedPubkey[resolved] = existing.copy(
                         pubkey = resolved,
                         displayName = chosenName,
-                        upiId = chosenUpi
+                        upiId = chosenUpi,
+                        phone = chosenPhone
                     )
                 }
             }
@@ -237,7 +257,8 @@ class ExpenseRepository(
                     displayName = memberEntity.displayName,
                     isCurrentUser = memberEntity.pubkey == identity.publicKeyHex,
                     netBalance = netBalances[memberEntity.pubkey] ?: 0.0,
-                    upiId = memberEntity.upiId
+                    upiId = memberEntity.upiId,
+                    phone = memberEntity.phone
                 )
             }
 
@@ -378,7 +399,8 @@ class ExpenseRepository(
             creatorPubkey = identity.publicKeyHex,
             creatorDisplayName = identity.displayName,
             privateKeyHex = privKeyHex,
-            creatorUpiId = identity.upiId
+            creatorUpiId = identity.upiId,
+            creatorPhone = identity.phone
         )
 
         val pinHash = if (!secretPin.isNullOrBlank()) KeyManager.hashSecretPin(secretPin) else null
@@ -404,7 +426,8 @@ class ExpenseRepository(
                 groupId = groupId,
                 pubkey = identity.publicKeyHex,
                 displayName = identity.displayName,
-                upiId = identity.upiId
+                upiId = identity.upiId,
+                phone = identity.phone
             )
         )
 
@@ -412,12 +435,15 @@ class ExpenseRepository(
         syncManager.monitorGroup(groupId)
         syncManager.broadcastBlock(genesisBlock, groupKeyBase64)
 
-        // Add any initial friends added during group creation
+        // Add any initial friends added during group creation (supports "Name" or "Name|Phone" or "Name|Phone|UpiId")
         if (!isPersonalSolo) {
-            for (friendName in initialMemberNames) {
-                val clean = friendName.trim()
-                if (clean.isNotBlank()) {
-                    addOfflineMember(groupId, clean, null)
+            for (friendEntry in initialMemberNames) {
+                val parts = friendEntry.split("|")
+                val cleanName = parts.getOrNull(0)?.trim().orEmpty()
+                val cleanPhone = parts.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                val cleanUpi = parts.getOrNull(2)?.trim()?.takeIf { it.isNotBlank() }
+                if (cleanName.isNotBlank()) {
+                    addOfflineMember(groupId, cleanName, cleanUpi, cleanPhone)
                 }
             }
         }
@@ -431,7 +457,8 @@ class ExpenseRepository(
     suspend fun addOfflineMember(
         groupId: String,
         displayName: String,
-        upiId: String? = null
+        upiId: String? = null,
+        phone: String? = null
     ) {
         if (displayName.isBlank()) return
         val identity = KeyManager.getOrCreateIdentity(context)
@@ -440,6 +467,7 @@ class ExpenseRepository(
         val latestBlock = database.blockDao().getLatestBlockForGroup(groupId)?.toDomainBlock() ?: return
 
         val cleanName = displayName.trim()
+        val cleanPhone = KeyManager.normalizePhone(phone).takeIf { it.isNotBlank() }
         val cleanUpi = upiId?.trim()?.takeIf { it.isNotBlank() }
         // Generate deterministic 64-char hex pubkey identifier for offline member
         val ghostPubkey = HashUtil.sha256Hex("ghost:$groupId:${cleanName.lowercase()}")
@@ -449,7 +477,8 @@ class ExpenseRepository(
                 groupId = groupId,
                 pubkey = ghostPubkey,
                 displayName = cleanName,
-                upiId = cleanUpi
+                upiId = cleanUpi,
+                phone = cleanPhone
             )
         )
 
@@ -460,7 +489,8 @@ class ExpenseRepository(
             newMemberName = cleanName,
             authorPubkey = identity.publicKeyHex,
             authorPrivateKeyHex = privKeyHex,
-            upiId = cleanUpi
+            upiId = cleanUpi,
+            phone = cleanPhone
         )
 
         database.blockDao().insertBlock(BlockEntity.fromDomainBlock(joinBlock, isVerified = true))
@@ -496,6 +526,15 @@ class ExpenseRepository(
     suspend fun updateMemberUpiId(groupId: String, pubkey: String, upiId: String) {
         val cleanUpi = upiId.trim()
         database.memberDao().updateMemberUpiId(groupId, pubkey, cleanUpi)
+    }
+
+    /**
+     * Updates both phone number and UPI ID for a member in a group.
+     */
+    suspend fun updateMemberContact(groupId: String, pubkey: String, phone: String?, upiId: String?) {
+        val cleanPhone = KeyManager.normalizePhone(phone).takeIf { it.isNotBlank() }
+        val cleanUpi = upiId?.trim()?.takeIf { it.isNotBlank() }
+        database.memberDao().updateMemberContact(groupId, pubkey, cleanPhone, cleanUpi)
     }
 
     /**
@@ -664,7 +703,7 @@ class ExpenseRepository(
                                 ghostMap.remove(p.claimedGhostPubkey)
                             }
                             if (isGhostPubkey(inviteData.groupId, p.pubkey, p.displayName) && p.pubkey !in claimedGhosts) {
-                                ghostMap[p.pubkey] = MemberInfo(p.pubkey, p.displayName, p.upiId)
+                                ghostMap[p.pubkey] = MemberInfo(p.pubkey, p.displayName, p.upiId, p.phone)
                             }
                         } catch (_: Exception) {}
                     }
@@ -759,12 +798,17 @@ class ExpenseRepository(
                 isGhostPubkey(inviteData.groupId, it.pubkey, it.displayName) && it.pubkey !in alreadyClaimedGhosts
             }
 
+            val normMyPhone = KeyManager.normalizePhone(identity.phone)
             val ghostMatch: MemberEntity? = when {
                 explicitClaimGhostPubkey == "NONE" -> null
                 !explicitClaimGhostPubkey.isNullOrBlank() -> unclaimedGhosts.firstOrNull { it.pubkey == explicitClaimGhostPubkey }
                 else -> {
-                    // Match by displayName first; otherwise if creator added an offline member for this 2nd phone, assume it automatically
-                    unclaimedGhosts.firstOrNull {
+                    // 1. Match by normalized 10-digit phone number first
+                    val byPhone = if (normMyPhone.length == 10) {
+                        unclaimedGhosts.firstOrNull { KeyManager.normalizePhone(it.phone) == normMyPhone }
+                    } else null
+                    // 2. Match by displayName
+                    byPhone ?: unclaimedGhosts.firstOrNull {
                         it.displayName.trim().equals(identity.displayName.trim(), ignoreCase = true)
                     } ?: unclaimedGhosts.firstOrNull()
                 }
@@ -781,6 +825,9 @@ class ExpenseRepository(
                 identity.displayName
             }
 
+            val effectivePhone = identity.phone?.takeIf { it.isNotBlank() } ?: ghostMatch?.phone?.also {
+                if (it.isNotBlank()) KeyManager.updatePhone(context, it)
+            }
             val effectiveUpi = identity.upiId?.takeIf { it.isNotBlank() } ?: ghostMatch?.upiId
 
             if (ghostMatch != null) {
@@ -792,7 +839,8 @@ class ExpenseRepository(
                     groupId = inviteData.groupId,
                     pubkey = identity.publicKeyHex,
                     displayName = effectiveDisplayName,
-                    upiId = effectiveUpi
+                    upiId = effectiveUpi,
+                    phone = effectivePhone
                 )
             )
 
@@ -818,7 +866,8 @@ class ExpenseRepository(
                     authorPubkey = identity.publicKeyHex,
                     authorPrivateKeyHex = privKeyHex,
                     upiId = effectiveUpi,
-                    claimedGhostPubkey = ghostMatch?.pubkey
+                    claimedGhostPubkey = ghostMatch?.pubkey,
+                    phone = effectivePhone
                 )
                 database.blockDao().insertBlock(BlockEntity.fromDomainBlock(joinBlock, isVerified = true))
                 syncManager.broadcastBlock(joinBlock, inviteData.groupKeyBase64)

@@ -360,7 +360,13 @@ class P2PSyncManager(
                 val payload = json.decodeFromString(GroupGenesisPayload.serializer(), block.payloadJson)
                 payload.initialMembers.forEach { member ->
                     database.memberDao().insertMember(
-                        MemberEntity(groupId = groupId, pubkey = member.pubkey, displayName = member.displayName, upiId = member.upiId)
+                        MemberEntity(
+                            groupId = groupId,
+                            pubkey = member.pubkey,
+                            displayName = member.displayName,
+                            upiId = member.upiId,
+                            phone = KeyManager.normalizePhone(member.phone).takeIf { it.isNotBlank() }
+                        )
                     )
                 }
                 Log.d(TAG, "Processed Genesis side effects for group $groupId (${payload.initialMembers.size} members)")
@@ -370,32 +376,40 @@ class P2PSyncManager(
                 val existingMembers = database.memberDao().getMembersForGroupSync(groupId)
                 val expectedGhostForName = HashUtil.sha256Hex("ghost:$groupId:${payload.displayName.trim().lowercase()}")
                 val isJoiningRealMember = payload.pubkey != expectedGhostForName && !payload.pubkey.startsWith("ghost:")
+                val incomingPhone = KeyManager.normalizePhone(payload.phone)
 
-                // If a real member is joining and claiming a ghost member (or matches a ghost member's name), remove the ghost row
+                // If a real member is joining and claiming a ghost member (or matches phone / name), remove the ghost row
+                var matchedGhost: MemberEntity? = null
                 if (isJoiningRealMember) {
                     if (!payload.claimedGhostPubkey.isNullOrBlank()) {
+                        matchedGhost = existingMembers.firstOrNull { it.pubkey == payload.claimedGhostPubkey }
                         database.memberDao().deleteMember(groupId, payload.claimedGhostPubkey)
                     }
                     existingMembers.filter { m ->
                         val mGhostHash = HashUtil.sha256Hex("ghost:$groupId:${m.displayName.trim().lowercase()}")
-                        (m.pubkey == mGhostHash || m.pubkey.startsWith("ghost:")) &&
-                            (m.pubkey == payload.claimedGhostPubkey || m.displayName.equals(payload.displayName.trim(), ignoreCase = true))
+                        val mPhone = KeyManager.normalizePhone(m.phone)
+                        val isGhost = m.pubkey == mGhostHash || m.pubkey.startsWith("ghost:")
+                        val phoneMatches = incomingPhone.length >= 10 && incomingPhone == mPhone
+                        val nameMatches = m.displayName.equals(payload.displayName.trim(), ignoreCase = true)
+                        isGhost && (m.pubkey == payload.claimedGhostPubkey || phoneMatches || nameMatches)
                     }.forEach { ghost ->
+                        if (matchedGhost == null) matchedGhost = ghost
                         database.memberDao().deleteMember(groupId, ghost.pubkey)
                     }
                 }
 
-                // Preserve existing UPI ID if the new payload doesn't specify one
-                val previousUpi = existingMembers.firstOrNull {
-                    it.pubkey == payload.pubkey || it.pubkey == payload.claimedGhostPubkey
-                }?.upiId
+                // Preserve existing UPI ID and phone if the new payload doesn't specify one
+                val prevMember = existingMembers.firstOrNull { it.pubkey == payload.pubkey } ?: matchedGhost
+                val resolvedUpi = payload.upiId?.takeIf { it.isNotBlank() } ?: prevMember?.upiId
+                val resolvedPhone = incomingPhone.takeIf { it.isNotBlank() } ?: prevMember?.phone
 
                 database.memberDao().insertMember(
                     MemberEntity(
                         groupId = groupId,
                         pubkey = payload.pubkey,
                         displayName = payload.displayName,
-                        upiId = payload.upiId ?: previousUpi
+                        upiId = resolvedUpi,
+                        phone = resolvedPhone
                     )
                 )
                 Log.d(TAG, "Processed Member Join: ${payload.displayName} joined group $groupId (claimed=${payload.claimedGhostPubkey})")

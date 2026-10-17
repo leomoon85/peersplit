@@ -1,9 +1,12 @@
 package com.peersplit.app.ui.screens
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -34,6 +37,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.crypto.QrCodeUtil
 import com.peersplit.app.data.model.ExpenseCategory
 import com.peersplit.app.data.model.ExpenseItem
@@ -63,12 +67,12 @@ fun GroupDetailScreen(
     onAuditLedgerClick: () -> Unit,
     onGenerateInvite: () -> Unit,
     onDismissInvite: () -> Unit,
-    onAddOfflineMember: (displayName: String, upiId: String?) -> Unit = { _, _ -> },
+    onAddOfflineMember: (displayName: String, upiId: String?, phone: String?) -> Unit = { _, _, _ -> },
     onVoidExpense: (expenseId: String, description: String) -> Unit = { _, _ -> },
     onUpdateBudget: (budget: Double) -> Unit = {},
     onArchiveGroup: (isArchived: Boolean) -> Unit = {},
     onDeleteGroup: () -> Unit = {},
-    onUpdateMemberUpi: (pubkey: String, upiId: String) -> Unit = { _, _ -> }
+    onUpdateMemberContact: (pubkey: String, phone: String?, upiId: String?) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(0) }
@@ -77,11 +81,31 @@ fun GroupDetailScreen(
     // Add Offline Member Dialog state
     var showAddMemberDialog by remember { mutableStateOf(false) }
     var newMemberName by remember { mutableStateOf("") }
+    var newMemberPhone by remember { mutableStateOf("") }
     var newMemberUpi by remember { mutableStateOf("") }
 
-    // Edit Member UPI Dialog state
+    // Edit Member Contact / UPI Dialog state
     var memberForUpiEdit by remember { mutableStateOf<Member?>(null) }
+    var editPhoneInput by remember { mutableStateOf("") }
     var editUpiInput by remember { mutableStateOf("") }
+
+    // Contact Picker Launcher (used by both Add Member and Edit Member dialogs)
+    var contactPickTarget by remember { mutableStateOf("ADD") } // "ADD" or "EDIT"
+    val contactPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val picked = UpiUtil.readContactFromPickerUri(context, result.data?.data)
+            if (picked != null) {
+                if (contactPickTarget == "ADD") {
+                    if (picked.name.isNotBlank()) newMemberName = picked.name
+                    if (picked.phone.isNotBlank()) newMemberPhone = picked.phone
+                } else {
+                    if (picked.phone.isNotBlank()) editPhoneInput = picked.phone
+                }
+            }
+        }
+    }
 
     // Budget Target Dialog state
     var showBudgetDialog by remember { mutableStateOf(false) }
@@ -249,6 +273,7 @@ fun GroupDetailScreen(
                     onAddMemberClick = { showAddMemberDialog = true },
                     onShareInviteClick = onGenerateInvite,
                     onEditMemberUpi = { member ->
+                        editPhoneInput = member.phone ?: ""
                         editUpiInput = member.upiId ?: ""
                         memberForUpiEdit = member
                     },
@@ -276,43 +301,99 @@ fun GroupDetailScreen(
         }
     }
 
-    // Edit Member UPI Dialog
+    // Edit Member Phone & UPI Dialog
     if (memberForUpiEdit != null) {
         val m = memberForUpiEdit!!
         AlertDialog(
             onDismissRequest = { memberForUpiEdit = null },
-            title = { Text("UPI ID for ${m.displayName}") },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Contact & UPI: ${m.displayName}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    AssistChip(
+                        onClick = {
+                            contactPickTarget = "EDIT"
+                            try {
+                                contactPickerLauncher.launch(UpiUtil.createPickContactPhoneIntent())
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Contacts app unavailable", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        label = { Text("Contacts", style = MaterialTheme.typography.labelSmall) },
+                        leadingIcon = { Icon(Icons.Default.ContactPhone, contentDescription = null, modifier = Modifier.size(15.dp)) }
+                    )
+                }
+            },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "Enter ${if (m.isCurrentUser) "your" else "${m.displayName}'s"} UPI ID so group members can pay directly via GPay, PhonePe, or Paytm.",
+                        "Add ${if (m.isCurrentUser) "your" else "${m.displayName}'s"} phone number or UPI ID for automatic member linking, WhatsApp reminders, and GPay/PhonePe settlements.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     OutlinedTextField(
+                        value = editPhoneInput,
+                        onValueChange = { editPhoneInput = it },
+                        label = { Text("Phone Number (Optional)") },
+                        placeholder = { Text("e.g. 9876543210") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                    OutlinedTextField(
                         value = editUpiInput,
                         onValueChange = { editUpiInput = it },
-                        label = { Text("UPI ID") },
+                        label = { Text("UPI ID (Optional)") },
                         placeholder = { Text("e.g. name@okhdfcbank, 9876543210@ybl") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp)
                     )
+                    val normEditPhone = KeyManager.normalizePhone(editPhoneInput)
+                    if (normEditPhone.length == 10) {
+                        Text(
+                            "Quick-fill UPI ID from phone:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("@ybl", "@okaxis", "@paytm", "@upi").forEach { suffix ->
+                                SuggestionChip(
+                                    onClick = { editUpiInput = "$normEditPhone$suffix" },
+                                    label = { Text(suffix, style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        val clean = editUpiInput.trim()
-                        onUpdateMemberUpi(m.pubkey, clean)
+                        val cleanPhone = KeyManager.normalizePhone(editPhoneInput).takeIf { it.isNotBlank() }
+                        val cleanUpi = editUpiInput.trim().takeIf { it.isNotBlank() }
+                        onUpdateMemberContact(m.pubkey, cleanPhone, cleanUpi)
                         if (m.isCurrentUser) {
-                            com.peersplit.app.crypto.KeyManager.updateUpiId(context, clean)
+                            KeyManager.updatePhone(context, cleanPhone ?: "")
+                            KeyManager.updateUpiId(context, cleanUpi ?: "")
                         }
-                        Toast.makeText(context, "UPI ID updated for ${m.displayName}!", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Contact & UPI updated for ${m.displayName}!", Toast.LENGTH_SHORT).show()
                         memberForUpiEdit = null
                     }
                 ) {
-                    Text("Save UPI ID")
+                    Text("Save")
                 }
             },
             dismissButton = {
@@ -327,11 +408,31 @@ fun GroupDetailScreen(
     if (showAddMemberDialog) {
         AlertDialog(
             onDismissRequest = { showAddMemberDialog = false },
-            title = { Text("Add Group Member") },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Add Group Member", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    AssistChip(
+                        onClick = {
+                            contactPickTarget = "ADD"
+                            try {
+                                contactPickerLauncher.launch(UpiUtil.createPickContactPhoneIntent())
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Contacts app unavailable", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        label = { Text("Contacts", style = MaterialTheme.typography.labelSmall) },
+                        leadingIcon = { Icon(Icons.Default.ContactPhone, contentDescription = null, modifier = Modifier.size(15.dp)) }
+                    )
+                }
+            },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "Add a friend by name so you can split expenses with them immediately—even before they install PeerSplit.",
+                        "Pick a friend from Contacts or type their name & optional phone number so they automatically link when they join.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -344,6 +445,15 @@ fun GroupDetailScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        value = newMemberPhone,
+                        onValueChange = { newMemberPhone = it },
+                        label = { Text("Phone Number (Optional)") },
+                        placeholder = { Text("e.g. 9876543210") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
                         value = newMemberUpi,
                         onValueChange = { newMemberUpi = it },
                         label = { Text("UPI ID (Optional)") },
@@ -351,15 +461,37 @@ fun GroupDetailScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    val normNewPhone = KeyManager.normalizePhone(newMemberPhone)
+                    if (normNewPhone.length == 10) {
+                        Text(
+                            "Quick-fill UPI ID from phone:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("@ybl", "@okaxis", "@paytm", "@upi").forEach { suffix ->
+                                SuggestionChip(
+                                    onClick = { newMemberUpi = "$normNewPhone$suffix" },
+                                    label = { Text(suffix, style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     enabled = newMemberName.isNotBlank(),
                     onClick = {
-                        onAddOfflineMember(newMemberName.trim(), newMemberUpi.trim().takeIf { it.isNotBlank() })
+                        val cleanPhone = KeyManager.normalizePhone(newMemberPhone).takeIf { it.isNotBlank() }
+                        val cleanUpi = newMemberUpi.trim().takeIf { it.isNotBlank() }
+                        onAddOfflineMember(newMemberName.trim(), cleanUpi, cleanPhone)
                         Toast.makeText(context, "${newMemberName.trim()} added to group!", Toast.LENGTH_SHORT).show()
                         newMemberName = ""
+                        newMemberPhone = ""
                         newMemberUpi = ""
                         showAddMemberDialog = false
                     }
@@ -1004,7 +1136,9 @@ fun BalancesAndDebtsTab(
                                                         groupName = groupDetail.group.name,
                                                         amount = stl.amount,
                                                         currency = groupDetail.group.currency,
-                                                        creditorUpiId = creditorMember?.upiId
+                                                        creditorUpiId = creditorMember?.upiId,
+                                                        creditorPhone = creditorMember?.phone,
+                                                        debtorPhone = debtorMember?.phone
                                                     )
                                                 },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
@@ -1109,16 +1243,22 @@ fun MemberBalanceRow(
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold
                     )
-                    if (!member.upiId.isNullOrBlank()) {
+                    val hasPhone = !member.phone.isNullOrBlank()
+                    val hasUpi = !member.upiId.isNullOrBlank()
+                    if (hasPhone || hasUpi) {
+                        val subtitle = buildList {
+                            if (hasPhone) add("📱 ${member.phone}")
+                            if (hasUpi) add("UPI: ${member.upiId}")
+                        }.joinToString(" • ") + " ✎"
                         Text(
-                            "UPI: ${member.upiId} ✎",
+                            subtitle,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Medium
                         )
                     } else {
                         Text(
-                            "+ Tap to add UPI ID",
+                            "+ Tap to add Phone / UPI ID",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

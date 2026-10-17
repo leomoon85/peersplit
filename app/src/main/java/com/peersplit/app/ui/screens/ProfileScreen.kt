@@ -53,6 +53,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
     val identity = remember { KeyManager.getOrCreateIdentity(context) }
 
     var displayName by remember { mutableStateOf(identity.displayName) }
+    var phone by remember { mutableStateOf(KeyManager.getPhone(context)) }
     var upiId by remember { mutableStateOf(KeyManager.getUpiId(context)) }
     var showAdvancedInfo by remember { mutableStateOf(false) }
 
@@ -196,6 +197,34 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                 }
             }
 
+            // Phone Number Setting
+            item {
+                Text("Phone Number (Optional)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("Used to automatically link you to groups when friends add your number, and for GPay/PhonePe settlements.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = phone,
+                        onValueChange = { phone = it },
+                        placeholder = { Text("e.g. 9876543210") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        singleLine = true
+                    )
+                    Button(
+                        onClick = {
+                            KeyManager.updatePhone(context, phone)
+                            phone = KeyManager.getPhone(context)
+                            Toast.makeText(context, "Phone number saved!", Toast.LENGTH_SHORT).show()
+                        },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Save")
+                    }
+                }
+            }
+
             // Personal UPI ID Setting
             item {
                 Text("Personal UPI ID (For Direct Settlements)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -218,6 +247,30 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text("Save")
+                    }
+                }
+                val normPhone = KeyManager.normalizePhone(phone)
+                if (normPhone.length == 10) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Quick-fill UPI ID from your phone number:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("@ybl", "@okaxis", "@paytm", "@upi").forEach { suffix ->
+                            SuggestionChip(
+                                onClick = {
+                                    upiId = "$normPhone$suffix"
+                                    KeyManager.updateUpiId(context, upiId)
+                                    Toast.makeText(context, "UPI ID set to $upiId", Toast.LENGTH_SHORT).show()
+                                },
+                                label = { Text("$normPhone$suffix", style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
                     }
                 }
             }

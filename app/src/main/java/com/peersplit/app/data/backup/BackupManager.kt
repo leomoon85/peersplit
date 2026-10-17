@@ -21,7 +21,8 @@ data class BackupIdentity(
     val privateKeyHex: String,
     val publicKeyHex: String,
     val displayName: String,
-    val upiId: String? = null
+    val upiId: String? = null,
+    val phone: String? = null
 )
 
 @Serializable
@@ -54,7 +55,8 @@ data class BackupMember(
     val groupId: String,
     val pubkey: String,
     val displayName: String,
-    val upiId: String? = null
+    val upiId: String? = null,
+    val phone: String? = null
 )
 
 @Serializable
@@ -110,7 +112,13 @@ object BackupManager {
 
         for (g in groups) {
             val members = database.memberDao().getMembersForGroupSync(g.id).map {
-                BackupMember(groupId = it.groupId, pubkey = it.pubkey, displayName = it.displayName, upiId = it.upiId)
+                BackupMember(
+                    groupId = it.groupId,
+                    pubkey = it.pubkey,
+                    displayName = it.displayName,
+                    upiId = it.upiId,
+                    phone = it.phone
+                )
             }
             allMembers.addAll(members)
 
@@ -136,7 +144,8 @@ object BackupManager {
                 privateKeyHex = privKeyHex,
                 publicKeyHex = identity.publicKeyHex,
                 displayName = identity.displayName,
-                upiId = identity.upiId
+                upiId = identity.upiId,
+                phone = identity.phone
             ),
             groups = groups,
             members = allMembers,
@@ -208,7 +217,8 @@ object BackupManager {
             privHex = payload.identity.privateKeyHex,
             pubHex = payload.identity.publicKeyHex,
             displayName = payload.identity.displayName,
-            upiId = payload.identity.upiId
+            upiId = payload.identity.upiId,
+            phone = payload.identity.phone
         )
 
         // 2. Restore Database Entities
@@ -236,7 +246,8 @@ object BackupManager {
                     groupId = m.groupId,
                     pubkey = m.pubkey,
                     displayName = m.displayName,
-                    upiId = m.upiId
+                    upiId = m.upiId,
+                    phone = m.phone
                 )
             )
         }

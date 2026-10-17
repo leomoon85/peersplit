@@ -30,7 +30,8 @@ data class MemberEntity(
     val groupId: String,
     val pubkey: String,
     val displayName: String,
-    val upiId: String? = null
+    val upiId: String? = null,
+    val phone: String? = null
 )
 
 @Entity(

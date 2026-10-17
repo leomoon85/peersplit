@@ -201,9 +201,15 @@ fun SettleUpScreen(
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = if (selectedPayee == member.pubkey) FontWeight.Bold else FontWeight.Normal
                             )
-                            if (!member.upiId.isNullOrBlank()) {
+                            val hasMemberPhone = !member.phone.isNullOrBlank()
+                            val hasMemberUpi = !member.upiId.isNullOrBlank()
+                            if (hasMemberPhone || hasMemberUpi) {
+                                val sub = buildList {
+                                    if (hasMemberPhone) add("📱 ${member.phone}")
+                                    if (hasMemberUpi) add("UPI: ${member.upiId}")
+                                }.joinToString(" • ")
                                 Text(
-                                    "UPI: ${member.upiId}",
+                                    sub,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary
                                 )
@@ -232,9 +238,10 @@ fun SettleUpScreen(
                 )
             }
 
-            // UPI Deep Link & QR Payment Options (Enabled for INR or any payee with a UPI ID)
-            if (currency.equals("INR", ignoreCase = true) || payeeUpiId.isNotBlank()) {
+            // UPI Deep Link & QR Payment Options (Enabled for INR or any payee with a UPI ID / Phone)
+            if (currency.equals("INR", ignoreCase = true) || payeeUpiId.isNotBlank() || !payeeMember?.phone.isNullOrBlank()) {
                 val payeeName = payeeMember?.displayName ?: "Payee"
+                val payeePhone = payeeMember?.phone?.takeIf { it.isNotBlank() }
 
                 item {
                     Card(
@@ -265,7 +272,32 @@ fun SettleUpScreen(
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.height(10.dp))
+
+                            if (payeePhone != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "📱 GPay / PhonePe Number: $payeePhone",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    AssistChip(
+                                        onClick = {
+                                            ShareUtil.copySensitive(context, "Payee Phone", payeePhone)
+                                            Toast.makeText(context, "Phone number $payeePhone copied!", Toast.LENGTH_SHORT).show()
+                                        },
+                                        label = { Text("Copy Number", fontSize = 11.sp) },
+                                        leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(12.dp)) }
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
 
                             OutlinedTextField(
                                 value = payeeUpiId,
@@ -280,8 +312,9 @@ fun SettleUpScreen(
                                 supportingText = {
                                     if (payeeUpiId.isBlank()) {
                                         Text(
-                                            "⚠️ Enter $payeeName's UPI ID or phone number to enable QR & UPI payment.",
-                                            color = MaterialTheme.colorScheme.error,
+                                            if (payeePhone != null) "Tap a handle below to auto-fill ${payeePhone}@... or enter UPI ID."
+                                            else "⚠️ Enter $payeeName's UPI ID or phone number to enable QR & UPI payment.",
+                                            color = if (payeePhone != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                                             fontSize = 12.sp
                                         )
                                     } else {
@@ -300,16 +333,17 @@ fun SettleUpScreen(
                                 Spacer(modifier = Modifier.height(4.dp))
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     items(commonHandles) { handle ->
+                                        val base = payeeUpiId.trim().substringBefore("@").ifBlank { payeePhone.orEmpty() }
+                                        val chipLabel = if (base.isNotBlank()) "$base$handle" else handle
                                         SuggestionChip(
                                             onClick = {
-                                                val base = payeeUpiId.trim().substringBefore("@")
                                                 val full = if (base.isNotBlank()) "$base$handle" else handle
                                                 payeeUpiId = full
                                                 if (full.contains("@") && full.length > 3) {
                                                     onUpdatePayeeUpi(selectedPayee, full)
                                                 }
                                             },
-                                            label = { Text(handle, style = MaterialTheme.typography.labelSmall) }
+                                            label = { Text(chipLabel, style = MaterialTheme.typography.labelSmall) }
                                         )
                                     }
                                 }
@@ -324,7 +358,7 @@ fun SettleUpScreen(
                                 Button(
                                     onClick = {
                                         if (payeeUpiId.isBlank()) {
-                                            dialogUpiInput = ""
+                                            dialogUpiInput = payeePhone ?: ""
                                             pendingActionAfterUpi = "PAY"
                                             showEnterUpiDialog = true
                                         } else {
@@ -343,7 +377,7 @@ fun SettleUpScreen(
                                 OutlinedButton(
                                     onClick = {
                                         if (payeeUpiId.isBlank()) {
-                                            dialogUpiInput = ""
+                                            dialogUpiInput = payeePhone ?: ""
                                             pendingActionAfterUpi = "QR"
                                             showEnterUpiDialog = true
                                         } else {
@@ -378,7 +412,9 @@ fun SettleUpScreen(
                             groupName = groupDetail.group.name,
                             amount = amount,
                             currency = currency,
-                            creditorUpiId = payeeUpiId.takeIf { it.isNotBlank() } ?: payeeMember?.upiId
+                            creditorUpiId = payeeUpiId.takeIf { it.isNotBlank() } ?: payeeMember?.upiId,
+                            creditorPhone = payeeMember?.phone,
+                            debtorPhone = payerMember?.phone
                         )
                     },
                     modifier = Modifier.fillMaxWidth().height(48.dp),

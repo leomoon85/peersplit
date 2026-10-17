@@ -74,6 +74,7 @@ fun HomeScreen(
     var welcomeNameInput by remember {
         mutableStateOf(if (currentIdentity.displayName == "My Phone") "" else currentIdentity.displayName)
     }
+    var welcomePhoneInput by remember { mutableStateOf(currentIdentity.phone ?: "") }
     var welcomeUpiInput by remember { mutableStateOf(currentIdentity.upiId ?: "") }
 
     var showPinDialog by remember { mutableStateOf(false) }
@@ -466,6 +467,16 @@ fun HomeScreen(
                         shape = RoundedCornerShape(12.dp)
                     )
                     OutlinedTextField(
+                        value = welcomePhoneInput,
+                        onValueChange = { welcomePhoneInput = it },
+                        label = { Text("Phone Number (Optional)") },
+                        placeholder = { Text("10-digit mobile for member matching & UPI") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    OutlinedTextField(
                         value = welcomeUpiInput,
                         onValueChange = { welcomeUpiInput = it },
                         label = { Text("UPI ID (Optional for Direct Settlements)") },
@@ -474,6 +485,25 @@ fun HomeScreen(
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp)
                     )
+                    val normWelcomePhone = KeyManager.normalizePhone(welcomePhoneInput)
+                    if (normWelcomePhone.length == 10) {
+                        Text(
+                            "Quick-fill UPI ID from phone:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("@ybl", "@okaxis", "@paytm", "@upi").forEach { suffix ->
+                                SuggestionChip(
+                                    onClick = { welcomeUpiInput = "$normWelcomePhone$suffix" },
+                                    label = { Text(suffix, style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -481,6 +511,9 @@ fun HomeScreen(
                     onClick = {
                         val finalName = if (welcomeNameInput.isNotBlank()) welcomeNameInput.trim() else "My Phone"
                         KeyManager.updateDisplayName(context, finalName)
+                        if (welcomePhoneInput.isNotBlank()) {
+                            KeyManager.updatePhone(context, welcomePhoneInput.trim())
+                        }
                         if (welcomeUpiInput.isNotBlank()) {
                             KeyManager.updateUpiId(context, welcomeUpiInput.trim())
                         }

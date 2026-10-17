@@ -4,11 +4,55 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.provider.ContactsContract
 import android.widget.Toast
+import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.crypto.QrCodeUtil
 import java.util.Locale
 
+data class PickedContact(
+    val name: String,
+    val phone: String
+)
+
 object UpiUtil {
+
+    val COMMON_UPI_HANDLES = listOf("@ybl", "@okaxis", "@okicici", "@oksbi", "@okhdfcbank", "@paytm", "@upi")
+
+    /**
+     * Builds a permission-free system Contact Phone Picker intent.
+     */
+    fun createPickContactPhoneIntent(): Intent {
+        return Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)
+    }
+
+    /**
+     * Reads (displayName, normalizedPhone) from the URI returned by [createPickContactPhoneIntent].
+     * Requires zero runtime permissions because the system picker grants temporary URI read access.
+     */
+    fun readContactFromPickerUri(context: Context, uri: Uri?): PickedContact? {
+        if (uri == null) return null
+        return try {
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            )
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                    val numIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    val name = if (nameIdx >= 0) cursor.getString(nameIdx)?.trim().orEmpty() else ""
+                    val rawNumber = if (numIdx >= 0) cursor.getString(numIdx)?.trim().orEmpty() else ""
+                    val cleanNumber = KeyManager.normalizePhone(rawNumber)
+                    if (name.isNotBlank() || cleanNumber.isNotBlank()) {
+                        PickedContact(name, cleanNumber)
+                    } else null
+                } else null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     /**
      * Builds standard NPCI UPI payment URI.
@@ -77,9 +121,8 @@ object UpiUtil {
 
     /**
      * Shares a polite 1-tap payment reminder via WhatsApp / SMS / Share Sheet.
-     * UPI details (ID + scannable QR image) are only included for INR groups,
-     * since UPI payments are rupee-only. upi:// links are not clickable in most
-     * chat apps, so we attach the QR image instead of relying on the link.
+     * If debtorPhone is known and no QR image needs to be attached, opens WhatsApp chat directly
+     * to that number (falling back to the share sheet if WhatsApp is not installed).
      */
     fun sharePaymentReminder(
         context: Context,
@@ -88,10 +131,14 @@ object UpiUtil {
         groupName: String,
         amount: Double,
         currency: String,
-        creditorUpiId: String? = null
+        creditorUpiId: String? = null,
+        creditorPhone: String? = null,
+        debtorPhone: String? = null
     ) {
         val formattedAmt = CurrencyUtil.formatAmount(amount, currency)
         val isUpiEligible = currency.equals("INR", ignoreCase = true) && !creditorUpiId.isNullOrBlank()
+        val cleanCreditorPhone = KeyManager.normalizePhone(creditorPhone)
+        val cleanDebtorPhone = KeyManager.normalizePhone(debtorPhone)
 
         val sb = StringBuilder()
         sb.append("Hi $debtorName! 👋\n\n")
@@ -100,18 +147,37 @@ object UpiUtil {
 
         var qrBitmap: Bitmap? = null
         if (isUpiEligible) {
-            sb.append("• Pay via UPI to: ${creditorUpiId!!.trim()}\n")
+            sb.append("• Pay via UPI ID: ${creditorUpiId!!.trim()}\n")
             qrBitmap = generateUpiQrBitmap(creditorUpiId, creditorName, amount, "PeerSplit: $groupName", 600)
             if (qrBitmap != null) {
                 sb.append("• Or scan the attached QR code with any UPI app (GPay, PhonePe, Paytm)\n")
             }
         }
+        if (cleanCreditorPhone.length == 10) {
+            sb.append("• GPay / PhonePe Number: $cleanCreditorPhone\n")
+        }
 
         sb.append("\nThanks! 🙏")
+        val messageText = sb.toString()
+
+        // If we have a 10-digit debtor phone number and no QR image attachment is required,
+        // try jumping straight into their WhatsApp chat!
+        if (cleanDebtorPhone.length == 10 && qrBitmap == null) {
+            try {
+                val waUri = Uri.parse("https://wa.me/91$cleanDebtorPhone?text=${Uri.encode(messageText)}")
+                val waIntent = Intent(Intent.ACTION_VIEW, waUri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(waIntent)
+                return
+            } catch (_: Exception) {
+                // Fall back to ShareUtil below
+            }
+        }
 
         ShareUtil.shareTextWithImage(
             context = context,
-            text = sb.toString(),
+            text = messageText,
             image = qrBitmap,
             imageName = "upi_payment_qr",
             chooserTitle = "Send Payment Reminder to $debtorName"

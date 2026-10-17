@@ -33,7 +33,8 @@ object BlockchainEngine {
         creatorDisplayName: String,
         privateKeyHex: String,
         groupId: String = "grp_${UUID.randomUUID().toString().take(12)}",
-        creatorUpiId: String? = null
+        creatorUpiId: String? = null,
+        creatorPhone: String? = null
     ): Pair<String, Block> {
         val genesisPayload = GroupGenesisPayload(
             groupId = groupId,
@@ -41,7 +42,12 @@ object BlockchainEngine {
             currency = currency,
             creatorPubkey = creatorPubkey,
             initialMembers = listOf(
-                MemberInfo(pubkey = creatorPubkey, displayName = creatorDisplayName, upiId = creatorUpiId)
+                MemberInfo(
+                    pubkey = creatorPubkey,
+                    displayName = creatorDisplayName,
+                    upiId = creatorUpiId,
+                    phone = creatorPhone
+                )
             )
         )
         val payloadJson = json.encodeToString(genesisPayload)
@@ -70,14 +76,16 @@ object BlockchainEngine {
         authorPubkey: String,
         authorPrivateKeyHex: String,
         upiId: String? = null,
-        claimedGhostPubkey: String? = null
+        claimedGhostPubkey: String? = null,
+        phone: String? = null
     ): Block {
         val payload = MemberJoinedPayload(
             pubkey = newMemberPubkey,
             displayName = newMemberName,
             joinedAt = System.currentTimeMillis(),
             upiId = upiId,
-            claimedGhostPubkey = claimedGhostPubkey
+            claimedGhostPubkey = claimedGhostPubkey,
+            phone = phone
         )
         val payloadJson = json.encodeToString(payload)
 

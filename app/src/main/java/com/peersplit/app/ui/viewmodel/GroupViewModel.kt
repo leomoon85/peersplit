@@ -46,9 +46,9 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
         _inviteCode.value = null
     }
 
-    fun addOfflineMember(displayName: String, upiId: String?) {
+    fun addOfflineMember(displayName: String, upiId: String?, phone: String? = null) {
         viewModelScope.launch {
-            repository.addOfflineMember(groupId, displayName, upiId)
+            repository.addOfflineMember(groupId, displayName, upiId, phone)
         }
     }
 
@@ -67,6 +67,12 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
     fun updateMemberUpiId(pubkey: String, upiId: String) {
         viewModelScope.launch {
             repository.updateMemberUpiId(groupId, pubkey, upiId)
+        }
+    }
+
+    fun updateMemberContact(pubkey: String, phone: String?, upiId: String?) {
+        viewModelScope.launch {
+            repository.updateMemberContact(groupId, pubkey, phone, upiId)
         }
     }
 

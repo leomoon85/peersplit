@@ -48,10 +48,14 @@ fun JoinGroupScreen(
         if (inviteCode.isNotBlank()) repository.parseInvitePreview(inviteCode) else null
     }
 
-    // Default to matching ghost member or the 1st unclaimed member added by creator
+    // Default to matching ghost member by 10-digit phone number first, then by displayName, then 1st unclaimed member
     var selectedGhostPubkey by remember(preview) {
         val ghosts = preview?.unclaimedGhostMembers.orEmpty()
-        val matching = ghosts.firstOrNull {
+        val normMyPhone = KeyManager.normalizePhone(currentIdentity.phone)
+        val byPhone = if (normMyPhone.length == 10) {
+            ghosts.firstOrNull { KeyManager.normalizePhone(it.phone) == normMyPhone }
+        } else null
+        val matching = byPhone ?: ghosts.firstOrNull {
             it.displayName.trim().equals(currentIdentity.displayName.trim(), ignoreCase = true)
         } ?: ghosts.firstOrNull()
         mutableStateOf<String?>(matching?.pubkey)
@@ -199,10 +203,15 @@ fun JoinGroupScreen(
                             ) {
                                 preview.unclaimedGhostMembers.forEach { ghost ->
                                     val isSelected = selectedGhostPubkey == ghost.pubkey
+                                    val labelText = if (!ghost.phone.isNullOrBlank()) {
+                                        "I am ${ghost.displayName} (${ghost.phone})"
+                                    } else {
+                                        "I am ${ghost.displayName}"
+                                    }
                                     FilterChip(
                                         selected = isSelected,
                                         onClick = { selectedGhostPubkey = ghost.pubkey },
-                                        label = { Text("I am ${ghost.displayName}") },
+                                        label = { Text(labelText) },
                                         leadingIcon = {
                                             Icon(
                                                 if (isSelected) Icons.Default.Check else Icons.Default.Person,
