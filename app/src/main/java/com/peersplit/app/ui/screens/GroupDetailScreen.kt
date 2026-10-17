@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -66,7 +67,8 @@ fun GroupDetailScreen(
     onVoidExpense: (expenseId: String, description: String) -> Unit = { _, _ -> },
     onUpdateBudget: (budget: Double) -> Unit = {},
     onArchiveGroup: (isArchived: Boolean) -> Unit = {},
-    onDeleteGroup: () -> Unit = {}
+    onDeleteGroup: () -> Unit = {},
+    onUpdateMemberUpi: (pubkey: String, upiId: String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(0) }
@@ -76,6 +78,10 @@ fun GroupDetailScreen(
     var showAddMemberDialog by remember { mutableStateOf(false) }
     var newMemberName by remember { mutableStateOf("") }
     var newMemberUpi by remember { mutableStateOf("") }
+
+    // Edit Member UPI Dialog state
+    var memberForUpiEdit by remember { mutableStateOf<Member?>(null) }
+    var editUpiInput by remember { mutableStateOf("") }
 
     // Budget Target Dialog state
     var showBudgetDialog by remember { mutableStateOf(false) }
@@ -241,6 +247,11 @@ fun GroupDetailScreen(
                     groupDetail = groupDetail,
                     onSettleUpClick = onSettleUpClick,
                     onAddMemberClick = { showAddMemberDialog = true },
+                    onShareInviteClick = onGenerateInvite,
+                    onEditMemberUpi = { member ->
+                        editUpiInput = member.upiId ?: ""
+                        memberForUpiEdit = member
+                    },
                     onSetBudgetClick = {
                         budgetInputText = if (groupDetail.group.monthlyBudget > 0) {
                             String.format(Locale.US, "%.0f", groupDetail.group.monthlyBudget)
@@ -263,6 +274,53 @@ fun GroupDetailScreen(
                 )
             }
         }
+    }
+
+    // Edit Member UPI Dialog
+    if (memberForUpiEdit != null) {
+        val m = memberForUpiEdit!!
+        AlertDialog(
+            onDismissRequest = { memberForUpiEdit = null },
+            title = { Text("UPI ID for ${m.displayName}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Enter ${if (m.isCurrentUser) "your" else "${m.displayName}'s"} UPI ID so group members can pay directly via GPay, PhonePe, or Paytm.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = editUpiInput,
+                        onValueChange = { editUpiInput = it },
+                        label = { Text("UPI ID") },
+                        placeholder = { Text("e.g. name@okhdfcbank, 9876543210@ybl") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val clean = editUpiInput.trim()
+                        onUpdateMemberUpi(m.pubkey, clean)
+                        if (m.isCurrentUser) {
+                            com.peersplit.app.crypto.KeyManager.updateUpiId(context, clean)
+                        }
+                        Toast.makeText(context, "UPI ID updated for ${m.displayName}!", Toast.LENGTH_SHORT).show()
+                        memberForUpiEdit = null
+                    }
+                ) {
+                    Text("Save UPI ID")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { memberForUpiEdit = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     // Add Offline / Ghost Member Dialog
@@ -770,10 +828,12 @@ fun BalancesAndDebtsTab(
     groupDetail: GroupDetail,
     onSettleUpClick: (payer: String?, payee: String?, amount: Double?) -> Unit = { _, _, _ -> },
     onAddMemberClick: () -> Unit = {},
+    onShareInviteClick: () -> Unit = {},
+    onEditMemberUpi: (Member) -> Unit = {},
     onSetBudgetClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val totalSpent = groupDetail.expenses.filter { !it.isVoided }.sumOf { it.totalAmount }
+    val totalSpent = groupDetail.expenses.filter { !it.isVoided && it.splitType != "SETTLEMENT" }.sumOf { it.totalAmount }
 
     LazyColumn(
         modifier = Modifier
@@ -781,6 +841,62 @@ fun BalancesAndDebtsTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Quick-Start Card when a group only has 1 member
+        if (!groupDetail.group.isPersonalSolo && groupDetail.members.size <= 1) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            "👋 Add Friends to Start Splitting!",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            "You can add friends right now by name (even if they don't have the app yet) or share a group invite link.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = onAddMemberClick,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Add by Name", fontSize = 12.sp)
+                            }
+                            OutlinedButton(
+                                onClick = onShareInviteClick,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Invite Link / QR", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Budget Progress Bar Card (Always shown in Solo mode or when budget > 0)
         if (groupDetail.group.isPersonalSolo || groupDetail.group.monthlyBudget > 0) {
             item {
@@ -874,35 +990,41 @@ fun BalancesAndDebtsTab(
                                             )
                                         }
                                     }
-                                    if (isOwedToUser) {
-                                        // 1-Tap Remind Button (only when someone owes the user money)
-                                        IconButton(
-                                            onClick = {
-                                                UpiUtil.sharePaymentReminder(
-                                                    context = context,
-                                                    debtorName = debtor,
-                                                    creditorName = creditor,
-                                                    groupName = groupDetail.group.name,
-                                                    amount = stl.amount,
-                                                    currency = groupDetail.group.currency,
-                                                    creditorUpiId = creditorMember?.upiId
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (!userIsDebtor) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    UpiUtil.sharePaymentReminder(
+                                                        context = context,
+                                                        debtorName = debtor,
+                                                        creditorName = creditor,
+                                                        groupName = groupDetail.group.name,
+                                                        amount = stl.amount,
+                                                        currency = groupDetail.group.currency,
+                                                        creditorUpiId = creditorMember?.upiId
+                                                    )
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.NotificationsActive,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(14.dp)
                                                 )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Remind", fontSize = 11.sp)
                                             }
-                                        ) {
-                                            Icon(
-                                                Icons.Default.NotificationsActive,
-                                                contentDescription = "Send Payment Reminder",
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(20.dp)
-                                            )
                                         }
-                                    } else if (userIsDebtor) {
-                                        OutlinedButton(
+                                        Button(
                                             onClick = { onSettleUpClick(stl.fromPubkey, stl.toPubkey, stl.amount) },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                             shape = RoundedCornerShape(8.dp)
                                         ) {
-                                            Text("Pay", fontSize = 12.sp)
+                                            Text(if (userIsDebtor) "Pay" else "Settle", fontSize = 11.sp)
                                         }
                                     }
                                 }
@@ -934,7 +1056,11 @@ fun BalancesAndDebtsTab(
         }
 
         items(groupDetail.members) { member ->
-            MemberBalanceRow(member, groupDetail.group.currency)
+            MemberBalanceRow(
+                member = member,
+                currency = groupDetail.group.currency,
+                onClick = { onEditMemberUpi(member) }
+            )
         }
 
         item {
@@ -944,9 +1070,15 @@ fun BalancesAndDebtsTab(
 }
 
 @Composable
-fun MemberBalanceRow(member: Member, currency: String = "USD") {
+fun MemberBalanceRow(
+    member: Member,
+    currency: String = "INR",
+    onClick: () -> Unit = {}
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
         shape = RoundedCornerShape(12.dp)
     ) {
         Row(
@@ -956,7 +1088,7 @@ fun MemberBalanceRow(member: Member, currency: String = "USD") {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                 Box(
                     modifier = Modifier
                         .size(40.dp)
@@ -979,10 +1111,16 @@ fun MemberBalanceRow(member: Member, currency: String = "USD") {
                     )
                     if (!member.upiId.isNullOrBlank()) {
                         Text(
-                            "UPI: ${member.upiId}",
+                            "UPI: ${member.upiId} ✎",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Medium
+                        )
+                    } else {
+                        Text(
+                            "+ Tap to add UPI ID",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -1034,7 +1172,7 @@ fun ExpensesTab(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                "No expenses recorded yet. Tap + to add the first expense to this micro-blockchain ledger.",
+                "No expenses yet! Tap + below to add your first shared expense.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -1212,7 +1350,7 @@ fun ExpenseItemRow(
                         color = shareColor
                     )
                     Text(
-                        text = if (share > 0.01) "you lent" else if (share < -0.01) "you borrowed" else "",
+                        text = if (expense.splitType == "SETTLEMENT") "settled" else if (share > 0.01) "you lent" else if (share < -0.01) "you borrowed" else "",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1228,7 +1366,7 @@ fun AnalyticsTab(
     onSetBudgetClick: () -> Unit = {}
 ) {
     val currency = groupDetail.group.currency
-    val expenses = groupDetail.expenses.filter { !it.isVoided }
+    val expenses = groupDetail.expenses.filter { !it.isVoided && it.splitType != "SETTLEMENT" }
     val totalSpend = expenses.sumOf { it.totalAmount }
 
     if (expenses.isEmpty()) {

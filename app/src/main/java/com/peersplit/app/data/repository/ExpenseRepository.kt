@@ -252,11 +252,12 @@ class ExpenseRepository(
      */
     suspend fun createGroup(
         name: String,
-        currency: String = "USD",
+        currency: String = "INR",
         isSecret: Boolean = false,
         secretPin: String? = null,
         isPersonalSolo: Boolean = false,
-        monthlyBudget: Double = 0.0
+        monthlyBudget: Double = 0.0,
+        initialMemberNames: List<String> = emptyList()
     ): String {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
@@ -304,6 +305,16 @@ class ExpenseRepository(
         // Broadcast to P2P relay network
         syncManager.monitorGroup(groupId)
         syncManager.broadcastBlock(genesisBlock, groupKeyBase64)
+
+        // Add any initial friends added during group creation
+        if (!isPersonalSolo) {
+            for (friendName in initialMemberNames) {
+                val clean = friendName.trim()
+                if (clean.isNotBlank() && !clean.equals(identity.displayName.trim(), ignoreCase = true)) {
+                    addOfflineMember(groupId, clean, null)
+                }
+            }
+        }
 
         return groupId
     }

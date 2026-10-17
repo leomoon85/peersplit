@@ -138,12 +138,20 @@ fun HomeScreen(
                     val userInitials = remember(identityVersion) {
                         NameUtil.getInitials(KeyManager.getOrCreateIdentity(context).displayName)
                     }
-                    if (uiState.isSecretVaultUnlocked) {
+                    if (uiState.secretGroups.isNotEmpty() || uiState.isSecretVaultUnlocked) {
                         IconButton(onClick = {
-                            onLockVault()
-                            Toast.makeText(context, "Private Vault Locked", Toast.LENGTH_SHORT).show()
+                            if (uiState.isSecretVaultUnlocked) {
+                                onLockVault()
+                                Toast.makeText(context, "Private Vault Locked", Toast.LENGTH_SHORT).show()
+                            } else {
+                                showPinDialog = true
+                            }
                         }) {
-                            Icon(Icons.Default.Lock, contentDescription = "Lock Private Vault", tint = BlockchainAccent)
+                            Icon(
+                                imageVector = if (uiState.isSecretVaultUnlocked) Icons.Default.LockOpen else Icons.Default.Lock,
+                                contentDescription = if (uiState.isSecretVaultUnlocked) "Lock Private Vault" else "Unlock Private Vault",
+                                tint = if (uiState.isSecretVaultUnlocked) BlockchainAccent else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                     IconButton(

@@ -21,7 +21,7 @@ data class HomeUiState(
     val totalNetBalance: Double = 0.0,
     val totalOwedToUser: Double = 0.0,
     val totalUserOwes: Double = 0.0,
-    val primaryCurrency: String = "USD",
+    val primaryCurrency: String = "INR",
     val isOnline: Boolean = true
 )
 
@@ -53,7 +53,7 @@ class HomeViewModel : ViewModel() {
             .eachCount()
             .maxByOrNull { it.value }?.key
             ?: allGroups.firstOrNull()?.currency
-            ?: "USD"
+            ?: "INR"
 
         var totalBalance = 0.0
         var owedToUser = 0.0

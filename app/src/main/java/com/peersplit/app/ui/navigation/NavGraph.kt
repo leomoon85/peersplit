@@ -76,9 +76,16 @@ fun NavGraph(
         composable(Screen.CreateGroup.route) {
             CreateGroupScreen(
                 onBackClick = { navController.popBackStack() },
-                onCreateGroup = { name, currency, isSecret, secretPin, isPersonalSolo ->
+                onCreateGroup = { name, currency, isSecret, secretPin, isPersonalSolo, initialMembers ->
                     scope.launch {
-                        val groupId = repository.createGroup(name, currency, isSecret, secretPin, isPersonalSolo)
+                        val groupId = repository.createGroup(
+                            name = name,
+                            currency = currency,
+                            isSecret = isSecret,
+                            secretPin = secretPin,
+                            isPersonalSolo = isPersonalSolo,
+                            initialMemberNames = initialMembers
+                        )
                         navController.popBackStack()
                         navController.navigate(Screen.GroupDetail.createRoute(groupId))
                     }
@@ -151,6 +158,9 @@ fun NavGraph(
                     groupViewModel.deleteGroup {
                         navController.popBackStack()
                     }
+                },
+                onUpdateMemberUpi = { pubkey, upiId ->
+                    groupViewModel.updateMemberUpiId(pubkey, upiId)
                 }
             )
         }

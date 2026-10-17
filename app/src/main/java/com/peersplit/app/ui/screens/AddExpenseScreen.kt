@@ -51,13 +51,14 @@ data class QuickExpensePreset(
 )
 
 private val defaultRecurringPresets = listOf(
-    QuickExpensePreset("Monthly Rent", "🏠", ExpenseCategory.UTILITIES),
-    QuickExpensePreset("Wi-Fi / Internet", "📶", ExpenseCategory.UTILITIES),
-    QuickExpensePreset("Electricity Bill", "⚡", ExpenseCategory.UTILITIES),
+    QuickExpensePreset("Dinner / Food", "🍕", ExpenseCategory.FOOD),
+    QuickExpensePreset("Chai & Snacks", "☕", ExpenseCategory.FOOD),
+    QuickExpensePreset("Cab / Auto", "🚕", ExpenseCategory.TRANSPORT),
     QuickExpensePreset("Groceries", "🛒", ExpenseCategory.GROCERIES),
-    QuickExpensePreset("Dinner / Zomato", "🍔", ExpenseCategory.FOOD),
-    QuickExpensePreset("Cab / Fuel", "🚕", ExpenseCategory.TRANSPORT),
-    QuickExpensePreset("House Help / Maid", "🧹", ExpenseCategory.UTILITIES)
+    QuickExpensePreset("Fuel / Petrol", "⛽", ExpenseCategory.TRANSPORT),
+    QuickExpensePreset("Movie / Outing", "🎬", ExpenseCategory.ENTERTAINMENT),
+    QuickExpensePreset("Monthly Rent", "🏠", ExpenseCategory.UTILITIES),
+    QuickExpensePreset("Wi-Fi / Electricity", "⚡", ExpenseCategory.UTILITIES)
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -124,7 +125,7 @@ fun AddExpenseScreen(
     // Recent recurring expenses from this group
     val recentCustomTemplates = remember(groupDetail.expenses) {
         groupDetail.expenses
-            .filter { !it.isVoided }
+            .filter { !it.isVoided && it.splitType != "SETTLEMENT" }
             .distinctBy { it.description.lowercase() }
             .take(4)
     }
@@ -299,8 +300,8 @@ fun AddExpenseScreen(
                         Icon(Icons.Default.DocumentScanner, contentDescription = null, tint = BlockchainAccent)
                         Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Scan Receipt / Bill (On-Device OCR)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium, color = BlockchainAccent)
-                            Text("Snap or pick a receipt to auto-fill title & amount", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Auto-Scan Bill / Receipt Photo", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium, color = BlockchainAccent)
+                            Text("Pick a receipt photo to auto-fill title & amount", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (isOcrScanning) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = BlockchainAccent)
