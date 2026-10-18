@@ -28,9 +28,26 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
+
+@Serializable
+internal data class PersistedPendingSyncState(
+    val pendingKeys: Map<String, List<NostrEvent>> = emptyMap(),
+    val pendingCiphertext: List<PersistedCiphertextEntry> = emptyList(),
+    val earlyGroupEvents: Map<String, List<NostrEvent>> = emptyMap()
+)
+
+@Serializable
+internal data class PersistedCiphertextEntry(
+    val groupId: String,
+    val epoch: Int,
+    val event: NostrEvent
+)
 
 data class SyncFailureEvent(
     val timestampMillis: Long = System.currentTimeMillis(),
@@ -63,6 +80,11 @@ class P2PSyncManager(
         private const val MAX_PENDING_BLOCKS_PER_GROUP = 500
         private const val MAX_EARLY_GROUPS = 25
         private const val MAX_EARLY_EVENTS_PER_GROUP = 100
+        private const val MAX_PENDING_KEYS_PER_TRANSITION = 20
+        private const val MAX_PENDING_CIPHERTEXT_PER_EPOCH = 100
+        private const val MAX_PENDING_TRANSITIONS = 50
+        private const val MAX_PENDING_EPOCHS = 50
+        private const val PENDING_STATE_FILE = "pending_sync_events.json"
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + Job())
@@ -75,6 +97,11 @@ class P2PSyncManager(
             }
         }
     )
+    private val pendingKeysByTransition = ConcurrentHashMap<String, MutableList<NostrEvent>>()
+    private val pendingCiphertextByEpoch = ConcurrentHashMap<Pair<String, Int>, MutableList<NostrEvent>>()
+    private val incomingProcessingQueue = ConcurrentLinkedQueue<NostrEvent>()
+    private val isDrainingProcessingQueue = AtomicBoolean(false)
+
     private val eventIdToBlockHash = ConcurrentHashMap<String, String>()
     private val eventIdToOpId = ConcurrentHashMap<String, String>()
     private val syncMutex = Mutex()
@@ -82,6 +109,176 @@ class P2PSyncManager(
 
     private val _syncFailuresFlow = kotlinx.coroutines.flow.MutableSharedFlow<SyncFailureEvent>(replay = 5, extraBufferCapacity = 64)
     val syncFailuresFlow: kotlinx.coroutines.flow.SharedFlow<SyncFailureEvent> = _syncFailuresFlow
+
+    private fun savePendingSyncState() {
+        try {
+            val keysMap = pendingKeysByTransition.mapValues { synchronized(it.value) { it.value.toList() } }
+            val cipherList = pendingCiphertextByEpoch.flatMap { (k, events) ->
+                synchronized(events) { events.map { PersistedCiphertextEntry(k.first, k.second, it) } }
+            }
+            val earlyMap = synchronized(earlyEvents) {
+                earlyEvents.mapValues { it.value.toList() }
+            }
+            val state = PersistedPendingSyncState(
+                pendingKeys = keysMap,
+                pendingCiphertext = cipherList,
+                earlyGroupEvents = earlyMap
+            )
+            val jsonStr = json.encodeToString(PersistedPendingSyncState.serializer(), state)
+            val file = java.io.File(context.filesDir, PENDING_STATE_FILE)
+            val tmpFile = java.io.File(context.filesDir, "$PENDING_STATE_FILE.tmp")
+            tmpFile.writeText(jsonStr)
+            tmpFile.renameTo(file)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to save pending sync state: ${e.message}")
+        }
+    }
+
+    private fun loadPendingSyncState() {
+        try {
+            val file = java.io.File(context.filesDir, PENDING_STATE_FILE)
+            if (!file.exists()) return
+            val jsonStr = file.readText()
+            val state = json.decodeFromString(PersistedPendingSyncState.serializer(), jsonStr)
+            state.pendingKeys.forEach { (transitionId, events) ->
+                val list = pendingKeysByTransition.computeIfAbsent(transitionId.lowercase()) { mutableListOf() }
+                synchronized(list) {
+                    for (ev in events) {
+                        if (list.none { it.id == ev.id }) list.add(ev)
+                    }
+                }
+            }
+            state.pendingCiphertext.forEach { entry ->
+                val key = entry.groupId to entry.epoch
+                val list = pendingCiphertextByEpoch.computeIfAbsent(key) { mutableListOf() }
+                synchronized(list) {
+                    if (list.none { it.id == entry.event.id }) list.add(entry.event)
+                }
+            }
+            synchronized(earlyEvents) {
+                state.earlyGroupEvents.forEach { (groupId, events) ->
+                    val list = earlyEvents.getOrPut(groupId) { mutableListOf() }
+                    for (ev in events) {
+                        if (list.none { it.id == ev.id }) list.add(ev)
+                    }
+                }
+            }
+            Log.d(TAG, "Restored pending sync state: ${pendingKeysByTransition.size} transitions, ${pendingCiphertextByEpoch.size} epochs")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load pending sync state: ${e.message}")
+        }
+    }
+
+    private fun bufferEarlyEvent(groupId: String, event: NostrEvent) {
+        synchronized(earlyEvents) {
+            val list = earlyEvents.getOrPut(groupId) { mutableListOf() }
+            if (list.none { it.id == event.id }) {
+                if (list.size >= MAX_EARLY_EVENTS_PER_GROUP) {
+                    list.removeAt(0)
+                }
+                list.add(event)
+            }
+        }
+        savePendingSyncState()
+    }
+
+    private fun bufferPendingKeyEvent(transitionOpId: String, event: NostrEvent) {
+        val normId = transitionOpId.trim().lowercase()
+        if (pendingKeysByTransition.size >= MAX_PENDING_TRANSITIONS && !pendingKeysByTransition.containsKey(normId)) {
+            val oldest = pendingKeysByTransition.keys.firstOrNull()
+            if (oldest != null) pendingKeysByTransition.remove(oldest)
+        }
+        val list = pendingKeysByTransition.computeIfAbsent(normId) { mutableListOf() }
+        synchronized(list) {
+            if (list.none { it.id == event.id }) {
+                if (list.size >= MAX_PENDING_KEYS_PER_TRANSITION) list.removeAt(0)
+                list.add(event)
+            }
+        }
+        savePendingSyncState()
+    }
+
+    private fun bufferPendingCiphertext(groupId: String, epoch: Int, event: NostrEvent) {
+        val key = groupId to epoch
+        if (pendingCiphertextByEpoch.size >= MAX_PENDING_EPOCHS && !pendingCiphertextByEpoch.containsKey(key)) {
+            val oldest = pendingCiphertextByEpoch.keys.firstOrNull()
+            if (oldest != null) pendingCiphertextByEpoch.remove(oldest)
+        }
+        val list = pendingCiphertextByEpoch.computeIfAbsent(key) { mutableListOf() }
+        synchronized(list) {
+            if (list.none { it.id == event.id }) {
+                if (list.size >= MAX_PENDING_CIPHERTEXT_PER_EPOCH) list.removeAt(0)
+                list.add(event)
+            }
+        }
+        savePendingSyncState()
+    }
+
+    private fun drainPendingCiphertext(groupId: String, epoch: Int): List<NostrEvent> {
+        val list = pendingCiphertextByEpoch.remove(groupId to epoch) ?: return emptyList()
+        savePendingSyncState()
+        return synchronized(list) { list.toList() }
+    }
+
+    suspend fun onOperationsReconciled(groupId: String) {
+        val readyEvents = mutableListOf<NostrEvent>()
+        for (transitionOpId in pendingKeysByTransition.keys.toList()) {
+            val opEntity = database.signedOperationDao().getOperationByIdSync(transitionOpId) ?: continue
+            if (opEntity.groupId != groupId) continue
+
+            when (opEntity.status) {
+                com.peersplit.app.data.local.entity.SignedOperationEntity.STATUS_ACCEPTED -> {
+                    val events = pendingKeysByTransition.remove(transitionOpId)
+                    if (events != null) {
+                        Log.d(TAG, "Transition op $transitionOpId ACCEPTED; unblocking ${events.size} key events")
+                        synchronized(events) {
+                            readyEvents.addAll(events)
+                        }
+                    }
+                }
+                com.peersplit.app.data.local.entity.SignedOperationEntity.STATUS_REJECTED -> {
+                    val events = pendingKeysByTransition.remove(transitionOpId)
+                    Log.w(TAG, "Transition op $transitionOpId REJECTED; dropping ${events?.size ?: 0} pending key events")
+                }
+            }
+        }
+        if (readyEvents.isNotEmpty()) {
+            savePendingSyncState()
+            enqueueEvents(readyEvents)
+        }
+    }
+
+    fun enqueueEvent(event: NostrEvent) {
+        incomingProcessingQueue.add(event)
+        drainProcessingQueue()
+    }
+
+    fun enqueueEvents(events: Collection<NostrEvent>) {
+        if (events.isEmpty()) return
+        incomingProcessingQueue.addAll(events)
+        drainProcessingQueue()
+    }
+
+    private fun drainProcessingQueue() {
+        if (!isDrainingProcessingQueue.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                while (true) {
+                    val nextEvent = incomingProcessingQueue.poll() ?: break
+                    try {
+                        processSingleEvent(nextEvent)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error processing event ${nextEvent.id}: ${e.message}", e)
+                    }
+                }
+            } finally {
+                isDrainingProcessingQueue.set(false)
+                if (!incomingProcessingQueue.isEmpty() && isDrainingProcessingQueue.compareAndSet(false, true)) {
+                    drainProcessingQueue()
+                }
+            }
+        }
+    }
 
     /**
      * Acquires the ledger synchronization lock so local block creation and incoming P2P sync
@@ -107,6 +304,7 @@ class P2PSyncManager(
     }
 
     fun initialize() {
+        loadPendingSyncState()
         relayPool.connectAll()
         try {
             OutboxRetryWorker.schedule(context)
@@ -117,7 +315,32 @@ class P2PSyncManager(
         // Listen for incoming peer blocks and V2 operations
         scope.launch {
             relayPool.incomingEvents.collect { event ->
-                handleIncomingEvent(event)
+                enqueueEvent(event)
+            }
+        }
+
+        // Check for already-satisfied pending triggers on start/restart
+        scope.launch {
+            try {
+                val groups = database.groupDao().getGroupsSync()
+                for (g in groups) {
+                    onOperationsReconciled(g.id)
+                }
+                val readyEpochs = mutableListOf<Pair<String, Int>>()
+                for (key in pendingCiphertextByEpoch.keys) {
+                    val (gId, ep) = key
+                    val keyEntity = database.groupKeyDao().getKeySync(gId, ep)
+                    val effective = keyEntity?.groupKeyBase64 ?: if (ep == 0) database.groupDao().getGroupByIdSync(gId)?.groupKeyBase64 else null
+                    if (effective != null) {
+                        readyEpochs.add(key)
+                    }
+                }
+                for (key in readyEpochs) {
+                    val unblocked = drainPendingCiphertext(key.first, key.second)
+                    enqueueEvents(unblocked)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error checking pending triggers on startup: ${e.message}")
             }
         }
 
@@ -348,9 +571,8 @@ class P2PSyncManager(
             val buffered = synchronized(earlyEvents) {
                 earlyEvents.remove(groupId) ?: emptyList()
             }
-            for (ev in buffered) {
-                handleIncomingEvent(ev)
-            }
+            savePendingSyncState()
+            enqueueEvents(buffered)
             drainPendingBlocks(groupId)
             reconcileV2Group(groupId)
         }
@@ -433,6 +655,7 @@ class P2PSyncManager(
                     result = result,
                     forceRebuild = forceRebuild
                 )
+                onOperationsReconciled(groupId)
                 Log.d(TAG, "Reconciled V2 group $groupId: applied=$applied, ${result.acceptedOperations.size} accepted ops, digest=${result.stateDigest.take(8)}")
                 applied
             } catch (e: Exception) {
@@ -504,7 +727,11 @@ class P2PSyncManager(
         }
     }
 
-    private suspend fun handleIncomingEvent(event: NostrEvent) {
+    suspend fun handleIncomingEvent(event: NostrEvent) {
+        processSingleEvent(event)
+    }
+
+    private suspend fun processSingleEvent(event: NostrEvent) {
         try {
             // 1. Verify outer Nostr event envelope integrity & signature first
             if (!event.verify()) {
@@ -521,124 +748,127 @@ class P2PSyncManager(
             // 3. Look up group encryption key locally
             val groupEntity = database.groupDao().getGroupByIdSync(groupId)
             if (groupEntity == null) {
-                synchronized(earlyEvents) {
-                    val list = earlyEvents.getOrPut(groupId) { mutableListOf() }
-                    if (list.none { it.id == event.id }) {
-                        if (list.size >= MAX_EARLY_EVENTS_PER_GROUP) {
-                            list.removeAt(0)
-                        }
-                        list.add(event)
-                    }
-                }
+                bufferEarlyEvent(groupId, event)
                 return
             }
             val isKeyEvent = event.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "peersplit_key" }
             if (isKeyEvent) {
-                val recipient = event.tags.firstOrNull { it.size >= 2 && it[0] == "p" }?.get(1)?.lowercase()
+                val envelope = com.peersplit.app.crypto.KeyDistributionEnvelope.fromJson(event.content)
+                if (envelope == null) {
+                    Log.w(TAG, "Rejected key event ${event.id.take(8)}: missing or invalid KeyDistributionEnvelope")
+                    return
+                }
+
+                if (!envelope.verifySignature()) {
+                    Log.w(TAG, "Rejected key event ${event.id.take(8)}: invalid Ed25519 signature on KeyDistributionEnvelope")
+                    return
+                }
+
+                if (envelope.groupId != groupId) {
+                    Log.w(TAG, "Rejected key event ${event.id.take(8)}: envelope groupId mismatch (${envelope.groupId} != $groupId)")
+                    return
+                }
+
+                val outerEpoch = event.tags.firstOrNull { it.size >= 2 && it[0] == "epoch" }?.get(1)?.toIntOrNull()
+                if (outerEpoch != null && outerEpoch != envelope.epoch) {
+                    Log.w(TAG, "Rejected key event ${event.id.take(8)}: epoch tag mismatch ($outerEpoch != ${envelope.epoch})")
+                    return
+                }
+
                 val identity = KeyManager.getOrCreateIdentity(context)
                 val myPubkey = identity.publicKeyHex.lowercase()
-                if (recipient != null && recipient == myPubkey) {
-                    val epoch = event.tags.firstOrNull { it.size >= 2 && it[0] == "epoch" }?.get(1)?.toIntOrNull() ?: 1
+                if (!envelope.recipientPublicKey.equals(myPubkey, ignoreCase = true)) {
+                    Log.d(TAG, "Ignoring key event: recipient (${envelope.recipientPublicKey}) is not this device ($myPubkey)")
+                    return
+                }
 
-                    // Parse KeyDistributionEnvelope or fallback to tags
-                    val envelope = com.peersplit.app.crypto.KeyDistributionEnvelope.fromJson(event.content)
-                    val authorEd25519Pubkey = envelope?.authorPublicKey
-                        ?: event.tags.firstOrNull { it.size >= 2 && it[0] == "author" }?.get(1)?.lowercase()
-                    val transitionOpId = envelope?.transitionOperationId
-                        ?: event.tags.firstOrNull { it.size >= 2 && it[0] == "op" }?.get(1)
-                    val keyCiphertext = envelope?.keyCiphertext ?: event.content
+                val outerRecipient = event.tags.firstOrNull { it.size >= 2 && it[0] == "p" }?.get(1)?.lowercase()
+                if (outerRecipient != null && !outerRecipient.equals(envelope.recipientPublicKey, ignoreCase = true)) {
+                    Log.w(TAG, "Rejected key event: outer recipient tag mismatch ($outerRecipient != ${envelope.recipientPublicKey})")
+                    return
+                }
 
-                    if (authorEd25519Pubkey.isNullOrBlank()) {
-                        Log.w(TAG, "Rejected key event: missing authenticated Ed25519 author")
-                        return
-                    }
+                val epoch = envelope.epoch
+                val transitionOpId = envelope.transitionOperationId
+                val transitionOpEntity = database.signedOperationDao().getOperationByIdSync(transitionOpId)
 
-                    // Verify envelope cryptographic signature if envelope is present
-                    if (envelope != null && !envelope.verifySignature()) {
-                        Log.w(TAG, "Rejected key event: invalid Ed25519 signature on KeyDistributionEnvelope")
-                        return
-                    }
+                if (transitionOpEntity == null) {
+                    bufferPendingKeyEvent(transitionOpId, event)
+                    Log.d(TAG, "Buffered key event for group $groupId epoch $epoch pending arrival of transition op $transitionOpId")
+                    return
+                }
 
-                    // Buffer event if transition operation has not been stored yet
-                    val transitionOpEntity = if (transitionOpId != null) {
-                        database.signedOperationDao().getOperationByIdSync(transitionOpId)
-                    } else null
+                if (transitionOpEntity.status == com.peersplit.app.data.local.entity.SignedOperationEntity.STATUS_REJECTED) {
+                    Log.w(TAG, "Dropped key event for group $groupId epoch $epoch: transition op $transitionOpId is REJECTED")
+                    return
+                }
 
-                    if (transitionOpId != null && transitionOpEntity == null) {
-                        synchronized(earlyEvents) {
-                            val list = earlyEvents.getOrPut(groupId) { mutableListOf() }
-                            if (list.none { it.id == event.id }) {
-                                if (list.size >= MAX_EARLY_EVENTS_PER_GROUP) list.removeAt(0)
-                                list.add(event)
-                            }
-                        }
-                        Log.d(TAG, "Buffered key event for group $groupId epoch $epoch pending transition op $transitionOpId")
-                        return
-                    }
+                if (transitionOpEntity.status != com.peersplit.app.data.local.entity.SignedOperationEntity.STATUS_ACCEPTED) {
+                    bufferPendingKeyEvent(transitionOpId, event)
+                    Log.d(TAG, "Buffered key event for group $groupId epoch $epoch pending acceptance of transition op $transitionOpId")
+                    return
+                }
 
-                    // Verify transition operation details: must be MemberRemoved for this epoch and author
-                    if (transitionOpEntity != null) {
-                        val transitionOp = com.peersplit.app.protocol.OperationEntityMapper.toDomain(transitionOpEntity)
-                        val removalPayload = transitionOp.payload as? com.peersplit.app.protocol.OperationPayload.MemberRemoved
-                        if (removalPayload == null || removalPayload.newKeyEpoch != epoch) {
-                            Log.w(TAG, "Rejected key event: transition op $transitionOpId is not MemberRemoved for epoch $epoch")
-                            return
-                        }
-                        if (!transitionOp.authorPublicKey.equals(authorEd25519Pubkey, ignoreCase = true)) {
-                            Log.w(TAG, "Rejected key event: transition op author mismatch (${transitionOp.authorPublicKey} != $authorEd25519Pubkey)")
-                            return
-                        }
-                    }
+                if (transitionOpEntity.groupId != groupId) {
+                    Log.w(TAG, "Rejected key event: transition op $transitionOpId belongs to group ${transitionOpEntity.groupId}, not $groupId")
+                    return
+                }
 
-                    // Verify author authority in the group (must be group creator or active admin)
-                    val isCreator = groupEntity.creatorPubkey.equals(authorEd25519Pubkey, ignoreCase = true)
-                    if (!isCreator) {
-                        val existingOps = database.signedOperationDao().getOperationsForGroupSync(groupId)
-                        val domainOps = existingOps.map { com.peersplit.app.protocol.OperationEntityMapper.toDomain(it) }
-                        val protoMeta = database.groupProtocolDao().getGroupProtocolSync(groupId)
-                        val currentRecon = com.peersplit.app.reconciliation.DefaultLedgerReconciliationEngine.reconcile(
-                            com.peersplit.app.reconciliation.TrustedGenesis(
-                                groupId = groupId,
-                                groupName = groupEntity.name,
-                                currency = groupEntity.currency,
-                                creatorPublicKey = groupEntity.creatorPubkey,
-                                genesisOperationId = protoMeta?.genesisOperationId
-                            ),
-                            domainOps
-                        )
-                        val authorRole = currentRecon.activeMembers[authorEd25519Pubkey]?.role
-                        if (authorRole != com.peersplit.app.protocol.ProtocolMemberInfo.ROLE_ADMIN) {
-                            Log.w(TAG, "Rejected key event: author $authorEd25519Pubkey is not an active admin or creator")
-                            return
-                        }
-                    }
+                val transitionOp = com.peersplit.app.protocol.OperationEntityMapper.toDomain(transitionOpEntity)
+                val removalPayload = transitionOp.payload as? com.peersplit.app.protocol.OperationPayload.MemberRemoved
+                if (removalPayload == null || removalPayload.newKeyEpoch != epoch) {
+                    Log.w(TAG, "Rejected key event: transition op $transitionOpId is not MemberRemoved for epoch $epoch")
+                    return
+                }
+                if (!transitionOp.authorPublicKey.equals(envelope.authorPublicKey, ignoreCase = true)) {
+                    Log.w(TAG, "Rejected key event: transition op author mismatch (${transitionOp.authorPublicKey} != ${envelope.authorPublicKey})")
+                    return
+                }
 
-                    try {
-                        val myPrivHex = KeyManager.getPrivateKeyHex(context)
-                        val keyBase64 = com.peersplit.app.crypto.KeyExchangeUtil.decryptFromPeer(
-                            ciphertext = keyCiphertext,
-                            myPrivHex = myPrivHex,
-                            theirPubHex = authorEd25519Pubkey
-                        )
-                        com.peersplit.app.crypto.KeyRotationManager.storeEpochKey(
-                            database = database,
+                // Verify author authority in the group (must be group creator or active admin)
+                val isCreator = groupEntity.creatorPubkey.equals(envelope.authorPublicKey, ignoreCase = true)
+                if (!isCreator) {
+                    val existingOps = database.signedOperationDao().getOperationsForGroupSync(groupId)
+                    val domainOps = existingOps.map { com.peersplit.app.protocol.OperationEntityMapper.toDomain(it) }
+                    val protoMeta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+                    val currentRecon = com.peersplit.app.reconciliation.DefaultLedgerReconciliationEngine.reconcile(
+                        com.peersplit.app.reconciliation.TrustedGenesis(
                             groupId = groupId,
-                            epoch = epoch,
-                            keyBase64 = keyBase64,
-                            authorizedMembers = emptyList()
-                        )
-                        Log.i(TAG, "Successfully received and stored rotated key for group $groupId epoch $epoch")
-
-                        val buffered = synchronized(earlyEvents) {
-                            earlyEvents.remove(groupId) ?: emptyList()
-                        }
-                        for (ev in buffered) {
-                            handleIncomingEvent(ev)
-                        }
-                        reconcileV2Group(groupId)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to decrypt and store epoch key for group $groupId epoch $epoch: ${e.message}", e)
+                            groupName = groupEntity.name,
+                            currency = groupEntity.currency,
+                            creatorPublicKey = groupEntity.creatorPubkey,
+                            genesisOperationId = protoMeta?.genesisOperationId
+                        ),
+                        domainOps
+                    )
+                    val authorRole = currentRecon.activeMembers[envelope.authorPublicKey.lowercase()]?.role
+                    if (authorRole != com.peersplit.app.protocol.ProtocolMemberInfo.ROLE_ADMIN) {
+                        Log.w(TAG, "Rejected key event: author ${envelope.authorPublicKey} is not an active admin or creator of group $groupId")
+                        return
                     }
+                }
+
+                try {
+                    val myPrivHex = KeyManager.getPrivateKeyHex(context)
+                    val keyBase64 = com.peersplit.app.crypto.KeyExchangeUtil.decryptFromPeer(
+                        ciphertext = envelope.keyCiphertext,
+                        myPrivHex = myPrivHex,
+                        theirPubHex = envelope.authorPublicKey
+                    )
+                    com.peersplit.app.crypto.KeyRotationManager.storeEpochKey(
+                        database = database,
+                        groupId = groupId,
+                        epoch = epoch,
+                        keyBase64 = keyBase64,
+                        authorizedMembers = emptyList()
+                    )
+                    Log.i(TAG, "Successfully received and stored rotated key for group $groupId epoch $epoch")
+
+                    val unblockedCiphertext = drainPendingCiphertext(groupId, epoch)
+                    enqueueEvents(unblockedCiphertext)
+                    reconcileV2Group(groupId)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to decrypt and store epoch key for group $groupId epoch $epoch: ${e.message}", e)
                 }
                 return
             }
@@ -649,15 +879,7 @@ class P2PSyncManager(
 
             if (effectiveKeyBase64 == null) {
                 Log.w(TAG, "Quarantined event ${event.id.take(8)}: Key for epoch $epochTag in group $groupId is not available on this device; buffering")
-                synchronized(earlyEvents) {
-                    val list = earlyEvents.getOrPut(groupId) { mutableListOf() }
-                    if (list.none { it.id == event.id }) {
-                        if (list.size >= MAX_EARLY_EVENTS_PER_GROUP) {
-                            list.removeAt(0)
-                        }
-                        list.add(event)
-                    }
-                }
+                bufferPendingCiphertext(groupId, epochTag, event)
                 return
             }
             val groupKey = EncryptionUtil.keyFromBase64(effectiveKeyBase64)
@@ -693,16 +915,6 @@ class P2PSyncManager(
                             )
                         )
                         return
-                    }
-
-                    // Live admission validation for unconfirmed incoming joins from the network
-                    val existingOpEntity = database.signedOperationDao().getOperationByIdSync(op.operationId)
-                    if (existingOpEntity == null) {
-                        val liveAuth = com.peersplit.app.reconciliation.OperationAuthorization.isLiveAdmissionValid(op)
-                        if (!liveAuth.isAuthorized) {
-                            Log.w(TAG, "Rejected incoming V2 op ${op.operationId} at live admission: ${liveAuth.detail}")
-                            return
-                        }
                     }
 
                     val entity = com.peersplit.app.protocol.OperationEntityMapper.toEntity(op)

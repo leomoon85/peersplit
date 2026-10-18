@@ -72,6 +72,13 @@ object KeyRotationManager {
         keyBase64: String,
         authorizedMembers: List<String> = emptyList()
     ) {
+        val existing = database.groupKeyDao().getKey(groupId, epoch)
+        if (existing != null) {
+            if (existing.groupKeyBase64 != keyBase64) {
+                throw IllegalStateException("Integrity error: conflicting key for group $groupId epoch $epoch")
+            }
+            return
+        }
         val entity = GroupKeyEntity(
             groupId = groupId,
             keyEpoch = epoch,

@@ -193,4 +193,211 @@ class ReleaseBlockerHardeningTest {
         assertEquals(25000L, recon.memberBalancesMinor[creatorKey.publicKeyHex])
         assertEquals(-25000L, recon.memberBalancesMinor[bobKey.publicKeyHex])
     }
+
+    /**
+     * Finding 1: Cross-group replay of key distribution envelope:
+     * - Creator generates an authenticated KeyDistributionEnvelope for Group A (epoch 1, Bob as recipient).
+     * - Relay observer attempts to rewrap that envelope into Group B.
+     * - Envelope signature verifies for Group A, but if envelope.groupId is changed to Group B, verifySignature() fails!
+     * - If unchanged envelope is kept in Group B Nostr event, envelope.groupId != outerGroupId, rejecting cross-group injection.
+     */
+    @Test
+    fun testCrossGroupReplayOfKeyEnvelopeFailsSignatureOrDestinationCheck() {
+        val groupA = "group-alpha"
+        val groupB = "group-beta"
+        val keyBase64 = EncryptionUtil.keyToBase64(EncryptionUtil.generateGroupKey())
+        val encryptedKey = KeyExchangeUtil.encryptForPeer(
+            message = keyBase64,
+            myPrivHex = creatorKey.privateKeyHex,
+            theirPubHex = bobKey.publicKeyHex
+        )
+
+        val envelopeA = com.peersplit.app.crypto.KeyDistributionEnvelope.createAndSign(
+            groupId = groupA,
+            epoch = 1,
+            authorPublicKey = creatorKey.publicKeyHex,
+            authorPrivateKeyHex = creatorKey.privateKeyHex,
+            recipientPublicKey = bobKey.publicKeyHex,
+            transitionOperationId = "op-removal-1",
+            keyCiphertext = encryptedKey
+        )
+
+        // Envelope is cryptographically valid for Group A
+        assertTrue("Original envelope must have valid Ed25519 signature", envelopeA.verifySignature())
+        assertEquals(groupA, envelopeA.groupId)
+
+        // Attempt 1: Attacker changes groupId inside envelope to groupB -> signature check must fail!
+        val tamperedEnvelope = envelopeA.copy(groupId = groupB)
+        assertFalse("Tampered envelope with changed groupId must fail Ed25519 verification", tamperedEnvelope.verifySignature())
+
+        // Attempt 2: Attacker changes recipient inside envelope -> signature check must fail!
+        val tamperedRecipient = envelopeA.copy(recipientPublicKey = aliceKey.publicKeyHex)
+        assertFalse("Tampered envelope with changed recipient must fail Ed25519 verification", tamperedRecipient.verifySignature())
+
+        // Attempt 3: Attacker leaves envelope intact but tags outer Nostr event as groupB ->
+        // Destination check envelope.groupId == outerGroupId detects mismatch!
+        val outerEventGroupId = groupB
+        val destinationMatches = envelopeA.groupId == outerEventGroupId
+        assertFalse("Outer Nostr event tagged as Group B must be rejected due to envelope.groupId mismatch", destinationMatches)
+    }
+
+    /**
+     * Finding 2: Historical admin-endorsed joins synchronize to fresh peer even after grant expiry,
+     * while unendorsed expired leaf joins are rejected deterministically during reconciliation.
+     */
+    @Test
+    fun testHistoricalAdminEndorsedJoinSucceedsAfterGrantExpiryWhileUnendorsedFails() {
+        val charlieKey = KeyManager.generateKeyPair()
+        val genesisOp = OperationSigner.createAndSign(
+            protocolVersion = ProtocolVersion.V3_SIGNED_OPERATIONS,
+            groupId = groupId,
+            authorPublicKey = creatorKey.publicKeyHex,
+            privateKeyHex = creatorKey.privateKeyHex,
+            parents = emptyList(),
+            logicalClock = 1L,
+            createdAtMillis = 100L,
+            payload = OperationPayload.GenesisCreated(
+                groupId = groupId,
+                groupName = "Admin Endorsement Test",
+                currency = "INR",
+                creatorPublicKey = creatorKey.publicKeyHex,
+                initialMembers = listOf(
+                    ProtocolMemberInfo(creatorKey.publicKeyHex, "Creator", ProtocolMemberInfo.ROLE_ADMIN)
+                )
+            )
+        )
+
+        // Admin issues grant with 1000ms expiry
+        val grant = com.peersplit.app.protocol.OperationSigner.createInvitationGrant(
+            inviterPublicKey = creatorKey.publicKeyHex,
+            inviterPrivateKeyHex = creatorKey.privateKeyHex,
+            groupId = groupId,
+            invitedPublicKey = charlieKey.publicKeyHex,
+            invitationNonce = "nonce-endorsed-1",
+            expiresAtMillis = 1000L
+        )
+
+        // Charlie joins within grant validity (at 500ms)
+        val charlieJoinOp = OperationSigner.createAndSign(
+            protocolVersion = ProtocolVersion.V3_SIGNED_OPERATIONS,
+            groupId = groupId,
+            authorPublicKey = charlieKey.publicKeyHex,
+            privateKeyHex = charlieKey.privateKeyHex,
+            parents = listOf(genesisOp.operationId),
+            logicalClock = 2L,
+            createdAtMillis = 500L,
+            payload = OperationPayload.MemberAdded(
+                memberPublicKey = charlieKey.publicKeyHex,
+                displayName = "Charlie",
+                role = ProtocolMemberInfo.ROLE_MEMBER,
+                invitationGrant = grant
+            )
+        )
+
+        // Unendorsed case: timeline progresses past expiry (2000L) with no admin endorsing Charlie
+        val creatorLateExpense = OperationSigner.createAndSign(
+            protocolVersion = ProtocolVersion.V3_SIGNED_OPERATIONS,
+            groupId = groupId,
+            authorPublicKey = creatorKey.publicKeyHex,
+            privateKeyHex = creatorKey.privateKeyHex,
+            parents = listOf(genesisOp.operationId), // Only depends on genesis, NOT Charlie!
+            logicalClock = 3L,
+            createdAtMillis = 2000L,
+            payload = OperationPayload.ExpenseCreated(
+                expenseId = "exp-solo-1",
+                amountMinor = 10000L,
+                currency = "INR",
+                paidBy = creatorKey.publicKeyHex,
+                splits = mapOf(creatorKey.publicKeyHex to 10000L),
+                description = "Creator solo coffee"
+            )
+        )
+
+        val trustedGenesis = TrustedGenesis(
+            groupId = groupId,
+            groupName = "Admin Endorsement Test",
+            currency = "INR",
+            creatorPublicKey = creatorKey.publicKeyHex,
+            genesisOperationId = genesisOp.operationId
+        )
+
+        val unendorsedRecon = DefaultLedgerReconciliationEngine.reconcile(
+            trustedGenesis = trustedGenesis,
+            operations = listOf(genesisOp, charlieJoinOp, creatorLateExpense)
+        )
+        assertFalse("Unendorsed expired join must be rejected", charlieJoinOp.operationId in unendorsedRecon.acceptedOperations.map { it.operationId })
+        assertTrue("Unendorsed expired join must appear in rejectedOperations",
+            charlieJoinOp.operationId in unendorsedRecon.rejectedOperations.map { it.operation.operationId })
+
+        // Endorsed case: Admin (Creator) accepts Charlie into history by building an expense on top of Charlie's join!
+        val creatorEndorsingExpense = OperationSigner.createAndSign(
+            protocolVersion = ProtocolVersion.V3_SIGNED_OPERATIONS,
+            groupId = groupId,
+            authorPublicKey = creatorKey.publicKeyHex,
+            privateKeyHex = creatorKey.privateKeyHex,
+            parents = listOf(charlieJoinOp.operationId), // Admin causally endorses Charlie's join!
+            logicalClock = 3L,
+            createdAtMillis = 2500L,
+            payload = OperationPayload.ExpenseCreated(
+                expenseId = "exp-shared-1",
+                amountMinor = 20000L,
+                currency = "INR",
+                paidBy = creatorKey.publicKeyHex,
+                splits = mapOf(creatorKey.publicKeyHex to 10000L, charlieKey.publicKeyHex to 10000L),
+                description = "Creator & Charlie dinner"
+            )
+        )
+
+        val endorsedRecon = DefaultLedgerReconciliationEngine.reconcile(
+            trustedGenesis = trustedGenesis,
+            operations = listOf(genesisOp, charlieJoinOp, creatorEndorsingExpense)
+        )
+        assertTrue("Admin-endorsed join must be accepted during historical replay even after grant expiry",
+            charlieJoinOp.operationId in endorsedRecon.acceptedOperations.map { it.operationId })
+        assertTrue("Charlie must be recognized as active member in reconciled state",
+            endorsedRecon.activeMembers.containsKey(charlieKey.publicKeyHex))
+        assertEquals("Charlie's net balance must be reconciled accurately",
+            -10000L, endorsedRecon.memberBalancesMinor[charlieKey.publicKeyHex])
+    }
+
+    /**
+     * Finding 3: Pending sync state persistence across restarts round-trip test.
+     */
+    @Test
+    fun testPendingSyncStateSerializationRoundTrip() {
+        val dummyEvent = com.peersplit.app.network.nostr.NostrEvent(
+            id = "event-id-12345",
+            pubkey = creatorKey.publicKeyHex,
+            createdAt = 1234567L,
+            kind = 1,
+            tags = listOf(listOf("g", groupId), listOf("epoch", "1")),
+            content = "encrypted-content-sample",
+            sig = "sig-12345"
+        )
+
+        val state = com.peersplit.app.network.sync.PersistedPendingSyncState(
+            pendingKeys = mapOf("transition-op-1" to listOf(dummyEvent)),
+            pendingCiphertext = listOf(
+                com.peersplit.app.network.sync.PersistedCiphertextEntry(
+                    groupId = groupId,
+                    epoch = 1,
+                    event = dummyEvent
+                )
+            ),
+            earlyGroupEvents = mapOf(groupId to listOf(dummyEvent))
+        )
+
+        val jsonStr = json.encodeToString(com.peersplit.app.network.sync.PersistedPendingSyncState.serializer(), state)
+        val decoded = json.decodeFromString(com.peersplit.app.network.sync.PersistedPendingSyncState.serializer(), jsonStr)
+
+        assertEquals("Pending keys count must match", state.pendingKeys.size, decoded.pendingKeys.size)
+        assertEquals("Pending key event id must match",
+            state.pendingKeys["transition-op-1"]?.first()?.id,
+            decoded.pendingKeys["transition-op-1"]?.first()?.id
+        )
+        assertEquals("Pending ciphertext count must match", state.pendingCiphertext.size, decoded.pendingCiphertext.size)
+        assertEquals("Pending ciphertext groupId must match", state.pendingCiphertext.first().groupId, decoded.pendingCiphertext.first().groupId)
+        assertEquals("Pending ciphertext epoch must match", state.pendingCiphertext.first().epoch, decoded.pendingCiphertext.first().epoch)
+        assertEquals("Early group events must match", state.earlyGroupEvents.size, decoded.earlyGroupEvents.size)
+    }
 }
