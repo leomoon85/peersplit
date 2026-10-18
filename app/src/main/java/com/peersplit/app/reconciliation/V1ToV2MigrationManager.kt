@@ -10,6 +10,7 @@ import com.peersplit.app.blockchain.ExpenseVoidPayload
 import com.peersplit.app.blockchain.MemberJoinedPayload
 import com.peersplit.app.blockchain.SettlementPayload
 import com.peersplit.app.crypto.KeyManager
+import androidx.room.withTransaction
 import com.peersplit.app.data.local.AppDatabase
 import com.peersplit.app.data.local.entity.GroupProtocolEntity
 import com.peersplit.app.data.local.entity.SignedOperationEntity
@@ -216,27 +217,34 @@ class V1ToV2MigrationManager(
             payload = checkpointPayload
         )
 
-        // Store checkpoint operation locally
-        val entity = OperationEntityMapper.toEntity(signedOp, status = SignedOperationEntity.STATUS_ACCEPTED)
-        database.signedOperationDao().insertOperationIgnore(entity)
+        // Store checkpoint operation, protocol metadata, and outbox atomically
+        val outboxOp = syncManager.buildOutboxOperation(signedOp, groupEntity.groupKeyBase64)
+        database.withTransaction {
+            val entity = OperationEntityMapper.toEntity(signedOp, status = SignedOperationEntity.STATUS_ACCEPTED)
+            database.signedOperationDao().insertOperationIgnore(entity)
 
-        database.groupProtocolDao().upsertGroupProtocol(
-            GroupProtocolEntity(
-                groupId = groupId,
-                protocolVersion = ProtocolVersion.V2_SIGNED_OPERATIONS,
-                genesisOperationId = signedOp.operationId,
-                latestStateDigest = "",
-                updatedAtMillis = System.currentTimeMillis()
+            database.groupProtocolDao().upsertGroupProtocol(
+                GroupProtocolEntity(
+                    groupId = groupId,
+                    protocolVersion = ProtocolVersion.V2_SIGNED_OPERATIONS,
+                    genesisOperationId = signedOp.operationId,
+                    latestStateDigest = "",
+                    updatedAtMillis = System.currentTimeMillis()
+                )
             )
-        )
+            database.outboxDao().insertOutboxOperation(outboxOp)
+        }
 
         // Reconcile into projections and verify acceptance
         val reconciled = syncManager.reconcileV2Group(groupId)
         val checkpointOp = database.signedOperationDao().getOperationByIdSync(signedOp.operationId)
         val isAccepted = checkpointOp?.status == com.peersplit.app.data.local.entity.SignedOperationEntity.STATUS_ACCEPTED
         if (!reconciled || !isAccepted) {
-            database.signedOperationDao().deleteOperationsForGroup(groupId)
-            database.groupProtocolDao().deleteGroupProtocol(groupId)
+            database.withTransaction {
+                database.signedOperationDao().deleteOperationsForGroup(groupId)
+                database.groupProtocolDao().deleteGroupProtocol(groupId)
+                database.outboxDao().deleteOutboxForGroup(groupId)
+            }
             Log.e(TAG, "Migration checkpoint failed reconciliation for group $groupId (reconciled=$reconciled, accepted=$isAccepted)")
             return MigrationResult(
                 groupId = groupId,
@@ -249,11 +257,8 @@ class V1ToV2MigrationManager(
             )
         }
 
-        val outboxOp = syncManager.buildOutboxOperation(signedOp, groupEntity.groupKeyBase64)
-        database.outboxDao().insertOutboxOperation(outboxOp)
-
         // Broadcast to peers
-        syncManager.broadcastOperation(signedOp, groupEntity.groupKeyBase64)
+        syncManager.transmitOutboxOperation(outboxOp)
 
         Log.i(TAG, "Successfully migrated group $groupId to V2. Checkpoint op: ${signedOp.operationId.take(8)}")
         return MigrationResult(

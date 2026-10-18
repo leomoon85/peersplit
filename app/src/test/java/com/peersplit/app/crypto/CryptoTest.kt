@@ -52,4 +52,28 @@ class CryptoTest {
         assertNotNull(key)
         assertEquals(32, key.size) // 256 bits
     }
+
+    @Test
+    fun testKeyExchangeBetweenPeers() {
+        val alice = KeyManager.generateKeyPair()
+        val bob = KeyManager.generateKeyPair()
+        val eve = KeyManager.generateKeyPair()
+
+        val secretGroupKey = "secret-epoch-1-aes-key-base64-content"
+
+        // Alice encrypts for Bob
+        val encryptedForBob = KeyExchangeUtil.encryptForPeer(secretGroupKey, alice.privateKeyHex, bob.publicKeyHex)
+
+        // Bob decrypts from Alice
+        val decryptedByBob = KeyExchangeUtil.decryptFromPeer(encryptedForBob, bob.privateKeyHex, alice.publicKeyHex)
+        assertEquals(secretGroupKey, decryptedByBob)
+
+        // Eve cannot decrypt with her private key
+        try {
+            KeyExchangeUtil.decryptFromPeer(encryptedForBob, eve.privateKeyHex, alice.publicKeyHex)
+            fail("Eve should not be able to decrypt Bob's message")
+        } catch (_: Exception) {
+            // Expected
+        }
+    }
 }

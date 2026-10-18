@@ -42,7 +42,10 @@ object OperationAuthorization {
         ancestorsOf: Map<String, Set<String>>,
         consumedInvitationNonces: Set<String> = emptySet(),
         ghostAliases: Map<String, String> = emptyMap(),
-        parentTimestampProvider: ((String) -> Long?)? = null
+        parentTimestampProvider: ((String) -> Long?)? = null,
+        currentTimeMillis: Long = System.currentTimeMillis(),
+        hasDescendants: Boolean = false,
+        maxLedgerTimestamp: Long = 0L
     ): AuthOutcome {
         val author = operation.authorPublicKey
 
@@ -202,7 +205,10 @@ object OperationAuthorization {
                         trustedGenesis = trustedGenesis,
                         activeMembers = activeMembers,
                         consumedInvitationNonces = consumedInvitationNonces,
-                        parentTimestampProvider = parentTimestampProvider
+                        parentTimestampProvider = parentTimestampProvider,
+                        currentTimeMillis = currentTimeMillis,
+                        hasDescendants = hasDescendants,
+                        maxLedgerTimestamp = maxLedgerTimestamp
                     )
                 } else {
                     // Non-self addition (an existing user is adding someone else)
@@ -231,7 +237,10 @@ object OperationAuthorization {
                                 trustedGenesis = trustedGenesis,
                                 activeMembers = activeMembers,
                                 consumedInvitationNonces = consumedInvitationNonces,
-                                parentTimestampProvider = parentTimestampProvider
+                                parentTimestampProvider = parentTimestampProvider,
+                                currentTimeMillis = currentTimeMillis,
+                                hasDescendants = hasDescendants,
+                                maxLedgerTimestamp = maxLedgerTimestamp
                             )
                         } else {
                             AuthOutcome(true)
@@ -245,7 +254,10 @@ object OperationAuthorization {
                             trustedGenesis = trustedGenesis,
                             activeMembers = activeMembers,
                             consumedInvitationNonces = consumedInvitationNonces,
-                            parentTimestampProvider = parentTimestampProvider
+                            parentTimestampProvider = parentTimestampProvider,
+                            currentTimeMillis = currentTimeMillis,
+                            hasDescendants = hasDescendants,
+                            maxLedgerTimestamp = maxLedgerTimestamp
                         )
                     } else {
                         AuthOutcome(
@@ -308,7 +320,10 @@ object OperationAuthorization {
         trustedGenesis: TrustedGenesis,
         activeMembers: Map<String, ProtocolMemberInfo>,
         consumedInvitationNonces: Set<String>,
-        parentTimestampProvider: ((String) -> Long?)? = null
+        parentTimestampProvider: ((String) -> Long?)? = null,
+        currentTimeMillis: Long = System.currentTimeMillis(),
+        hasDescendants: Boolean = false,
+        maxLedgerTimestamp: Long = 0L
     ): AuthOutcome {
         // 1. Group ID match
         if (grant.groupId != operation.groupId) {
@@ -385,6 +400,22 @@ object OperationAuthorization {
                     isAuthorized = false,
                     rejectionReason = RejectionReason.EXPIRED_INVITATION,
                     detail = "Invitation grant expired at ${grant.expiresAtMillis} (operation timestamp ${operation.createdAtMillis}, causal parent timestamp $minCausalTimestamp)"
+                )
+            }
+            // Stale ancestry check: group ledger timeline has already progressed past expiry
+            if (!hasDescendants && maxLedgerTimestamp > grant.expiresAtMillis) {
+                return AuthOutcome(
+                    isAuthorized = false,
+                    rejectionReason = RejectionReason.EXPIRED_INVITATION,
+                    detail = "Invitation grant expired at ${grant.expiresAtMillis} (ledger timeline $maxLedgerTimestamp already past expiry)"
+                )
+            }
+            // Admission time bound: unconfirmed leaf joins cannot be admitted after grant expiry
+            if (!hasDescendants && currentTimeMillis > grant.expiresAtMillis) {
+                return AuthOutcome(
+                    isAuthorized = false,
+                    rejectionReason = RejectionReason.EXPIRED_INVITATION,
+                    detail = "Invitation grant expired at ${grant.expiresAtMillis} (admission evaluation time $currentTimeMillis)"
                 )
             }
         }

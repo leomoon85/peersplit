@@ -29,7 +29,8 @@ object ReconciliationProjector {
 
     suspend fun persistReconciliationResult(
         database: AppDatabase,
-        result: ReconciliationResult
+        result: ReconciliationResult,
+        forceRebuild: Boolean = false
     ): Boolean {
         val groupId = result.groupId
 
@@ -89,8 +90,14 @@ object ReconciliationProjector {
             }
 
             val existingMeta = database.groupProtocolDao().getGroupProtocolSync(groupId)
-            if (existingMeta != null && existingMeta.latestStateDigest == result.stateDigest && existingMeta.maxLogicalClock == result.maxLogicalClock) {
-                return@withTransaction true
+            if (!forceRebuild && existingMeta != null && existingMeta.latestStateDigest == result.stateDigest && existingMeta.maxLogicalClock == result.maxLogicalClock) {
+                val existingExpensesCount = database.projectionDao().getExpenseProjectionsForGroupSync(groupId).size
+                val existingBalancesCount = database.projectionDao().getBalanceProjectionsForGroupSync(groupId).size
+                val projectionsComplete = existingExpensesCount >= result.effectiveExpenses.size &&
+                    existingBalancesCount >= result.memberBalancesMinor.size
+                if (projectionsComplete) {
+                    return@withTransaction true
+                }
             }
 
             // 2. Materialize Expense Projections

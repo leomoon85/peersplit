@@ -389,7 +389,7 @@ object BackupManager {
                         protocolVersion = p.protocolVersion,
                         genesisOperationId = p.genesisOperationId,
                         currentKeyEpoch = p.currentKeyEpoch,
-                        latestStateDigest = p.latestStateDigest,
+                        latestStateDigest = "",
                         maxLogicalClock = p.maxLogicalClock,
                         headOperationIdsJson = p.headOperationIdsJson,
                         v1MigrationStatus = p.v1MigrationStatus,
@@ -456,7 +456,7 @@ object BackupManager {
         try {
             val syncManager = com.peersplit.app.PeerSplitApp.instance.syncManager
             payload.groups.forEach { g ->
-                syncManager.reconcileV2Group(g.id)
+                syncManager.reconcileV2Group(g.id, forceRebuild = true)
                 syncManager.monitorGroup(g.id)
             }
         } catch (_: Exception) {

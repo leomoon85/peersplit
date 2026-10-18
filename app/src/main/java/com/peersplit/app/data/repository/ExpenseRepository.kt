@@ -28,6 +28,10 @@ import com.peersplit.app.data.local.entity.GroupEntity
 import com.peersplit.app.data.local.entity.GroupProtocolEntity
 import com.peersplit.app.data.local.entity.MemberEntity
 import com.peersplit.app.data.local.entity.SignedOperationEntity
+import com.peersplit.app.data.local.entity.OutboxOperationEntity
+import com.peersplit.app.network.nostr.NostrEvent
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import com.peersplit.app.data.model.ExpenseItem
 import com.peersplit.app.data.model.Group
 import com.peersplit.app.data.model.Member
@@ -97,6 +101,10 @@ class ExpenseRepository(
     private val database: AppDatabase,
     private val syncManager: P2PSyncManager
 ) {
+    companion object {
+        private const val TAG = "ExpenseRepository"
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
 
     private val expensePayloadCache = ConcurrentHashMap<String, ExpensePayload>()
@@ -260,6 +268,37 @@ class ExpenseRepository(
         val opMap = ops.associateBy { it.operationId }
         val maxParentClock = parents.mapNotNull { opMap[it]?.logicalClock }.maxOrNull() ?: 0L
         return maxParentClock + 1L
+    }
+
+    suspend fun getActiveEpochAndKey(groupId: String, fallbackKeyBase64: String): Pair<Int, String> {
+        val currentEpoch = database.groupProtocolDao().getGroupProtocolSync(groupId)?.currentKeyEpoch ?: 0
+        val activeKey = if (currentEpoch > 0) {
+            com.peersplit.app.crypto.KeyRotationManager.getKeyForEpoch(database, groupId, currentEpoch)
+                ?: fallbackKeyBase64
+        } else {
+            fallbackKeyBase64
+        }
+        return Pair(currentEpoch, activeKey)
+    }
+
+    suspend fun commitOperationDurableAtomic(
+        op: SignedOperation,
+        keyBase64: String,
+        extraWork: (suspend () -> Unit)? = null
+    ): OutboxOperationEntity {
+        val outboxOp = syncManager.buildOutboxOperation(op, keyBase64)
+        database.withTransaction {
+            database.signedOperationDao().insertOperationIgnore(
+                OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
+            )
+            val deps = OperationEntityMapper.toDependencyEntities(op)
+            if (deps.isNotEmpty()) {
+                database.signedOperationDao().insertDependenciesIgnore(deps)
+            }
+            database.outboxDao().insertOutboxOperation(outboxOp)
+            extraWork?.invoke()
+        }
+        return outboxOp
     }
 
     /**
@@ -640,7 +679,7 @@ class ExpenseRepository(
         val pinHash = if (!secretPin.isNullOrBlank()) KeyManager.hashSecretPin(secretPin) else null
 
         // Store Group and Genesis Block locally under ledger lock
-        val genesisOp = syncManager.withLedgerLock {
+        val (genesisOp, genesisOutboxOp) = syncManager.withLedgerLock {
             // Mint V2 GenesisCreated SignedOperation
             val genesisPayload = OperationPayload.GenesisCreated(
                 groupId = groupId,
@@ -713,13 +752,13 @@ class ExpenseRepository(
                     )
                 )
             }
-            op
+            Pair(op, outboxOp)
         }
 
         // Broadcast to P2P relay network
         syncManager.monitorGroup(groupId)
         syncManager.broadcastBlock(genesisBlock, groupKeyBase64)
-        syncManager.broadcastOperation(genesisOp, groupKeyBase64)
+        syncManager.transmitOutboxOperation(genesisOutboxOp)
         syncManager.reconcileV2Group(groupId)
 
         // Add any initial friends added during group creation (supports "Name" or "Name|Phone" or "Name|Phone|UpiId")
@@ -758,7 +797,7 @@ class ExpenseRepository(
         // Generate deterministic 64-char hex pubkey identifier for offline member
         val ghostPubkey = HashUtil.sha256Hex("ghost:$groupId:${cleanName.lowercase()}")
 
-        val (joinBlock, memberOp) = syncManager.withLedgerLock {
+        val (joinBlock, memberOutboxOp) = syncManager.withLedgerLock<Pair<Block, OutboxOperationEntity>?> {
             val latestBlock = database.blockDao().getLatestBlockForGroup(groupId)?.toDomainBlock()
                 ?: return@withLedgerLock null
 
@@ -776,6 +815,7 @@ class ExpenseRepository(
             // V2 MemberAdded SignedOperation
             val parents = getDagHeads(groupId)
             val nextClock = getNextClock(groupId, parents)
+            val (currentEpoch, activeKey) = getActiveEpochAndKey(groupId, groupEntity.groupKeyBase64)
             val memberPayload = OperationPayload.MemberAdded(
                 memberPublicKey = ghostPubkey,
                 displayName = cleanName,
@@ -791,11 +831,10 @@ class ExpenseRepository(
                 privateKeyHex = privKeyHex,
                 parents = parents,
                 logicalClock = nextClock,
-                payload = memberPayload
+                payload = memberPayload,
+                keyEpoch = currentEpoch
             )
-            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
-
-            database.withTransaction {
+            val outboxOp = commitOperationDurableAtomic(op, activeKey) {
                 database.memberDao().insertMember(
                     MemberEntity(
                         groupId = groupId,
@@ -805,26 +844,16 @@ class ExpenseRepository(
                         phone = cleanPhone
                     )
                 )
-
                 database.blockDao().insertBlock(
                     BlockEntity.fromDomainBlock(block, isVerified = true, isSynced = false)
                 )
-
-                database.signedOperationDao().insertOperationIgnore(
-                    OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
-                )
-                val deps = OperationEntityMapper.toDependencyEntities(op)
-                if (deps.isNotEmpty()) {
-                    database.signedOperationDao().insertDependenciesIgnore(deps)
-                }
-                database.outboxDao().insertOutboxOperation(outboxOp)
             }
 
-            Pair(block, op)
+            Pair(block, outboxOp)
         } ?: return
 
         syncManager.broadcastBlock(joinBlock, groupEntity.groupKeyBase64)
-        syncManager.broadcastOperation(memberOp, groupEntity.groupKeyBase64)
+        syncManager.transmitOutboxOperation(memberOutboxOp)
         syncManager.reconcileV2Group(groupId)
     }
 
@@ -838,19 +867,63 @@ class ExpenseRepository(
             ?: return@withContext Result.failure(IllegalArgumentException("Group not found: $groupId"))
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
+        val myPubkey = identity.publicKeyHex.lowercase()
+        val isCreator = groupEntity.creatorPubkey.lowercase() == myPubkey
+        val protoMeta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+
+        // Validate caller authority before generating or committing rotation state (R1)
+        if (!isCreator) {
+            val existingOps = database.signedOperationDao().getOperationsForGroupSync(groupId)
+            val domainOps = existingOps.map { OperationEntityMapper.toDomain(it) }
+            val currentRecon = com.peersplit.app.reconciliation.DefaultLedgerReconciliationEngine.reconcile(
+                com.peersplit.app.reconciliation.TrustedGenesis(
+                    groupId = groupId,
+                    groupName = groupEntity.name,
+                    currency = groupEntity.currency,
+                    creatorPublicKey = groupEntity.creatorPubkey,
+                    genesisOperationId = protoMeta?.genesisOperationId
+                ),
+                domainOps
+            )
+            val callerRole = currentRecon.activeMembers[myPubkey]?.role
+            if (callerRole != ProtocolMemberInfo.ROLE_ADMIN) {
+                return@withContext Result.failure(SecurityException("Unauthorized: only group admins can remove members"))
+            }
+        }
+
+        val priorEpoch = protoMeta?.currentKeyEpoch ?: 0
+        val priorKeyBase64 = com.peersplit.app.crypto.KeyRotationManager.getKeyForEpoch(database, groupId, priorEpoch)
+            ?: groupEntity.groupKeyBase64
 
         val groupMutex = getGroupMutex(groupId)
-        val (signedOp, rotatedKey) = groupMutex.withLock {
-            val rotatedKey = com.peersplit.app.crypto.KeyRotationManager.rotateKeyOnRemoval(database, groupId, memberPubkey)
+        val (signedOp, outboxOp, keyOutboxList) = groupMutex.withLock {
+            val latestKey = database.groupKeyDao().getLatestKey(groupId)
+            val nextEpoch = (latestKey?.keyEpoch ?: priorEpoch) + 1
+            val newKeyBytes = com.peersplit.app.crypto.EncryptionUtil.generateGroupKey()
+            val newKeyBase64 = com.peersplit.app.crypto.EncryptionUtil.keyToBase64(newKeyBytes)
+
+            val remainingMembers = database.memberDao().getMembersForGroupSync(groupId)
+                .map { it.pubkey }
+                .filter { !it.equals(memberPubkey, ignoreCase = true) }
+
+            val rotatedKeyEntity = com.peersplit.app.data.local.entity.GroupKeyEntity(
+                groupId = groupId,
+                keyEpoch = nextEpoch,
+                groupKeyBase64 = newKeyBase64,
+                distributedToPubkeysJson = json.encodeToString(ListSerializer(String.serializer()), remainingMembers),
+                createdAtMillis = System.currentTimeMillis()
+            )
+
             val parents = getDagHeads(groupId)
             val nextClock = getNextClock(groupId, parents)
 
             val payload = OperationPayload.MemberRemoved(
                 memberPublicKey = memberPubkey,
                 reason = reason,
-                newKeyEpoch = rotatedKey.keyEpoch
+                newKeyEpoch = nextEpoch
             )
 
+            // Encrypt MemberRemoved with prior epoch key so all existing peers can decrypt the removal transition
             val op = OperationSigner.createAndSign(
                 protocolVersion = ProtocolVersion.V2_SIGNED_OPERATIONS,
                 groupId = groupId,
@@ -858,13 +931,55 @@ class ExpenseRepository(
                 privateKeyHex = privKeyHex,
                 parents = parents,
                 logicalClock = nextClock,
-                keyEpoch = rotatedKey.keyEpoch,
+                keyEpoch = priorEpoch,
                 payload = payload
             )
 
-            val outboxOp = syncManager.buildOutboxOperation(op, rotatedKey.groupKeyBase64)
+            val removalOutboxOp = syncManager.buildOutboxOperation(op, priorKeyBase64)
+
+            // Distribute new epoch key confidentially to each remaining member
+            val keyOutboxItems = mutableListOf<OutboxOperationEntity>()
+            for (recipientPubkey in remainingMembers) {
+                if (recipientPubkey.equals(myPubkey, ignoreCase = true)) continue
+                try {
+                    val encryptedKeyForPeer = com.peersplit.app.crypto.KeyExchangeUtil.encryptForPeer(
+                        message = newKeyBase64,
+                        myPrivHex = privKeyHex,
+                        theirPubHex = recipientPubkey
+                    )
+                    val keyEventTags = listOf(
+                        listOf("t", "peersplit_key"),
+                        listOf("g", groupId),
+                        listOf("p", recipientPubkey),
+                        listOf("epoch", nextEpoch.toString())
+                    )
+                    val keyEvent = NostrEvent.createAndSign(
+                        pubkey = identity.publicKeyHex,
+                        privateKeyHex = privKeyHex,
+                        kind = NostrEvent.KIND_PEERSPLIT_BLOCK,
+                        tags = keyEventTags,
+                        content = encryptedKeyForPeer
+                    )
+                    val eventJson = json.encodeToString(NostrEvent.serializer(), keyEvent)
+                    keyOutboxItems.add(
+                        OutboxOperationEntity(
+                            operationId = "key:${groupId}:${nextEpoch}:${recipientPubkey.take(8)}",
+                            groupId = groupId,
+                            nostrEventId = keyEvent.id,
+                            signedEventJson = eventJson,
+                            keyEpoch = nextEpoch,
+                            attemptCount = 0,
+                            nextAttemptAtMillis = System.currentTimeMillis() + 5000L,
+                            status = OutboxOperationEntity.STATUS_QUEUED
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not encrypt rotated key for member $recipientPubkey: ${e.message}")
+                }
+            }
 
             database.withTransaction {
+                database.groupKeyDao().insertKey(rotatedKeyEntity)
                 database.signedOperationDao().insertOperationIgnore(
                     OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
                 )
@@ -872,14 +987,20 @@ class ExpenseRepository(
                 if (deps.isNotEmpty()) {
                     database.signedOperationDao().insertDependenciesIgnore(deps)
                 }
-                database.outboxDao().insertOutboxOperation(outboxOp)
+                database.outboxDao().insertOutboxOperation(removalOutboxOp)
+                for (kOp in keyOutboxItems) {
+                    database.outboxDao().insertOutboxOperation(kOp)
+                }
                 database.memberDao().deleteMember(groupId, memberPubkey)
             }
 
-            Pair(op, rotatedKey)
+            Triple(op, removalOutboxOp, keyOutboxItems)
         }
 
-        syncManager.broadcastOperation(signedOp, rotatedKey.groupKeyBase64)
+        syncManager.transmitOutboxOperation(outboxOp)
+        for (kOp in keyOutboxList) {
+            syncManager.transmitOutboxOperation(kOp)
+        }
         syncManager.reconcileV2Group(groupId)
         Result.success(Unit)
     }
@@ -956,7 +1077,7 @@ class ExpenseRepository(
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withContext
 
-        val (expenseBlock, signedOp) = syncManager.withLedgerLock {
+        val (expenseBlock, expenseOutboxOp) = syncManager.withLedgerLock<Pair<Block, OutboxOperationEntity>?> {
             val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
             val prevBlock = latestBlockEntity.toDomainBlock()
 
@@ -1006,6 +1127,7 @@ class ExpenseRepository(
                 splitType = splitType,
                 expenseDateMillis = expenseDateMillis ?: System.currentTimeMillis()
             )
+            val (currentEpoch, activeKey) = getActiveEpochAndKey(groupId, groupEntity.groupKeyBase64)
             val op = OperationSigner.createAndSign(
                 protocolVersion = ProtocolVersion.V2_SIGNED_OPERATIONS,
                 groupId = groupId,
@@ -1013,29 +1135,20 @@ class ExpenseRepository(
                 privateKeyHex = privKeyHex,
                 parents = parents,
                 logicalClock = nextClock,
+                keyEpoch = currentEpoch,
                 payload = expPayload
             )
-            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
-
-            database.withTransaction {
+            val outboxOp = commitOperationDurableAtomic(op, activeKey) {
                 database.blockDao().insertBlock(
                     BlockEntity.fromDomainBlock(block, isVerified = true, isSynced = false)
                 )
-                database.signedOperationDao().insertOperationIgnore(
-                    OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
-                )
-                val deps = OperationEntityMapper.toDependencyEntities(op)
-                if (deps.isNotEmpty()) {
-                    database.signedOperationDao().insertDependenciesIgnore(deps)
-                }
-                database.outboxDao().insertOutboxOperation(outboxOp)
             }
 
-            Pair(block, op)
+            Pair(block, outboxOp)
         } ?: return@withContext
 
         syncManager.broadcastBlock(expenseBlock, groupEntity.groupKeyBase64)
-        syncManager.broadcastOperation(signedOp, groupEntity.groupKeyBase64)
+        syncManager.transmitOutboxOperation(expenseOutboxOp)
         syncManager.reconcileV2Group(groupId)
     }
 
@@ -1062,7 +1175,7 @@ class ExpenseRepository(
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withContext
 
-        val (voidBlock, newExpenseBlock, updateOp) = syncManager.withLedgerLock {
+        val (voidBlock, newExpenseBlock, updateOutboxOp) = syncManager.withLedgerLock<Triple<Block, Block, OutboxOperationEntity>?> {
             val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
             val prevBlock = latestBlockEntity.toDomainBlock()
 
@@ -1133,6 +1246,7 @@ class ExpenseRepository(
                 expectedRevisionId = expectedRevId,
                 replacement = replacement
             )
+            val (currentEpoch, activeKey) = getActiveEpochAndKey(groupId, groupEntity.groupKeyBase64)
             val op = OperationSigner.createAndSign(
                 protocolVersion = ProtocolVersion.V2_SIGNED_OPERATIONS,
                 groupId = groupId,
@@ -1140,11 +1254,10 @@ class ExpenseRepository(
                 privateKeyHex = privKeyHex,
                 parents = parents,
                 logicalClock = nextClock,
+                keyEpoch = currentEpoch,
                 payload = updatePayload
             )
-            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
-
-            database.withTransaction {
+            val outboxOp = commitOperationDurableAtomic(op, activeKey) {
                 // Insert both blocks atomically in a single batch so UI never sees an intermediate "cancelled" state
                 database.blockDao().insertBlocks(
                     listOf(
@@ -1152,23 +1265,14 @@ class ExpenseRepository(
                         BlockEntity.fromDomainBlock(expBlock, isVerified = true, isSynced = false)
                     )
                 )
-
-                database.signedOperationDao().insertOperationIgnore(
-                    OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
-                )
-                val deps = OperationEntityMapper.toDependencyEntities(op)
-                if (deps.isNotEmpty()) {
-                    database.signedOperationDao().insertDependenciesIgnore(deps)
-                }
-                database.outboxDao().insertOutboxOperation(outboxOp)
             }
 
-            Triple(vBlock, expBlock, op)
+            Triple(vBlock, expBlock, outboxOp)
         } ?: return@withContext
 
         syncManager.broadcastBlock(voidBlock, groupEntity.groupKeyBase64)
         syncManager.broadcastBlock(newExpenseBlock, groupEntity.groupKeyBase64)
-        syncManager.broadcastOperation(updateOp, groupEntity.groupKeyBase64)
+        syncManager.transmitOutboxOperation(updateOutboxOp)
         syncManager.reconcileV2Group(groupId)
     }
 
@@ -1185,7 +1289,7 @@ class ExpenseRepository(
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
 
-        val (voidBlock, voidOp) = syncManager.withLedgerLock {
+        val (voidBlock, voidOutboxOp) = syncManager.withLedgerLock<Pair<Block, OutboxOperationEntity>?> {
             val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
             val prevBlock = latestBlockEntity.toDomainBlock()
 
@@ -1206,6 +1310,7 @@ class ExpenseRepository(
 
             val parents = getDagHeads(groupId)
             val nextClock = getNextClock(groupId, parents)
+            val (currentEpoch, activeKey) = getActiveEpochAndKey(groupId, groupEntity.groupKeyBase64)
             val voidPayload = OperationPayload.ExpenseVoided(
                 expenseId = targetExpenseId,
                 expectedRevisionId = expectedRevId,
@@ -1218,29 +1323,20 @@ class ExpenseRepository(
                 privateKeyHex = privKeyHex,
                 parents = parents,
                 logicalClock = nextClock,
+                keyEpoch = currentEpoch,
                 payload = voidPayload
             )
-            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
-
-            database.withTransaction {
+            val outboxOp = commitOperationDurableAtomic(op, activeKey) {
                 database.blockDao().insertBlock(
                     BlockEntity.fromDomainBlock(block, isVerified = true, isSynced = false)
                 )
-                database.signedOperationDao().insertOperationIgnore(
-                    OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
-                )
-                val deps = OperationEntityMapper.toDependencyEntities(op)
-                if (deps.isNotEmpty()) {
-                    database.signedOperationDao().insertDependenciesIgnore(deps)
-                }
-                database.outboxDao().insertOutboxOperation(outboxOp)
             }
 
-            Pair(block, op)
+            Pair(block, outboxOp)
         } ?: return
 
         syncManager.broadcastBlock(voidBlock, groupEntity.groupKeyBase64)
-        syncManager.broadcastOperation(voidOp, groupEntity.groupKeyBase64)
+        syncManager.transmitOutboxOperation(voidOutboxOp)
         syncManager.reconcileV2Group(groupId)
     }
 
@@ -1258,7 +1354,7 @@ class ExpenseRepository(
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
         val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
 
-        val (settlementBlock, settlementOp) = syncManager.withLedgerLock {
+        val (settlementBlock, settlementOutboxOp) = syncManager.withLedgerLock<Pair<Block, OutboxOperationEntity>?> {
             val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
             val prevBlock = latestBlockEntity.toDomainBlock()
 
@@ -1277,6 +1373,7 @@ class ExpenseRepository(
             // V2 SettlementRecorded SignedOperation
             val parents = getDagHeads(groupId)
             val nextClock = getNextClock(groupId, parents)
+            val (currentEpoch, activeKey) = getActiveEpochAndKey(groupId, groupEntity.groupKeyBase64)
             val stlPayload = OperationPayload.SettlementRecorded(
                 settlementId = block.blockHash,
                 fromMember = payerPubkey,
@@ -1293,29 +1390,20 @@ class ExpenseRepository(
                 privateKeyHex = privKeyHex,
                 parents = parents,
                 logicalClock = nextClock,
+                keyEpoch = currentEpoch,
                 payload = stlPayload
             )
-            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
-
-            database.withTransaction {
+            val outboxOp = commitOperationDurableAtomic(op, activeKey) {
                 database.blockDao().insertBlock(
                     BlockEntity.fromDomainBlock(block, isVerified = true, isSynced = false)
                 )
-                database.signedOperationDao().insertOperationIgnore(
-                    OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
-                )
-                val deps = OperationEntityMapper.toDependencyEntities(op)
-                if (deps.isNotEmpty()) {
-                    database.signedOperationDao().insertDependenciesIgnore(deps)
-                }
-                database.outboxDao().insertOutboxOperation(outboxOp)
             }
 
-            Pair(block, op)
+            Pair(block, outboxOp)
         } ?: return
 
         syncManager.broadcastBlock(settlementBlock, groupEntity.groupKeyBase64)
-        syncManager.broadcastOperation(settlementOp, groupEntity.groupKeyBase64)
+        syncManager.transmitOutboxOperation(settlementOutboxOp)
         syncManager.reconcileV2Group(groupId)
     }
 
@@ -1793,6 +1881,7 @@ class ExpenseRepository(
                             claimedGhostPubkey = ghostMatch?.pubkey,
                             invitationGrant = grant
                         )
+                        val (currentEpoch, activeKey) = getActiveEpochAndKey(inviteData.groupId, inviteData.groupKeyBase64)
                         val op = OperationSigner.createAndSign(
                             protocolVersion = ProtocolVersion.CURRENT,
                             groupId = inviteData.groupId,
@@ -1801,16 +1890,10 @@ class ExpenseRepository(
                             parents = parents,
                             logicalClock = nextClock,
                             payload = memberPayload,
-                            keyEpoch = groupProtocol?.currentKeyEpoch ?: 0
+                            keyEpoch = currentEpoch
                         )
-                        database.signedOperationDao().insertOperationIgnore(
-                            OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
-                        )
-                        val deps = OperationEntityMapper.toDependencyEntities(op)
-                        if (deps.isNotEmpty()) {
-                            database.signedOperationDao().insertDependenciesIgnore(deps)
-                        }
-                        op
+                        val outboxOp = commitOperationDurableAtomic(op, activeKey)
+                        outboxOp
                     } else {
                         null
                     }
@@ -1829,7 +1912,7 @@ class ExpenseRepository(
             }
 
             if (joinV2Operation != null) {
-                syncManager.broadcastOperation(joinV2Operation, inviteData.groupKeyBase64)
+                syncManager.transmitOutboxOperation(joinV2Operation)
                 syncManager.reconcileV2Group(inviteData.groupId)
             }
 

@@ -325,6 +325,20 @@ class P2PSyncManager(
     }
 
     /**
+     * Transmits a pre-committed outbox operation directly to relays.
+     */
+    suspend fun transmitOutboxOperation(outboxOp: com.peersplit.app.data.local.entity.OutboxOperationEntity) {
+        try {
+            val event = json.decodeFromString(NostrEvent.serializer(), outboxOp.signedEventJson)
+            eventIdToOpId[event.id] = outboxOp.operationId
+            relayPool.broadcast(event)
+            Log.d(TAG, "Transmitted outbox V2 operation ${outboxOp.operationId.take(8)} for group ${outboxOp.groupId}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to transmit outbox V2 operation: ${e.message}", e)
+        }
+    }
+
+    /**
      * Subscribes to updates for a newly created or joined group and processes any early events.
      */
     fun monitorGroup(groupId: String) {
@@ -391,7 +405,7 @@ class P2PSyncManager(
      * Reconciles all stored V2 operations for a group and materializes projections atomically.
      * Uses per-group synchronization to avoid race conditions between local writes and remote sync.
      */
-    suspend fun reconcileV2Group(groupId: String): Boolean {
+    suspend fun reconcileV2Group(groupId: String, forceRebuild: Boolean = false): Boolean {
         val lock = groupReconcileLocks.computeIfAbsent(groupId) { Mutex() }
         return lock.withLock {
             try {
@@ -416,7 +430,8 @@ class P2PSyncManager(
 
                 val applied = com.peersplit.app.reconciliation.ReconciliationProjector.persistReconciliationResult(
                     database = database,
-                    result = result
+                    result = result,
+                    forceRebuild = forceRebuild
                 )
                 Log.d(TAG, "Reconciled V2 group $groupId: applied=$applied, ${result.acceptedOperations.size} accepted ops, digest=${result.stateDigest.take(8)}")
                 applied
@@ -517,12 +532,58 @@ class P2PSyncManager(
                 }
                 return
             }
+            val isKeyEvent = event.tags.any { it.size >= 2 && it[0] == "t" && it[1] == "peersplit_key" }
+            if (isKeyEvent) {
+                val recipient = event.tags.firstOrNull { it.size >= 2 && it[0] == "p" }?.get(1)?.lowercase()
+                val identity = KeyManager.getOrCreateIdentity(context)
+                val myPubkey = identity.publicKeyHex.lowercase()
+                if (recipient != null && recipient == myPubkey) {
+                    val epoch = event.tags.firstOrNull { it.size >= 2 && it[0] == "epoch" }?.get(1)?.toIntOrNull() ?: 1
+                    try {
+                        val myPrivHex = KeyManager.getPrivateKeyHex(context)
+                        val keyBase64 = com.peersplit.app.crypto.KeyExchangeUtil.decryptFromPeer(
+                            ciphertext = event.content,
+                            myPrivHex = myPrivHex,
+                            theirPubHex = event.pubkey
+                        )
+                        com.peersplit.app.crypto.KeyRotationManager.storeEpochKey(
+                            database = database,
+                            groupId = groupId,
+                            epoch = epoch,
+                            keyBase64 = keyBase64,
+                            authorizedMembers = emptyList()
+                        )
+                        Log.i(TAG, "Successfully received and stored rotated key for group $groupId epoch $epoch")
+
+                        val buffered = synchronized(earlyEvents) {
+                            earlyEvents.remove(groupId) ?: emptyList()
+                        }
+                        for (ev in buffered) {
+                            handleIncomingEvent(ev)
+                        }
+                        reconcileV2Group(groupId)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to decrypt and store epoch key for group $groupId epoch $epoch: ${e.message}", e)
+                    }
+                }
+                return
+            }
+
             val epochTag = event.tags.firstOrNull { it.size >= 2 && it[0] == "epoch" }?.get(1)?.toIntOrNull() ?: 0
             val epochKeyEntity = database.groupKeyDao().getKeySync(groupId, epochTag)
             val effectiveKeyBase64 = epochKeyEntity?.groupKeyBase64 ?: if (epochTag == 0) groupEntity.groupKeyBase64 else null
 
             if (effectiveKeyBase64 == null) {
-                Log.w(TAG, "Quarantined event ${event.id.take(8)}: Key for epoch $epochTag in group $groupId is not available on this device")
+                Log.w(TAG, "Quarantined event ${event.id.take(8)}: Key for epoch $epochTag in group $groupId is not available on this device; buffering")
+                synchronized(earlyEvents) {
+                    val list = earlyEvents.getOrPut(groupId) { mutableListOf() }
+                    if (list.none { it.id == event.id }) {
+                        if (list.size >= MAX_EARLY_EVENTS_PER_GROUP) {
+                            list.removeAt(0)
+                        }
+                        list.add(event)
+                    }
+                }
                 return
             }
             val groupKey = EncryptionUtil.keyFromBase64(effectiveKeyBase64)

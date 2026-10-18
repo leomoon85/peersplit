@@ -95,6 +95,7 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
 
         // Step 6: Deterministic topological ordering over causally ready operations
         val topologicallyOrdered = OperationOrdering.sortTopologically(causalResult.causallyReady)
+        val maxLedgerTimestamp = topologicallyOrdered.map { it.createdAtMillis }.maxOrNull() ?: 0L
 
         // Pre-pass for Removal-Precedence Policy:
         val activeMembers = LinkedHashMap<String, ProtocolMemberInfo>()
@@ -214,6 +215,7 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                         }
                     }
                     is OperationPayload.MemberAdded -> {
+                        val hasDescendants = causalResult.childrenOf[op.operationId]?.isNotEmpty() == true
                         val authOutcome = OperationAuthorization.evaluate(
                             operation = op,
                             trustedGenesis = normalizedGenesis,
@@ -224,7 +226,9 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                             ancestorsOf = causalResult.ancestorsOf,
                             consumedInvitationNonces = pass1ConsumedNonces,
                             ghostAliases = pass1GhostAliases,
-                            parentTimestampProvider = { opsById[it]?.createdAtMillis }
+                            parentTimestampProvider = { opsById[it]?.createdAtMillis },
+                            hasDescendants = hasDescendants,
+                            maxLedgerTimestamp = maxLedgerTimestamp
                         )
                         if (authOutcome.isAuthorized) {
                             pass1AcceptedOpIds.add(op.operationId)
@@ -447,6 +451,7 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
             }
 
             // 7c. Evaluate membership authorization (including concurrent removal precedence)
+            val hasDescendants = causalResult.childrenOf[op.operationId]?.isNotEmpty() == true
             val authOutcome = OperationAuthorization.evaluate(
                 operation = op,
                 trustedGenesis = normalizedGenesis,
@@ -457,7 +462,9 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                 ancestorsOf = causalResult.ancestorsOf,
                 consumedInvitationNonces = consumedInvitationNonces,
                 ghostAliases = ghostAliases,
-                parentTimestampProvider = { opsById[it]?.createdAtMillis }
+                parentTimestampProvider = { opsById[it]?.createdAtMillis },
+                hasDescendants = hasDescendants,
+                maxLedgerTimestamp = maxLedgerTimestamp
             )
             if (!authOutcome.isAuthorized) {
                 rejected.add(
