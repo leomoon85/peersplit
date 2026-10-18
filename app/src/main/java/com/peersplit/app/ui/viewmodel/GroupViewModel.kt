@@ -12,17 +12,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 
 class GroupViewModel(private val groupId: String) : ViewModel() {
 
     private val repository = PeerSplitApp.instance.repository
     private val syncManager = PeerSplitApp.instance.syncManager
 
-    val groupDetail: StateFlow<GroupDetail?> = repository.getGroupDetail(groupId).stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = repository.getCachedGroupDetail(groupId)
-    )
+    private val refresh = MutableStateFlow(0)
+    val detailState = observeGroupDetails(repository, groupId, viewModelScope, refresh)
+    fun reload() { refresh.value++ }
 
     private val _inviteCode = MutableStateFlow<String?>(null)
     val inviteCode: StateFlow<String?> = _inviteCode.asStateFlow()
@@ -37,148 +38,149 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
     }
 
     fun manualSync(onDone: () -> Unit = {}) {
+        if (_isSyncing.value) return
+        _isSyncing.value = true
         viewModelScope.launch {
-            _isSyncing.value = true
             try {
                 syncManager.syncGroupNow(groupId, broadcastChain = true)
-            } catch (e: Exception) {
-                // Keep UI informed on completion
-            } finally {
-                _isSyncing.value = false
-                onDone()
-            }
+                onDone() // Scheduling only; the UI labels this as a request.
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { _actionError.value = e.message ?: "Could not request synchronization" }
+            finally { _isSyncing.value = false }
         }
     }
 
-    fun generateInvite() {
+    private val _actionError = MutableStateFlow<String?>(null)
+    val actionError = _actionError.asStateFlow()
+    private val _actionMessage = MutableStateFlow<String?>(null)
+    val actionMessage = _actionMessage.asStateFlow()
+    private var retryAction: (() -> Unit)? = null
+    fun retryLastAction() { retryAction?.invoke() }
+    fun clearActionMessage() { _actionMessage.value = null }
+    private fun action(message: String? = null, onSuccess: () -> Unit = {}, work: suspend () -> Unit) {
+        _actionError.value = null
         viewModelScope.launch {
-            val code = repository.generateInviteCode(groupId)
-            _inviteCode.value = code
-        }
-    }
-
-    fun dismissInviteDialog() {
-        _inviteCode.value = null
-    }
-
-    fun addOfflineMember(displayName: String, upiId: String?, phone: String? = null) {
-        viewModelScope.launch {
-            repository.addOfflineMember(groupId, displayName, upiId, phone)
-        }
-    }
-
-    fun voidExpense(targetExpenseId: String, targetDescription: String, reason: String = "Voided by member") {
-        viewModelScope.launch {
-            repository.voidExpense(groupId, targetExpenseId, targetDescription, reason)
-        }
-    }
-
-    fun updateBudget(budget: Double) {
-        viewModelScope.launch {
-            repository.updateGroupBudget(groupId, budget)
-        }
-    }
-
-    fun updateMemberUpiId(pubkey: String, upiId: String) {
-        viewModelScope.launch {
-            repository.updateMemberUpiId(groupId, pubkey, upiId)
-        }
-    }
-
-    fun updateMemberContact(pubkey: String, phone: String?, upiId: String?) {
-        viewModelScope.launch {
-            repository.updateMemberContact(groupId, pubkey, phone, upiId)
-        }
-    }
-
-    fun archiveGroup(isArchived: Boolean = true, onDone: () -> Unit = {}) {
-        viewModelScope.launch {
-            repository.archiveGroup(groupId, isArchived)
-            onDone()
-        }
-    }
-
-    fun deleteGroup(onDone: () -> Unit = {}) {
-        viewModelScope.launch {
-            repository.deleteGroup(groupId)
-            onDone()
-        }
-    }
-
-    fun importExpenses(
-        expenses: List<com.peersplit.app.util.ParsedImportExpense>,
-        onProgress: (Int, Int) -> Unit = { _, _ -> },
-        onComplete: (imported: Int, failed: Int) -> Unit = { _, _ -> }
-    ) {
-        viewModelScope.launch {
-            var importedCount = 0
-            var failedCount = 0
             try {
-                val detail = repository.getGroupDetail(groupId).first() ?: return@launch
-                val members = detail.members.toMutableList()
-
-                // Helper to get or create member pubkey
-                suspend fun getOrCreateMemberPubkey(payerName: String): String {
-                    val clean = payerName.trim()
-                    val existing = members.firstOrNull { it.displayName.equals(clean, ignoreCase = true) }
-                    if (existing != null) return existing.pubkey
-
-                    // Auto-create offline member
-                    repository.addOfflineMember(groupId, clean)
-                    val updatedDetail = repository.getGroupDetail(groupId).first()
-                    if (updatedDetail != null) {
-                        members.clear()
-                        members.addAll(updatedDetail.members)
-                        val created = members.firstOrNull { it.displayName.equals(clean, ignoreCase = true) }
-                        if (created != null) return created.pubkey
-                    }
-                    return detail.group.creatorPubkey
-                }
-
-                for ((index, exp) in expenses.withIndex()) {
-                    try {
-                        val payerPubkey = getOrCreateMemberPubkey(exp.payerName)
-                        val splitShare = exp.amount / members.size.coerceAtLeast(1)
-                        val splits = members.map { SplitItem(it.pubkey, splitShare) }
-
-                        repository.addExpense(
-                            groupId = groupId,
-                            description = exp.description,
-                            amount = exp.amount,
-                            currency = detail.group.currency,
-                            payerPubkey = payerPubkey,
-                            splits = splits,
-                            category = exp.category,
-                            splitType = "EQUAL",
-                            note = if (exp.dateString.isNotBlank()) "Imported (${exp.dateString})" else "Imported",
-                            expenseDateMillis = if (exp.timestamp > 0) exp.timestamp else null
-                        )
-                        importedCount++
-                    } catch (e: Exception) {
-                        failedCount++
-                    }
-                    onProgress(index + 1, expenses.size)
-                }
-            } finally {
-                onComplete(importedCount, failedCount)
+                withContext(Dispatchers.IO) { work() }
+                _actionMessage.value = message
+                onSuccess()
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                retryAction = { action(message, onSuccess, work) }
+                _actionError.value = e.message ?: "Action failed. Please retry."
             }
         }
     }
+    fun generateInvite() = action { _inviteCode.value = repository.generateInviteCode(groupId) }
+    fun dismissInviteDialog() { _inviteCode.value = null }
+    fun addOfflineMember(displayName: String, upiId: String?, phone: String? = null) = action("Member saved locally") {
+        repository.addOfflineMember(groupId, displayName, upiId, phone)
+    }
+    fun voidExpense(targetExpenseId: String, targetDescription: String, reason: String = "Voided by member") = action("Expense removed locally") {
+        repository.voidExpense(groupId, targetExpenseId, targetDescription, reason)
+    }
+    fun updateBudget(budget: Double) = action("Budget saved") { repository.updateGroupBudget(groupId, budget) }
+    suspend fun saveMemberUpi(pubkey: String, upiId: String) = withContext(Dispatchers.IO) {
+        repository.updateMemberUpiId(groupId, pubkey, upiId)
+    }
+    fun updateMemberContact(pubkey: String, phone: String?, upiId: String?) = action("Contact saved") {
+        repository.updateMemberContact(groupId, pubkey, phone, upiId)
+    }
+    fun archiveGroup(isArchived: Boolean = true, onDone: () -> Unit = {}) {
+        action(onSuccess = onDone) { repository.archiveGroup(groupId, isArchived) }
+    }
+    fun deleteGroup(onDone: () -> Unit = {}) { action(onSuccess = onDone) { repository.deleteGroup(groupId) } }
+
+    private val _isRecording = MutableStateFlow(false)
+    val isRecording = _isRecording.asStateFlow()
+    private val _settlementSaved = MutableStateFlow(false)
+    val settlementSaved = _settlementSaved.asStateFlow()
+    fun consumeSettlementSaved() { _settlementSaved.value = false }
+    fun recordSettlement(payer: String, payee: String, amount: Double, currency: String) {
+        if (_isRecording.value) return
+        _isRecording.value = true
+        _actionError.value = null
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { repository.recordSettlement(groupId, payer, payee, amount, currency) }
+                _settlementSaved.value = true
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { _actionError.value = e.message ?: "Could not record payment" }
+            finally { _isRecording.value = false }
+        }
+    }
+
+    private val _importProgress = MutableStateFlow(com.peersplit.app.util.ImportProgress())
+    val importProgress = _importProgress.asStateFlow()
+    fun dismissImportResult() { if (!_importProgress.value.running) _importProgress.value = com.peersplit.app.util.ImportProgress() }
+    fun retryFailedImports() { _importProgress.value.outcome?.failures?.map { it.expense }?.let { importExpenses(it) } }
+    fun importExpenses(expenses: List<com.peersplit.app.util.ParsedImportExpense>) {
+        if (_importProgress.value.running) return
+        _importProgress.value = com.peersplit.app.util.ImportProgress(running = true, total = expenses.size)
+        viewModelScope.launch {
+            var imported = 0
+            var skipped = 0
+            val failed = mutableListOf<com.peersplit.app.util.ImportFailure>()
+            try {
+                withContext(Dispatchers.IO) {
+                    for ((index, expense) in expenses.withIndex()) {
+                        try {
+                            val detail = repository.getGroupDetail(groupId).first() ?: error("Group not found")
+                            val key = expense.importKey.ifBlank {
+                                com.peersplit.app.crypto.HashUtil.sha256Hex("${expense.description}|${expense.amount}|${expense.payerName}|${expense.dateString}")
+                            }
+                            val marker = "[PeerSplit import:$key]"
+                            if (detail.expenses.any { it.note.contains(marker) }) {
+                                skipped++
+                                continue
+                            }
+                            val clean = expense.payerName.trim()
+                            val matches = detail.members.filter { it.pubkey == clean || it.displayName.equals(clean, true) }
+                            require(matches.size <= 1) { "More than one member is named $clean. Rename members before importing." }
+                            val payer = matches.singleOrNull()?.pubkey ?: run {
+                                repository.addOfflineMember(groupId, clean)
+                                repository.getGroupDetail(groupId).first()?.members?.singleOrNull { it.displayName.equals(clean, true) }?.pubkey
+                                    ?: error("Could not create payer $clean")
+                            }
+                            val members = repository.getGroupDetail(groupId).first()?.members ?: error("Group not found")
+                            val allocated = com.peersplit.app.protocol.MoneyMath.allocateEqualSplits(
+                                com.peersplit.app.protocol.MoneyMath.toMinorUnits(expense.amount), members.map { it.pubkey })
+                            repository.addExpense(groupId, expense.description, expense.amount, detail.group.currency, payer,
+                                allocated.map { SplitItem(it.key, com.peersplit.app.protocol.MoneyMath.toMajorDouble(it.value)) },
+                                category = expense.category, splitType = "EQUAL",
+                                note = "Imported (${expense.dateString}) $marker", expenseDateMillis = expense.timestamp)
+                            imported++
+                        } catch (e: CancellationException) { throw e
+                        } catch (e: Exception) {
+                            failed += com.peersplit.app.util.ImportFailure(expense, e.message ?: "Import failed")
+                        } finally {
+                            _importProgress.value = _importProgress.value.copy(done = index + 1)
+                        }
+                    }
+                }
+            } finally {
+                _importProgress.value = _importProgress.value.copy(running = false,
+                    outcome = com.peersplit.app.util.ImportOutcome(imported, skipped, failed.toList()))
+            }
+        }
+    }
+
 }
 
 class AddExpenseViewModel(private val groupId: String) : ViewModel() {
 
     private val repository = PeerSplitApp.instance.repository
 
-    val groupDetail: StateFlow<GroupDetail?> = repository.getGroupDetail(groupId).stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = repository.getCachedGroupDetail(groupId)
-    )
+    private val refresh = MutableStateFlow(0)
+    val detailState = observeGroupDetails(repository, groupId, viewModelScope, refresh)
+    fun reload() { refresh.value++ }
 
     private val _isSubmitting = MutableStateFlow(false)
     val isSubmitting: StateFlow<Boolean> = _isSubmitting.asStateFlow()
 
+    private val _savedReceipt = MutableStateFlow<ExpenseSaveReceipt?>(null)
+    val savedReceipt = _savedReceipt.asStateFlow()
+    fun consumeSavedReceipt() { _savedReceipt.value = null }
     private val _submissionSuccess = MutableStateFlow(false)
     val submissionSuccess: StateFlow<Boolean> = _submissionSuccess.asStateFlow()
 
@@ -201,12 +203,17 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
         onComplete: () -> Unit = {},
         onError: (String) -> Unit = {}
     ) {
-        if (amount <= 0 || description.isBlank() || splits.isEmpty()) return
-
+        if (_isSubmitting.value) return
+        if (!amount.isFinite() || amount <= 0 || description.isBlank() || splits.isEmpty()) {
+            _submissionError.value = "Enter a valid amount, description and split"
+            return
+        }
+        _isSubmitting.value = true
         viewModelScope.launch {
             _isSubmitting.value = true
             _submissionError.value = null
             try {
+                withContext(Dispatchers.IO) {
                 if (!editingExpenseId.isNullOrBlank()) {
                     repository.editExpense(
                         groupId = groupId,
@@ -238,8 +245,13 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
                         expenseDateMillis = expenseDateMillis
                     )
                 }
+                }
+                val myKey = com.peersplit.app.crypto.KeyManager.getOrCreateIdentity(PeerSplitApp.instance).publicKeyHex
+                _savedReceipt.value = ExpenseSaveReceipt(!editingExpenseId.isNullOrBlank(),
+                    payerPubkey == myKey || payers.any { it.userPubkey == myKey && it.amount > 0 })
                 _submissionSuccess.value = true
                 onComplete()
+            } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
                 val errorMsg = e.message ?: "Failed to save expense"
                 _submissionError.value = errorMsg
@@ -250,3 +262,5 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
         }
     }
 }
+
+data class ExpenseSaveReceipt(val edited: Boolean, val userPaid: Boolean)

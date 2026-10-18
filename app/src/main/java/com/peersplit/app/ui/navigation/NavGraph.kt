@@ -105,52 +105,48 @@ fun NavGraph(
             )
         }
 
-        composable(Screen.CreateGroup.route) {
+        composable(Screen.CreateGroup.route) { entry ->
             val context = LocalContext.current
-            CreateGroupScreen(
-                onBackClick = { navController.popBackStack() },
-                onCreateGroup = { name, currency, isSecret, secretPin, isPersonalSolo, initialMembers, onError ->
-                    scope.launch {
-                        try {
-                            val groupId = repository.createGroup(
-                                name = name,
-                                currency = currency,
-                                isSecret = isSecret,
-                                secretPin = secretPin,
-                                isPersonalSolo = isPersonalSolo,
-                                initialMemberNames = initialMembers
-                            )
-                            com.peersplit.app.util.RewardsEngine.recordAction(context, xpEarned = 50)
-                            Toast.makeText(context, "🎉 Group created! +50 SplitPoints (XP)", Toast.LENGTH_SHORT).show()
-                            navController.popBackStack()
-                            navController.navigate(Screen.GroupDetail.createRoute(groupId))
-                        } catch (e: Exception) {
-                            Toast.makeText(context, e.message ?: "Failed to create group", Toast.LENGTH_LONG).show()
-                            onError()
-                        }
+            val entryViewModel: GroupEntryViewModel = viewModel()
+            val entryState by entryViewModel.state.collectAsState()
+            LaunchedEffect(entryState.groupId) {
+                entryState.groupId?.let { groupId ->
+                    if (navController.currentBackStackEntry?.id == entry.id) {
+                        entryViewModel.consumeResult()
+                        com.peersplit.app.util.RewardsEngine.recordAction(context, xpEarned = 50)
+                        Toast.makeText(context, "Group created locally", Toast.LENGTH_LONG).show()
+                        navController.popBackStack()
+                        navController.navigate(Screen.GroupDetail.createRoute(groupId))
                     }
+                }
+            }
+            CreateGroupScreen(
+                isCreating = entryState.busy, submissionError = entryState.error,
+                onBackClick = { navController.popBackStack() },
+                onCreateGroup = { name, currency, secret, pin, solo, members ->
+                    entryViewModel.create(name, currency, secret, pin, solo, members)
                 }
             )
         }
 
-        composable(Screen.JoinGroup.route) {
+        composable(Screen.JoinGroup.route) { entry ->
             val context = LocalContext.current
-            JoinGroupScreen(
-                onBackClick = { navController.popBackStack() },
-                onJoinGroup = { inviteUri, claimedGhostPubkey, onFailed ->
-                    scope.launch {
-                        val result = repository.joinGroup(inviteUri, claimedGhostPubkey)
-                        result.onSuccess { groupId ->
-                            com.peersplit.app.util.RewardsEngine.recordAction(context, xpEarned = 50)
-                            Toast.makeText(context, "🚀 Joined group! +50 SplitPoints (XP)", Toast.LENGTH_SHORT).show()
-                            navController.popBackStack()
-                            navController.navigate(Screen.GroupDetail.createRoute(groupId))
-                        }.onFailure {
-                            Toast.makeText(context, "Invalid or corrupted invite link", Toast.LENGTH_LONG).show()
-                            onFailed()
-                        }
+            val entryViewModel: GroupEntryViewModel = viewModel()
+            val entryState by entryViewModel.state.collectAsState()
+            LaunchedEffect(entryState.groupId) {
+                entryState.groupId?.let { groupId ->
+                    if (navController.currentBackStackEntry?.id == entry.id) {
+                        entryViewModel.consumeResult()
+                        Toast.makeText(context, "Invite saved. Group admission and synchronization may still be pending.", Toast.LENGTH_LONG).show()
+                        navController.popBackStack()
+                        navController.navigate(Screen.GroupDetail.createRoute(groupId))
                     }
                 }
+            }
+            JoinGroupScreen(
+                isJoining = entryState.busy, submissionError = entryState.error,
+                onBackClick = { navController.popBackStack() },
+                onJoinGroup = { invite, claim -> entryViewModel.join(invite, claim) }
             )
         }
 
@@ -160,12 +156,25 @@ fun NavGraph(
         ) { backStackEntry ->
             val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
             val groupViewModel = viewModel { GroupViewModel(groupId) }
-            val groupDetail by groupViewModel.groupDetail.collectAsState()
+            val detailState by groupViewModel.detailState.collectAsState()
+            val groupDetail = detailState.detail
             val inviteCode by groupViewModel.inviteCode.collectAsState()
 
+            val actionMessage by groupViewModel.actionMessage.collectAsState()
+            LaunchedEffect(actionMessage) {
+                actionMessage?.let {
+                    Toast.makeText(navController.context, it, Toast.LENGTH_LONG).show()
+                    groupViewModel.clearActionMessage()
+                }
+            }
             GroupDetailScreen(
                 groupDetail = groupDetail,
+                isLoading = detailState.isLoading,
+                loadError = detailState.error,
+                onRetryLoad = { groupViewModel.reload() },
                 inviteCode = inviteCode,
+                actionError = groupViewModel.actionError.collectAsState().value,
+                onRetryAction = { groupViewModel.retryLastAction() },
                 onBackClick = { navController.popBackStack() },
                 onAddExpenseClick = {
                     navController.navigate(Screen.AddExpense.createRoute(groupId))
@@ -211,9 +220,10 @@ fun NavGraph(
                 onManualSync = { onDone ->
                     groupViewModel.manualSync(onDone)
                 },
-                onImportExpenses = { expenses, onProgress, onComplete ->
-                    groupViewModel.importExpenses(expenses, onProgress, onComplete)
-                }
+                importProgress = groupViewModel.importProgress.collectAsState().value,
+                onDismissImportResult = { groupViewModel.dismissImportResult() },
+                onRetryImport = { groupViewModel.retryFailedImports() },
+                onImportExpenses = { expenses -> groupViewModel.importExpenses(expenses) }
             )
         }
 
@@ -228,12 +238,29 @@ fun NavGraph(
             val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
             val editingExpenseId = backStackEntry.arguments?.getString("expenseId")?.takeIf { it.isNotBlank() }
             val addExpenseViewModel = viewModel { AddExpenseViewModel(groupId) }
-            val groupDetail by addExpenseViewModel.groupDetail.collectAsState()
+            val detailState by addExpenseViewModel.detailState.collectAsState()
+            val groupDetail = detailState.detail
             val isSubmitting by addExpenseViewModel.isSubmitting.collectAsState()
 
+            val savedReceipt by addExpenseViewModel.savedReceipt.collectAsState()
+            LaunchedEffect(savedReceipt) {
+                savedReceipt?.let { receipt ->
+                    if (navController.currentBackStackEntry?.id == backStackEntry.id) {
+                        addExpenseViewModel.consumeSavedReceipt()
+                        if (!receipt.edited) com.peersplit.app.util.RewardsEngine.recordAction(
+                            context, xpEarned = if (receipt.userPaid) 45 else 25, isExpense = true, userPaidBill = receipt.userPaid)
+                        Toast.makeText(context, "Expense saved locally; sync queued", Toast.LENGTH_LONG).show()
+                        navController.popBackStack()
+                    }
+                }
+            }
             AddExpenseScreen(
                 groupDetail = groupDetail,
+                isLoading = detailState.isLoading,
+                loadError = detailState.error,
+                onRetryLoad = { addExpenseViewModel.reload() },
                 isSubmitting = isSubmitting,
+                submissionError = addExpenseViewModel.submissionError.collectAsState().value,
                 editingExpenseId = editingExpenseId,
                 onBackClick = { navController.popBackStack() },
                 onSubmitExpense = { desc, amount, currency, payer, splits, category, splitType, note, payers, expenseDateMillis, editId, origDesc ->
@@ -250,26 +277,7 @@ fun NavGraph(
                         expenseDateMillis = expenseDateMillis,
                         editingExpenseId = editId,
                         originalDescription = origDesc,
-                        onComplete = {
-                            val myPubkey = com.peersplit.app.crypto.KeyManager.getOrCreateIdentity(context).publicKeyHex
-                            val userPaid = payer == myPubkey || payers.any { it.userPubkey == myPubkey && it.amount > 0 }
-                            if (editId.isNullOrBlank()) {
-                                val xp = if (userPaid) 45 else 25
-                                com.peersplit.app.util.RewardsEngine.recordAction(
-                                    context = context,
-                                    xpEarned = xp,
-                                    isExpense = true,
-                                    userPaidBill = userPaid
-                                )
-                                Toast.makeText(context, "⚡ Expense logged! +$xp SplitPoints (XP)", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "✏️ Expense updated & synced!", Toast.LENGTH_SHORT).show()
-                            }
-                            navController.popBackStack()
-                        },
-                        onError = { error ->
-                            Toast.makeText(context, "Error saving expense: $error", Toast.LENGTH_LONG).show()
-                        }
+                        onError = { /* Persistent error is displayed by the form. */ }
                     )
                 }
             )
@@ -290,28 +298,32 @@ fun NavGraph(
             val initialPayee = backStackEntry.arguments?.getString("payee")?.takeIf { it.isNotBlank() }
             val initialAmount = backStackEntry.arguments?.getString("amount")?.takeIf { it.isNotBlank() }?.toDoubleOrNull()
             val groupViewModel = viewModel { GroupViewModel(groupId) }
-            val groupDetail by groupViewModel.groupDetail.collectAsState()
+            val detailState by groupViewModel.detailState.collectAsState()
+            val groupDetail = detailState.detail
 
+            val settlementSaved by groupViewModel.settlementSaved.collectAsState()
+            LaunchedEffect(settlementSaved) {
+                if (settlementSaved) {
+                    groupViewModel.consumeSettlementSaved()
+                    com.peersplit.app.util.RewardsEngine.recordAction(context, xpEarned = 100, isSettlement = true)
+                    Toast.makeText(context, "Payment recorded locally; sync queued", Toast.LENGTH_LONG).show()
+                    navController.popBackStack()
+                }
+            }
             SettleUpScreen(
                 groupDetail = groupDetail,
+                isLoading = detailState.isLoading,
+                loadError = detailState.error,
+                onRetryLoad = { groupViewModel.reload() },
                 initialPayer = initialPayer,
                 initialPayee = initialPayee,
                 initialAmount = initialAmount,
                 onBackClick = { navController.popBackStack() },
-                onUpdatePayeeUpi = { payeePubkey, upiId ->
-                    groupViewModel.updateMemberUpiId(payeePubkey, upiId)
-                },
+                isSubmitting = groupViewModel.isRecording.collectAsState().value,
+                submissionError = groupViewModel.actionError.collectAsState().value,
+                onUpdatePayeeUpi = { payeePubkey, upiId -> groupViewModel.saveMemberUpi(payeePubkey, upiId) },
                 onRecordSettlement = { payer, payee, amount, currency ->
-                    scope.launch {
-                        repository.recordSettlement(groupId, payer, payee, amount, currency)
-                        com.peersplit.app.util.RewardsEngine.recordAction(
-                            context = context,
-                            xpEarned = 100,
-                            isSettlement = true
-                        )
-                        Toast.makeText(context, "🏆 Debt settled! +100 SplitPoints (XP)", Toast.LENGTH_SHORT).show()
-                        navController.popBackStack()
-                    }
+                    groupViewModel.recordSettlement(payer, payee, amount, currency)
                 }
             )
         }

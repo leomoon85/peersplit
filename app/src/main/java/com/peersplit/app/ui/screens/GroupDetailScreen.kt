@@ -6,6 +6,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -68,7 +71,12 @@ import java.util.Locale
 @Composable
 fun GroupDetailScreen(
     groupDetail: GroupDetail?,
+    isLoading: Boolean = true,
+    loadError: String? = null,
+    onRetryLoad: () -> Unit = {},
     inviteCode: String?,
+    actionError: String? = null,
+    onRetryAction: () -> Unit = {},
     onBackClick: () -> Unit,
     onAddExpenseClick: () -> Unit,
     onEditExpenseClick: (expenseId: String) -> Unit = {},
@@ -84,25 +92,29 @@ fun GroupDetailScreen(
     onUpdateMemberContact: (pubkey: String, phone: String?, upiId: String?) -> Unit = { _, _, _ -> },
     isSyncing: Boolean = false,
     onManualSync: (onDone: () -> Unit) -> Unit = {},
-    onImportExpenses: (List<com.peersplit.app.util.ParsedImportExpense>, (Int, Int) -> Unit, (Int, Int) -> Unit) -> Unit = { _, _, _ -> }
+    importProgress: com.peersplit.app.util.ImportProgress = com.peersplit.app.util.ImportProgress(),
+    onDismissImportResult: () -> Unit = {},
+    onRetryImport: () -> Unit = {},
+    onImportExpenses: (List<com.peersplit.app.util.ParsedImportExpense>) -> Unit = {}
 ) {
     val context = LocalContext.current
     val pagerState = rememberPagerState(pageCount = { 3 })
     var showExportMenu by remember { mutableStateOf(false) }
 
     // Add Offline Member Dialog state
-    var showAddMemberDialog by remember { mutableStateOf(false) }
-    var newMemberName by remember { mutableStateOf("") }
-    var newMemberPhone by remember { mutableStateOf("") }
-    var newMemberUpi by remember { mutableStateOf("") }
+    var showAddMemberDialog by rememberSaveable { mutableStateOf(false) }
+    var newMemberName by rememberSaveable { mutableStateOf("") }
+    var newMemberPhone by rememberSaveable { mutableStateOf("") }
+    var newMemberUpi by rememberSaveable { mutableStateOf("") }
 
     // Edit Member Contact / UPI Dialog state
-    var memberForUpiEdit by remember { mutableStateOf<Member?>(null) }
-    var editPhoneInput by remember { mutableStateOf("") }
-    var editUpiInput by remember { mutableStateOf("") }
+    var memberForUpiEditKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val memberForUpiEdit = groupDetail?.members?.firstOrNull { it.pubkey == memberForUpiEditKey }
+    var editPhoneInput by rememberSaveable { mutableStateOf("") }
+    var editUpiInput by rememberSaveable { mutableStateOf("") }
 
     // Contact Picker Launcher (used by both Add Member and Edit Member dialogs)
-    var contactPickTarget by remember { mutableStateOf("ADD") } // "ADD" or "EDIT"
+    var contactPickTarget by rememberSaveable { mutableStateOf("ADD") } // "ADD" or "EDIT"
     val contactPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -121,7 +133,7 @@ fun GroupDetailScreen(
 
     // Budget Target Dialog state
     var showBudgetDialog by remember { mutableStateOf(false) }
-    var budgetInputText by remember { mutableStateOf("") }
+    var budgetInputText by rememberSaveable { mutableStateOf("") }
 
     // Expense Detail Bottom Sheet state
     var selectedExpenseForDetail by remember { mutableStateOf<ExpenseItem?>(null) }
@@ -132,7 +144,7 @@ fun GroupDetailScreen(
 
     // Import CSV / XLSX State & File Picker Launcher
     var showImportConfirmDialog by remember { mutableStateOf<com.peersplit.app.util.ImportAnalysisResult?>(null) }
-    var isImportingInProgress by remember { mutableStateOf(false) }
+    val isImportingInProgress = importProgress.running
     var importProgressText by remember { mutableStateOf("") }
     val coroutineScope = rememberCoroutineScope()
 
@@ -141,60 +153,14 @@ fun GroupDetailScreen(
     ) { uri ->
         if (uri != null && groupDetail != null) {
             coroutineScope.launch {
-                val analysis = com.peersplit.app.util.ImportUtil.analyzeFile(context, uri, groupDetail)
+                val analysis = withContext(Dispatchers.IO) { com.peersplit.app.util.ImportUtil.analyzeFile(context, uri, groupDetail) }
                 showImportConfirmDialog = analysis
             }
         }
     }
 
     if (groupDetail == null) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Group") },
-                    navigationIcon = {
-                        IconButton(onClick = onBackClick) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    }
-                )
-            }
-        ) { padding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.padding(24.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Info,
-                        contentDescription = "Group not found",
-                        modifier = Modifier.size(56.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "Group Not Found",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "This group may have been deleted or the link is invalid.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(onClick = onBackClick) {
-                        Text("Back to Home")
-                    }
-                }
-            }
-        }
+        GroupUnavailableScreen("Group", isLoading, loadError, onBackClick, onRetryLoad)
         return
     }
 
@@ -203,6 +169,14 @@ fun GroupDetailScreen(
     }
 
     Scaffold(
+        bottomBar = {
+            if (actionError != null) Surface(tonalElevation = 3.dp) {
+                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(actionError, Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = onRetryAction) { Text("Retry") }
+                }
+            }
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -217,7 +191,7 @@ fun GroupDetailScreen(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                if (groupDetail.isLedgerIntact) "Synced & Secured" else "Sync Conflict",
+                                if (groupDetail.isLedgerIntact) "Local ledger available" else "Ledger awaiting verification",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (groupDetail.isLedgerIntact) BalancePositive else BalanceNegative
                             )
@@ -239,7 +213,7 @@ fun GroupDetailScreen(
                         onClick = {
                             if (!isSyncing) {
                                 onManualSync {
-                                    Toast.makeText(context, "Group synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Sync requested", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         }
@@ -406,7 +380,7 @@ fun GroupDetailScreen(
                         onEditMemberUpi = { member ->
                             editPhoneInput = member.phone ?: ""
                             editUpiInput = member.upiId ?: ""
-                            memberForUpiEdit = member
+                            memberForUpiEditKey = member.pubkey
                         },
                         onSetBudgetClick = {
                             budgetInputText = if (groupDetail.group.monthlyBudget > 0) {
@@ -444,7 +418,7 @@ fun GroupDetailScreen(
     if (memberForUpiEdit != null) {
         val m = memberForUpiEdit!!
         AlertDialog(
-            onDismissRequest = { memberForUpiEdit = null },
+            onDismissRequest = { memberForUpiEditKey = null },
             title = {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -529,14 +503,14 @@ fun GroupDetailScreen(
                             KeyManager.updateUpiId(context, cleanUpi ?: "")
                         }
                         Toast.makeText(context, "Contact & UPI updated for ${m.displayName}!", Toast.LENGTH_SHORT).show()
-                        memberForUpiEdit = null
+                        memberForUpiEditKey = null
                     }
                 ) {
                     Text("Save")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { memberForUpiEdit = null }) {
+                TextButton(onClick = { memberForUpiEditKey = null }) {
                     Text("Cancel")
                 }
             }
@@ -767,7 +741,7 @@ fun GroupDetailScreen(
 
                 if (exp.note.isNotBlank()) {
                     Text(
-                        "Note: “${exp.note}”",
+                        "Note: “${com.peersplit.app.util.ImportNotes.display(exp.note)}”",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -873,13 +847,13 @@ fun GroupDetailScreen(
 
     // Invite Code Dialog
     if (inviteCode != null) {
-        val qrBitmap = remember(inviteCode) {
-            try {
-                QrCodeUtil.generateQrBitmap(inviteCode, 640, 640)
-            } catch (e: Exception) {
-                null
+        val inviteQrState = remember(inviteCode) { mutableStateOf<android.graphics.Bitmap?>(null) }
+        LaunchedEffect(inviteCode) {
+            inviteQrState.value = withContext(Dispatchers.Default) {
+                try { QrCodeUtil.generateQrBitmap(inviteCode) } catch (_: Exception) { null }
             }
         }
+        val qrBitmap = inviteQrState.value
 
         AlertDialog(
             onDismissRequest = onDismissInvite,
@@ -1014,7 +988,7 @@ fun GroupDetailScreen(
                 Button(
                     onClick = {
                         onVoidExpense(targetExp.id, targetExp.description)
-                        Toast.makeText(context, "Expense removed!", Toast.LENGTH_SHORT).show()
+
                         showVoidConfirmDialog = null
                         selectedExpenseForDetail = null
                     },
@@ -1027,6 +1001,33 @@ fun GroupDetailScreen(
                 TextButton(onClick = { showVoidConfirmDialog = null }) {
                     Text("Cancel")
                 }
+            }
+        )
+    }
+
+    if (importProgress.running || importProgress.outcome != null) {
+        AlertDialog(
+            onDismissRequest = { if (!importProgress.running) onDismissImportResult() },
+            title = { Text(if (importProgress.running) "Importing expenses" else "Import results") },
+            text = {
+                Column {
+                    if (importProgress.running) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text("Processed ${importProgress.done} of ${importProgress.total}")
+                    } else importProgress.outcome?.let { result ->
+                        Text("${result.imported} imported, ${result.skipped} already imported, ${result.failures.size} failed")
+                        LazyColumn(Modifier.heightIn(max = 240.dp)) {
+                            items(result.failures) { failure -> Text("${failure.expense.description}: ${failure.reason}", Modifier.padding(vertical = 4.dp)) }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (!importProgress.running) TextButton(onClick = onDismissImportResult) { Text("Done") }
+            },
+            dismissButton = {
+                if (!importProgress.running && importProgress.outcome?.failures?.isNotEmpty() == true)
+                    TextButton(onClick = onRetryImport) { Text("Retry failed rows") }
             }
         )
     }
@@ -1080,7 +1081,7 @@ fun GroupDetailScreen(
                             )
                         }
                         Text(
-                            "Imported expenses will be signed, added to this group's ledger, and synced to all peers automatically.",
+                            "Imported expenses will be signed, added to this group's ledger, and queued for synchronization when connected.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1091,22 +1092,9 @@ fun GroupDetailScreen(
                 if (!isImportingInProgress && analysis.errorMessage == null && analysis.newExpenses.isNotEmpty()) {
                     Button(
                         onClick = {
-                            isImportingInProgress = true
-                            onImportExpenses(
-                                analysis.newExpenses,
-                                { done, total ->
-                                    importProgressText = "Imported $done of $total..."
-                                },
-                                { imported, failed ->
-                                    isImportingInProgress = false
-                                    showImportConfirmDialog = null
-                                    if (failed > 0) {
-                                        Toast.makeText(context, "Imported $imported expenses ($failed failed)", Toast.LENGTH_LONG).show()
-                                    } else {
-                                        Toast.makeText(context, "Successfully imported $imported expenses! ⚡", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            )
+                            val rows = analysis.newExpenses
+                            showImportConfirmDialog = null
+                            onImportExpenses(rows)
                         }
                     ) {
                         Text("Import ${analysis.newExpenses.size} Expenses")
@@ -1942,7 +1930,7 @@ fun ExpenseItemRow(
                     )
                     if (expense.note.isNotBlank()) {
                         Text(
-                            text = "“${expense.note}”",
+                            text = "“${com.peersplit.app.util.ImportNotes.display(expense.note)}”",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

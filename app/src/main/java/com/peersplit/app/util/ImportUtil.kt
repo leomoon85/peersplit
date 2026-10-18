@@ -23,6 +23,7 @@ data class ParsedImportExpense(
     val category: String,
     val payerName: String,
     val dateString: String = "",
+    val importKey: String = "",
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -38,7 +39,7 @@ data class ImportAnalysisResult(
 object ImportUtil {
     private const val TAG = "ImportUtil"
 
-    private val commonDateFormats = listOf(
+    private fun commonDateFormats() = listOf(
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()),
         SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()),
         SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()),
@@ -78,11 +79,12 @@ object ImportUtil {
 
     private fun parseCsv(inputStream: InputStream): List<List<String>> {
         val rows = mutableListOf<List<String>>()
-        BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
+        BufferedReader(InputStreamReader(BoundedInput(inputStream, 8L * 1024 * 1024), Charsets.UTF_8)).use { reader ->
             var line: String?
             while (reader.readLine().also { line = it } != null) {
                 val currentLine = line ?: continue
                 if (currentLine.isBlank()) continue
+                require(rows.size < 10000 && currentLine.length <= 65536) { "Import is too large (maximum 10,000 rows)" }
                 rows.add(parseCsvLine(currentLine))
             }
         }
@@ -134,27 +136,35 @@ object ImportUtil {
         val sheetRows = mutableListOf<List<String>>()
 
         // Step 1: Read shared strings and worksheet from XLSX ZIP package
-        val bytes = inputStream.readBytes()
+        val bytes = inputStream.use { BoundedInput(it, 8L * 1024 * 1024).readBytes() }
 
         // Pass 1: Extract shared strings if present
         ZipInputStream(bytes.inputStream()).use { zip ->
+            val bounded = BoundedInput(zip, 16L * 1024 * 1024)
+            val discard = ByteArray(8192)
             var entry: ZipEntry?
             while (zip.nextEntry.also { entry = it } != null) {
                 if (entry!!.name.equals("xl/sharedStrings.xml", ignoreCase = true)) {
-                    sharedStrings.addAll(extractSharedStrings(zip))
+                    sharedStrings.addAll(extractSharedStrings(bounded))
                     break
                 }
+                // Drain skipped entries through the same limit before nextEntry can inflate them.
+                while (bounded.read(discard) != -1) { }
             }
         }
 
         // Pass 2: Extract first sheet data
         ZipInputStream(bytes.inputStream()).use { zip ->
+            val bounded = BoundedInput(zip, 16L * 1024 * 1024)
+            val discard = ByteArray(8192)
             var entry: ZipEntry?
             while (zip.nextEntry.also { entry = it } != null) {
                 if (entry!!.name.matches(Regex("xl/worksheets/sheet\\d+\\.xml", RegexOption.IGNORE_CASE))) {
-                    sheetRows.addAll(extractSheetRows(zip, sharedStrings))
+                    sheetRows.addAll(extractSheetRows(bounded, sharedStrings))
                     break
                 }
+                // Drain skipped entries through the same limit before nextEntry can inflate them.
+                while (bounded.read(discard) != -1) { }
             }
         }
 
@@ -186,6 +196,7 @@ object ImportUtil {
                 }
                 XmlPullParser.END_TAG -> {
                     if (parser.name.equals("t", ignoreCase = true)) {
+                        require(strings.size < 100000 && currentText.length <= 65536) { "Spreadsheet text is too large" }
                         strings.add(currentText.toString())
                         inText = false
                     }
@@ -240,10 +251,12 @@ object ImportUtil {
                             } else {
                                 raw
                             }
+                            require(currentRow.size < 256 && value.length <= 65536) { "Spreadsheet row is too large" }
                             currentRow.add(value)
                         }
                         "row" -> {
                             if (currentRow.any { it.isNotBlank() }) {
+                                require(rows.size < 10000) { "Import exceeds 10,000 rows" }
                                 rows.add(currentRow)
                             }
                         }
@@ -291,6 +304,7 @@ object ImportUtil {
         val newExpenses = mutableListOf<ParsedImportExpense>()
         var skippedDuplicates = 0
         val detectedPayers = mutableSetOf<String>()
+        val occurrences = mutableMapOf<String, Int>()
 
         for (r in dataStartIndex until rows.size) {
             val row = rows[r]
@@ -305,10 +319,12 @@ object ImportUtil {
             }
 
             val desc = if (descIdx < row.size) row[descIdx].trim() else ""
-            val rawAmount = if (amountIdx < row.size) row[amountIdx].replace("[^0-9.]".toRegex(), "").trim() else ""
-            val amount = rawAmount.toDoubleOrNull() ?: 0.0
+            val rawAmount = if (amountIdx < row.size) row[amountIdx].trim()
+                .removePrefix(groupDetail.group.currency).replace(Regex("[₹$€£¥\\s]"), "") else ""
+            val normalizedAmount = if (rawAmount.contains('.')) rawAmount.replace(",", "") else rawAmount
+            val amount = (AmountInputValidator.validate(normalizedAmount) as? AmountValidationResult.Valid)?.majorAmount ?: 0.0
 
-            if (desc.isBlank() || amount <= 0.0) continue
+            if (desc.isBlank() || !amount.isFinite() || amount <= 0.0 || amount > 1_000_000_000.0) continue
 
             val rawPayer = if (payerIdx != -1 && payerIdx < row.size) row[payerIdx].trim() else ""
             val resolvedPayer = if (rawPayer.isNotBlank()) rawPayer else groupDetail.group.creatorPubkey
@@ -320,7 +336,7 @@ object ImportUtil {
             val dateStr = if (dateIdx != -1 && dateIdx < row.size) row[dateIdx].trim() else ""
             var parsedTimestamp = System.currentTimeMillis()
             if (dateStr.isNotBlank()) {
-                for (fmt in commonDateFormats) {
+                for (fmt in commonDateFormats()) {
                     try {
                         val parsed = fmt.parse(dateStr)
                         if (parsed != null) {
@@ -332,10 +348,13 @@ object ImportUtil {
                 }
             }
 
-            // Check if duplicate of an existing active expense in group (matching description + amount within 0.01)
-            val isDuplicate = existingExpenses.any {
-                it.description.equals(desc, ignoreCase = true) && kotlin.math.abs(it.totalAmount - amount) < 0.01
-            }
+            val fingerprint = com.peersplit.app.crypto.HashUtil.sha256Hex(
+                "$desc|${com.peersplit.app.protocol.MoneyMath.toMinorUnits(amount)}|$resolvedPayer|$dateStr|$category"
+            )
+            val occurrence = occurrences[fingerprint] ?: 0
+            occurrences[fingerprint] = occurrence + 1
+            val importKey = "$fingerprint:$occurrence"
+            val isDuplicate = existingExpenses.any { it.note.contains("[PeerSplit import:$importKey]") }
 
             if (isDuplicate) {
                 skippedDuplicates++
@@ -347,7 +366,8 @@ object ImportUtil {
                         category = category,
                         payerName = resolvedPayer,
                         dateString = dateStr,
-                        timestamp = parsedTimestamp
+                        timestamp = parsedTimestamp,
+                        importKey = importKey
                     )
                 )
             }

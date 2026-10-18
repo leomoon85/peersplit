@@ -28,8 +28,8 @@ val BlockchainAccent = Color(0xFF6366F1)
 
 val BalancePositive: Color
     @androidx.compose.runtime.Composable
-    get() = if (androidx.compose.foundation.isSystemInDarkTheme()) BalancePositiveDark else BalancePositiveLight
+    get() = if (LocalPeerSplitDarkTheme.current) BalancePositiveDark else BalancePositiveLight
 
 val BalanceNegative: Color
     @androidx.compose.runtime.Composable
-    get() = if (androidx.compose.foundation.isSystemInDarkTheme()) BalanceNegativeDark else BalanceNegativeLight
+    get() = if (LocalPeerSplitDarkTheme.current) BalanceNegativeDark else BalanceNegativeLight

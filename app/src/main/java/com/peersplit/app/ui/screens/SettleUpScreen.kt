@@ -4,6 +4,13 @@ import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import com.peersplit.app.util.UpiAddress
+import com.peersplit.app.util.AmountInputValidator
+import com.peersplit.app.util.AmountValidationResult
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -42,17 +49,20 @@ import com.peersplit.app.util.UpiUtil
 @Composable
 fun SettleUpScreen(
     groupDetail: GroupDetail?,
+    isLoading: Boolean = true,
+    loadError: String? = null,
+    onRetryLoad: () -> Unit = {},
     initialPayer: String? = null,
     initialPayee: String? = null,
     initialAmount: Double? = null,
     onBackClick: () -> Unit,
-    onUpdatePayeeUpi: (payeePubkey: String, upiId: String) -> Unit = { _, _ -> },
+    isSubmitting: Boolean = false,
+    submissionError: String? = null,
+    onUpdatePayeeUpi: suspend (payeePubkey: String, upiId: String) -> Unit = { _, _ -> },
     onRecordSettlement: (payerPubkey: String, payeePubkey: String, amount: Double, currency: String) -> Unit
 ) {
     if (groupDetail == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
-        }
+        GroupUnavailableScreen("Record Settlement", isLoading, loadError, onBackClick, onRetryLoad)
         return
     }
 
@@ -81,12 +91,13 @@ fun SettleUpScreen(
             initialAmount?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: ""
         )
     }
-    var isSubmitting by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    var userEdited by rememberSaveable { mutableStateOf(false) }
     var hasInitializedRecommendation by rememberSaveable { mutableStateOf(false) }
 
     // Pre-populate recommended settlement once on load if not passed via navigation
     LaunchedEffect(groupDetail.settlements) {
-        if (!hasInitializedRecommendation && initialPayer == null && initialPayee == null && groupDetail.settlements.isNotEmpty()) {
+        if (!userEdited && !hasInitializedRecommendation && initialPayer == null && initialPayee == null && groupDetail.settlements.isNotEmpty()) {
             val rec = groupDetail.settlements.first()
             selectedPayer = rec.fromPubkey
             selectedPayee = rec.toPubkey
@@ -95,12 +106,13 @@ fun SettleUpScreen(
         }
     }
 
-    val amount = amountText.replace(',', '.').toDoubleOrNull() ?: 0.0
+    val validation = AmountInputValidator.validate(amountText)
+    val amount = (validation as? AmountValidationResult.Valid)?.majorAmount ?: 0.0
     val payeeMember = members.find { it.pubkey == selectedPayee }
 
     // Resolve payee UPI ID with fallbacks (member upiId or local profile upiId if payee is current user)
-    var payeeUpiId by remember(selectedPayee, payeeMember?.upiId) {
-        val resolvedUpi = payeeMember?.upiId?.takeIf { it.isNotBlank() }
+    var payeeUpiId by rememberSaveable(selectedPayee) {
+        val resolvedUpi = payeeMember?.upiId
             ?: if (payeeMember?.isCurrentUser == true) KeyManager.getUpiId(context) else ""
         mutableStateOf(resolvedUpi ?: "")
     }
@@ -108,7 +120,28 @@ fun SettleUpScreen(
     var showQrDialog by remember { mutableStateOf(false) }
     var showEnterUpiDialog by remember { mutableStateOf(false) }
     var pendingActionAfterUpi by remember { mutableStateOf<String?>(null) } // "QR" or "PAY"
-    var dialogUpiInput by remember { mutableStateOf("") }
+    var dialogUpiInput by rememberSaveable { mutableStateOf("") }
+    var savedUpi by rememberSaveable(selectedPayee) { mutableStateOf(payeeUpiId) }
+    var isSavingUpi by remember { mutableStateOf(false) }
+    var upiError by remember { mutableStateOf<String?>(null) }
+    val saveUpi: (String, String?) -> Unit = { value, nextAction ->
+        if (!isSavingUpi) scope.launch {
+            isSavingUpi = true
+            upiError = null
+            try {
+                val clean = UpiAddress.requireValidOrEmpty(value)
+                require(nextAction == null || clean.isNotBlank()) { "Enter a UPI ID before paying" }
+                onUpdatePayeeUpi(selectedPayee, clean)
+                savedUpi = clean
+                payeeUpiId = clean
+                showEnterUpiDialog = false
+                if (nextAction == "QR") showQrDialog = true
+                if (nextAction == "PAY") UpiUtil.launchUpiPayment(context, clean, payeeMember?.displayName ?: "Payee", amount)
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { upiError = e.message ?: "Could not save UPI ID. Retry." }
+            finally { isSavingUpi = false }
+        }
+    }
 
     val commonHandles = listOf("@okhdfcbank", "@okaxis", "@okicici", "@oksbi", "@paytm", "@ybl", "@upi")
 
@@ -127,7 +160,7 @@ fun SettleUpScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding).imePadding()
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -143,7 +176,7 @@ fun SettleUpScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { selectedPayer = member.pubkey },
+                        .selectable(selected = selectedPayer == member.pubkey, role = Role.RadioButton, enabled = !isSubmitting && !isSavingUpi, onClick = { selectedPayer = member.pubkey; userEdited = true }),
                     shape = RoundedCornerShape(10.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = if (selectedPayer == member.pubkey) {
@@ -183,7 +216,7 @@ fun SettleUpScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { selectedPayee = member.pubkey },
+                        .selectable(selected = selectedPayee == member.pubkey, role = Role.RadioButton, enabled = !isSubmitting && !isSavingUpi, onClick = { selectedPayee = member.pubkey; userEdited = true }),
                     shape = RoundedCornerShape(10.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = if (selectedPayee == member.pubkey) {
@@ -230,7 +263,10 @@ fun SettleUpScreen(
                 Spacer(modifier = Modifier.height(4.dp))
                 OutlinedTextField(
                     value = amountText,
-                    onValueChange = { amountText = it },
+                    onValueChange = { amountText = it; userEdited = true },
+                    enabled = !isSubmitting && !isSavingUpi,
+                    isError = validation is AmountValidationResult.Invalid,
+                    supportingText = { (validation as? AmountValidationResult.Invalid)?.let { Text(it.error) } },
                     label = { Text("Settlement Amount ($currency)") },
                     prefix = { Text(CurrencyUtil.getSymbol(currency) + " ") },
                     placeholder = { Text("0.00") },
@@ -242,7 +278,7 @@ fun SettleUpScreen(
             }
 
             // UPI Deep Link & QR Payment Options (Enabled only for INR currency when payee has a UPI ID or Phone)
-            if (currency.equals("INR", ignoreCase = true) && (payeeUpiId.isNotBlank() || !payeeMember?.phone.isNullOrBlank())) {
+            if (currency.equals("INR", ignoreCase = true)) {
                 val payeeName = payeeMember?.displayName ?: "Payee"
                 val payeePhone = payeeMember?.phone?.takeIf { it.isNotBlank() }
 
@@ -304,11 +340,10 @@ fun SettleUpScreen(
 
                             OutlinedTextField(
                                 value = payeeUpiId,
+                                enabled = !isSavingUpi,
                                 onValueChange = {
                                     payeeUpiId = it
-                                    if (it.isNotBlank()) {
-                                        onUpdatePayeeUpi(selectedPayee, it.trim())
-                                    }
+                                    upiError = null
                                 },
                                 label = { Text("Payee UPI ID ($payeeName)") },
                                 placeholder = { Text("e.g. mobile@upi, name@okhdfcbank") },
@@ -321,13 +356,21 @@ fun SettleUpScreen(
                                             fontSize = 12.sp
                                         )
                                     } else {
-                                        Text("Saved for $payeeName", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+                                        Text(if (payeeUpiId.trim() == savedUpi) "Saved for $payeeName" else "Unsaved changes", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(10.dp),
                                 singleLine = true
                             )
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { saveUpi(payeeUpiId, null) }, enabled = !isSavingUpi && payeeUpiId.trim() != savedUpi) {
+                                    Text(if (isSavingUpi) "Saving…" else "Save UPI ID")
+                                }
+                                TextButton(onClick = { saveUpi("", null) }, enabled = !isSavingUpi && savedUpi.isNotBlank()) { Text("Clear") }
+                            }
+                            if (upiError != null) Text(upiError!!, color = MaterialTheme.colorScheme.error)
 
                             // Quick Handle Suffix Chips if user is entering a new UPI ID
                             if (payeeUpiId.isBlank() || !payeeUpiId.contains("@")) {
@@ -342,9 +385,7 @@ fun SettleUpScreen(
                                             onClick = {
                                                 val full = if (base.isNotBlank()) "$base$handle" else handle
                                                 payeeUpiId = full
-                                                if (full.contains("@") && full.length > 3) {
-                                                    onUpdatePayeeUpi(selectedPayee, full)
-                                                }
+
                                             },
                                             label = { Text(chipLabel, style = MaterialTheme.typography.labelSmall) }
                                         )
@@ -365,11 +406,11 @@ fun SettleUpScreen(
                                             pendingActionAfterUpi = "PAY"
                                             showEnterUpiDialog = true
                                         } else {
-                                            UpiUtil.launchUpiPayment(context, payeeUpiId, payeeName, amount)
+                                            saveUpi(payeeUpiId, "PAY")
                                         }
                                     },
                                     modifier = Modifier.weight(1f),
-                                    enabled = amount > 0,
+                                    enabled = validation.isValid && !isSavingUpi && !isSubmitting,
                                     shape = RoundedCornerShape(10.dp)
                                 ) {
                                     Icon(Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -384,11 +425,11 @@ fun SettleUpScreen(
                                             pendingActionAfterUpi = "QR"
                                             showEnterUpiDialog = true
                                         } else {
-                                            showQrDialog = true
+                                            saveUpi(payeeUpiId, "QR")
                                         }
                                     },
                                     modifier = Modifier.weight(1f),
-                                    enabled = amount > 0,
+                                    enabled = validation.isValid && !isSavingUpi && !isSubmitting,
                                     shape = RoundedCornerShape(10.dp)
                                 ) {
                                     Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -421,28 +462,25 @@ fun SettleUpScreen(
                         )
                     },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
-                    enabled = amount > 0 && selectedPayer != selectedPayee,
+                    enabled = validation.isValid && members.any { it.pubkey == selectedPayer } && members.any { it.pubkey == selectedPayee } && selectedPayer != selectedPayee,
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text("📲 Send Payment Reminder (WhatsApp / SMS)")
                 }
             }
 
+            if (submissionError != null) item { Text(submissionError, color = MaterialTheme.colorScheme.error) }
             // Mint Settlement Block
             item {
                 Spacer(modifier = Modifier.height(4.dp))
                 Button(
                     onClick = {
-                        isSubmitting = true
-                        if (payeeUpiId.isNotBlank()) {
-                            onUpdatePayeeUpi(selectedPayee, payeeUpiId.trim())
-                        }
                         onRecordSettlement(selectedPayer, selectedPayee, amount, currency)
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(52.dp),
-                    enabled = amount > 0 && selectedPayer != selectedPayee && !isSubmitting,
+                        .heightIn(min = 52.dp),
+                    enabled = validation.isValid && members.any { it.pubkey == selectedPayer } && members.any { it.pubkey == selectedPayee } && selectedPayer != selectedPayee && !isSubmitting,
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Icon(Icons.Default.Handshake, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -459,7 +497,7 @@ fun SettleUpScreen(
         val payeeName = payeeMember?.displayName ?: "Payee"
 
         AlertDialog(
-            onDismissRequest = { showEnterUpiDialog = false },
+            onDismissRequest = { if (!isSavingUpi) showEnterUpiDialog = false },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Payment, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
@@ -469,6 +507,7 @@ fun SettleUpScreen(
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (upiError != null) Text(upiError!!, color = MaterialTheme.colorScheme.error)
                     Text(
                         "$payeeName needs a UPI ID (Virtual Payment Address) to generate a QR code or pay via Google Pay, PhonePe, or Paytm:",
                         style = MaterialTheme.typography.bodyMedium,
@@ -477,6 +516,7 @@ fun SettleUpScreen(
 
                     OutlinedTextField(
                         value = dialogUpiInput,
+                        enabled = !isSavingUpi,
                         onValueChange = { dialogUpiInput = it },
                         label = { Text("Payee UPI ID") },
                         placeholder = { Text("e.g. 9876543210@upi or name@okhdfcbank") },
@@ -506,40 +546,22 @@ fun SettleUpScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val clean = dialogUpiInput.trim()
-                        if (clean.isBlank()) {
-                            Toast.makeText(context, "Please enter a valid UPI ID", Toast.LENGTH_SHORT).show()
-                            return@Button
-                        }
-                        if (!clean.contains("@") || clean.startsWith("@") || clean.endsWith("@")) {
-                            Toast.makeText(context, "Please enter a valid UPI format (e.g. name@bank)", Toast.LENGTH_SHORT).show()
-                            return@Button
-                        }
-                        payeeUpiId = clean
-                        onUpdatePayeeUpi(selectedPayee, clean)
-                        showEnterUpiDialog = false
-                        if (pendingActionAfterUpi == "QR") {
-                            showQrDialog = true
-                        } else if (pendingActionAfterUpi == "PAY") {
-                            UpiUtil.launchUpiPayment(context, clean, payeeName, amount)
-                        }
+                        saveUpi(dialogUpiInput, pendingActionAfterUpi)
                     },
-                    shape = RoundedCornerShape(10.dp)
+                    shape = RoundedCornerShape(10.dp),
+                    enabled = !isSavingUpi
                 ) {
-                    Text("Save & Open QR")
+                    Text(when (pendingActionAfterUpi) { "PAY" -> "Save & Pay"; "QR" -> "Save & Show QR"; else -> "Save UPI ID" })
                 }
             },
             dismissButton = {
                 Row {
                     TextButton(onClick = {
-                        dialogUpiInput = ""
-                        payeeUpiId = ""
-                        onUpdatePayeeUpi(selectedPayee, "")
-                        showEnterUpiDialog = false
+                        saveUpi("", null)
                     }) {
                         Text("Clear", color = MaterialTheme.colorScheme.error)
                     }
-                    TextButton(onClick = { showEnterUpiDialog = false }) {
+                    TextButton(enabled = !isSavingUpi, onClick = { showEnterUpiDialog = false }) {
                         Text("Cancel")
                     }
                 }
@@ -550,9 +572,13 @@ fun SettleUpScreen(
     // Dynamic UPI QR Code Dialog
     if (showQrDialog) {
         val payeeName = payeeMember?.displayName ?: "Friend"
-        val qrBitmap: Bitmap? = remember(payeeUpiId, amount) {
-            UpiUtil.generateUpiQrBitmap(payeeUpiId, payeeName, amount, "PeerSplit Settlement", 360)
+        val qrState = remember(payeeUpiId, amount) { mutableStateOf<Bitmap?>(null) }
+        LaunchedEffect(payeeUpiId, amount) {
+            qrState.value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                UpiUtil.generateUpiQrBitmap(payeeUpiId, payeeMember?.displayName ?: "Payee", amount)
+            }
         }
+        val qrBitmap = qrState.value
 
         AlertDialog(
             onDismissRequest = { showQrDialog = false },

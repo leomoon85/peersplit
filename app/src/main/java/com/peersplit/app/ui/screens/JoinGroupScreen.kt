@@ -38,8 +38,10 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun JoinGroupScreen(
+    isJoining: Boolean = false,
+    submissionError: String? = null,
     onBackClick: () -> Unit,
-    onJoinGroup: (inviteUri: String, claimedGhostPubkey: String?, onFailed: () -> Unit) -> Unit
+    onJoinGroup: (inviteUri: String, claimedGhostPubkey: String?) -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -47,24 +49,17 @@ fun JoinGroupScreen(
     val currentIdentity = remember { KeyManager.getOrCreateIdentity(context) }
 
     var inviteCode by rememberSaveable { mutableStateOf("") }
-    var isJoining by remember { mutableStateOf(false) }
 
-    val preview = remember(inviteCode) {
-        if (inviteCode.isNotBlank()) repository.parseInvitePreview(inviteCode) else null
-    }
-
-    // Default to matching ghost member by 10-digit phone number first, then by displayName, otherwise default to Join as New ("NONE")
-    var selectedGhostPubkey by remember(preview) {
-        val ghosts = preview?.unclaimedGhostMembers.orEmpty()
-        val normMyPhone = KeyManager.normalizePhone(currentIdentity.phone)
-        val byPhone = if (normMyPhone.length == 10) {
-            ghosts.firstOrNull { KeyManager.normalizePhone(it.phone) == normMyPhone }
-        } else null
-        val matching = byPhone ?: ghosts.firstOrNull {
-            it.displayName.trim().equals(currentIdentity.displayName.trim(), ignoreCase = true)
+    val previewState = remember(inviteCode) { mutableStateOf<com.peersplit.app.data.repository.GroupInvitePreview?>(null) }
+    LaunchedEffect(inviteCode) {
+        kotlinx.coroutines.delay(250)
+        previewState.value = withContext(Dispatchers.Default) {
+            if (inviteCode.isNotBlank()) repository.parseInvitePreview(inviteCode) else null
         }
-        mutableStateOf<String?>(matching?.pubkey ?: "NONE")
     }
+
+    val preview = previewState.value
+    var selectedGhostPubkey by rememberSaveable(inviteCode) { mutableStateOf<String?>("NONE") }
 
     // Prefill from a tapped peersplit:// link (also when this screen is already open)
     val pending by PendingInvite.code.collectAsState()
@@ -82,7 +77,7 @@ fun JoinGroupScreen(
         if (uri != null) {
             coroutineScope.launch(Dispatchers.IO) {
                 try {
-                    val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                    val bitmap = com.peersplit.app.util.ImageInput.decode(context, uri)
                     val decoded = bitmap?.let { QrCodeUtil.decodeQrBitmap(it) }
                     withContext(Dispatchers.Main) {
                         if (!decoded.isNullOrBlank()) {
@@ -116,7 +111,7 @@ fun JoinGroupScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding).imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -246,25 +241,25 @@ fun JoinGroupScreen(
                 }
             } else {
                 Text(
-                    "Ask a friend who is already in the group to share their invite link or QR code. Once joined, all existing members and expenses will appear immediately.",
+                    "Ask a friend who is already in the group to share their invite link or QR code. After admission, existing members and expenses become available as synchronization completes.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            if (submissionError != null) Text(submissionError, color = MaterialTheme.colorScheme.error)
+            Spacer(modifier = Modifier.height(16.dp))
 
             Button(
                 onClick = {
                     if (inviteCode.isNotBlank() && !isJoining) {
-                        isJoining = true
-                        onJoinGroup(inviteCode.trim(), selectedGhostPubkey) { isJoining = false }
+                        onJoinGroup(inviteCode.trim(), selectedGhostPubkey)
                     }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
-                enabled = inviteCode.isNotBlank() && !isJoining,
+                    .heightIn(min = 52.dp),
+                enabled = preview != null && !isJoining,
                 shape = RoundedCornerShape(12.dp)
             ) {
                 if (isJoining) {

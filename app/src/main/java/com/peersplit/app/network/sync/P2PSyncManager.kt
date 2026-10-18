@@ -32,8 +32,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicBoolean
 
 @Serializable
 internal data class PersistedPendingSyncState(
@@ -99,8 +97,7 @@ class P2PSyncManager(
     )
     private val pendingKeysByTransition = ConcurrentHashMap<String, MutableList<NostrEvent>>()
     private val pendingCiphertextByEpoch = ConcurrentHashMap<Pair<String, Int>, MutableList<NostrEvent>>()
-    private val incomingProcessingQueue = ConcurrentLinkedQueue<NostrEvent>()
-    private val isDrainingProcessingQueue = AtomicBoolean(false)
+    private val incomingQueue = SerialEventQueue<NostrEvent>(scope) { processSingleEvent(it) }
 
     private val eventIdToBlockHash = ConcurrentHashMap<String, String>()
     private val eventIdToOpId = ConcurrentHashMap<String, String>()
@@ -251,37 +248,9 @@ class P2PSyncManager(
         }
     }
 
-    fun enqueueEvent(event: NostrEvent) {
-        incomingProcessingQueue.add(event)
-        drainProcessingQueue()
-    }
+    fun enqueueEvent(event: NostrEvent) = incomingQueue.addAll(listOf(event))
 
-    fun enqueueEvents(events: Collection<NostrEvent>) {
-        if (events.isEmpty()) return
-        incomingProcessingQueue.addAll(events)
-        drainProcessingQueue()
-    }
-
-    private fun drainProcessingQueue() {
-        if (!isDrainingProcessingQueue.compareAndSet(false, true)) return
-        scope.launch {
-            try {
-                while (true) {
-                    val nextEvent = incomingProcessingQueue.poll() ?: break
-                    try {
-                        processSingleEvent(nextEvent)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error processing event ${nextEvent.id}: ${e.message}", e)
-                    }
-                }
-            } finally {
-                isDrainingProcessingQueue.set(false)
-                if (!incomingProcessingQueue.isEmpty() && isDrainingProcessingQueue.compareAndSet(false, true)) {
-                    drainProcessingQueue()
-                }
-            }
-        }
-    }
+    fun enqueueEvents(events: Collection<NostrEvent>) = incomingQueue.addAll(events)
 
     /**
      * Acquires the ledger synchronization lock so local block creation and incoming P2P sync

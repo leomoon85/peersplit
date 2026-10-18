@@ -34,10 +34,9 @@ object ReceiptScannerUtil {
      */
     suspend fun scanReceipt(context: Context, imageUri: Uri): ParsedReceipt? {
         val inputImage = try {
-            InputImage.fromFilePath(context, imageUri)
-        } catch (e: Exception) {
-            return null
-        }
+            InputImage.fromBitmap(ImageInput.decode(context, imageUri), 0)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: Exception) { return null }
         return processInputImage(inputImage)
     }
 

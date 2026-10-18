@@ -23,7 +23,7 @@ data class HomeUiState(
     val totalUserOwes: Double = 0.0,
     val primaryCurrency: String = "INR",
     val otherCurrencyBalances: Map<String, Double> = emptyMap(),
-    val isOnline: Boolean = true
+    val isOnline: Boolean = false
 )
 
 class HomeViewModel : ViewModel() {

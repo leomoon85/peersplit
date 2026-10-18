@@ -33,6 +33,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.ui.theme.BlockchainAccent
 import com.peersplit.app.util.CurrencyUtil
@@ -48,6 +50,8 @@ private data class GroupTemplate(
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun CreateGroupScreen(
+    isCreating: Boolean = false,
+    submissionError: String? = null,
     onBackClick: () -> Unit,
     onCreateGroup: (
         name: String,
@@ -55,8 +59,7 @@ fun CreateGroupScreen(
         isSecret: Boolean,
         secretPin: String?,
         isPersonalSolo: Boolean,
-        initialMembers: List<String>,
-        onError: () -> Unit
+        initialMembers: List<String>
     ) -> Unit
 ) {
     val context = LocalContext.current
@@ -64,14 +67,13 @@ fun CreateGroupScreen(
     val currencies = listOf("INR", "USD", "EUR", "GBP", "CAD", "AUD", "JPY")
     var selectedCurrency by rememberSaveable { mutableStateOf("INR") }
     var isSecret by rememberSaveable { mutableStateOf(false) }
-    var secretPin by rememberSaveable { mutableStateOf("") }
+    var secretPin by remember { mutableStateOf("") }
     var isPersonalSolo by rememberSaveable { mutableStateOf(false) }
-    var isCreating by remember { mutableStateOf(false) }
 
     // Friends added right during group creation (formatted as "Name" or "Name|Phone")
     var friendInput by rememberSaveable { mutableStateOf("") }
     var friendPhoneInput by rememberSaveable { mutableStateOf("") }
-    val addedFriends = remember { mutableStateListOf<String>() }
+    val addedFriends = rememberSaveable(saver = draftListSaver) { mutableStateListOf<String>() }
 
     val contactPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -142,7 +144,7 @@ fun CreateGroupScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding).imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -349,7 +351,7 @@ fun CreateGroupScreen(
                         Text("Personal / Solo Expense Tracker", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
                         Text("Track only your own spending without splitting with others", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Switch(checked = isPersonalSolo, onCheckedChange = { isPersonalSolo = it })
+                    Switch(modifier = Modifier.semantics { contentDescription = "Personal expense tracker" }, checked = isPersonalSolo, onCheckedChange = { isPersonalSolo = it })
                 }
             }
 
@@ -372,7 +374,7 @@ fun CreateGroupScreen(
                             }
                             Text("Hidden from the main list. Tap the lock icon on the home screen to open with PIN.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Switch(checked = isSecret, onCheckedChange = { isSecret = it })
+                        Switch(modifier = Modifier.semantics { contentDescription = "Private PIN-locked group" }, checked = isSecret, onCheckedChange = { isSecret = it })
                     }
 
                     if (isSecret) {
@@ -394,6 +396,7 @@ fun CreateGroupScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            if (submissionError != null) Text(submissionError, color = MaterialTheme.colorScheme.error)
             Button(
                 onClick = {
                     if (groupName.isNotBlank() && !isCreating) {
@@ -407,7 +410,6 @@ fun CreateGroupScreen(
                                 finalFriends.add(entry)
                             }
                         }
-                        isCreating = true
                         onCreateGroup(
                             groupName.trim(),
                             selectedCurrency,
@@ -415,14 +417,12 @@ fun CreateGroupScreen(
                             if (isSecret && secretPin.isNotBlank()) secretPin else null,
                             isPersonalSolo,
                             finalFriends
-                        ) {
-                            isCreating = false
-                        }
+                        )
                     }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
+                    .heightIn(min = 52.dp),
                 enabled = groupName.isNotBlank() && (!isSecret || secretPin.length >= 4) && !isCreating,
                 shape = RoundedCornerShape(12.dp)
             ) {

@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CheckCircle
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -163,7 +165,7 @@ fun HomeScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                "Private & Synced",
+                                if (uiState.isOnline) "Connected to relay" else "Offline — changes stay on this device",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -210,9 +212,9 @@ fun HomeScreen(
                                 coroutineScope.launch {
                                     try {
                                         com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow(broadcastChains = true)
-                                        Toast.makeText(context, "All groups synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Sync requested. Updates will be delivered when connected.", Toast.LENGTH_SHORT).show()
                                     } catch (e: Exception) {
-                                        Toast.makeText(context, "Sync completed with warnings", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Could not request sync. Try again.", Toast.LENGTH_SHORT).show()
                                     } finally {
                                         isManualSyncing = false
                                     }
@@ -474,9 +476,9 @@ fun HomeScreen(
                                 coroutineScope.launch {
                                     try {
                                         com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow()
-                                        Toast.makeText(context, "All groups synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Sync requested. Updates will be delivered when connected.", Toast.LENGTH_SHORT).show()
                                     } catch (e: Exception) {
-                                        Toast.makeText(context, "Sync completed with warnings", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Could not request sync. Try again.", Toast.LENGTH_SHORT).show()
                                     } finally {
                                         isManualSyncing = false
                                     }
@@ -927,12 +929,14 @@ fun GroupCard(
 
                 // Clean status indicator (simplified, non-technical)
                 val pending = group.pendingSyncCount
+                val failed = group.failedSyncCount
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .background(
                             color = when {
                                 isArchived -> MaterialTheme.colorScheme.surfaceVariant
+                                failed > 0 -> MaterialTheme.colorScheme.errorContainer
                                 pending > 0 -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
                                 else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
                             },
@@ -943,12 +947,14 @@ fun GroupCard(
                     Icon(
                         when {
                             isArchived -> Icons.Default.Archive
+                            failed > 0 -> Icons.Default.Warning
                             pending > 0 -> Icons.Default.Sync
                             else -> Icons.Default.CheckCircle
                         },
-                        contentDescription = if (pending > 0) "Pending sync" else "Synced",
+                        contentDescription = if (failed > 0) "Upload failed" else if (pending > 0) "Pending sync" else "No outgoing updates queued",
                         tint = when {
                             isArchived -> MaterialTheme.colorScheme.onSurfaceVariant
+                            failed > 0 -> MaterialTheme.colorScheme.error
                             pending > 0 -> MaterialTheme.colorScheme.tertiary
                             else -> MaterialTheme.colorScheme.primary
                         },
@@ -958,12 +964,14 @@ fun GroupCard(
                     Text(
                         text = when {
                             isArchived -> "Archived"
+                            failed > 0 -> "$failed failed uploads"
                             pending > 0 -> "$pending pending"
-                            else -> "Up to date"
+                            else -> "No pending uploads"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = when {
                             isArchived -> MaterialTheme.colorScheme.onSurfaceVariant
+                            failed > 0 -> MaterialTheme.colorScheme.error
                             pending > 0 -> MaterialTheme.colorScheme.tertiary
                             else -> MaterialTheme.colorScheme.primary
                         },

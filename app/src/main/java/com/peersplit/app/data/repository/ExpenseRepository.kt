@@ -312,7 +312,7 @@ class ExpenseRepository(
             database.blockDao().getAllBlocksFlow(),
             database.projectionDao().getAllBalanceProjectionsFlow(),
             database.projectionDao().getAllExpenseProjectionsFlow(),
-            database.outboxDao().getAllPendingOutboxFlow()
+            database.outboxDao().getAllOutstandingOutboxFlow()
         ) { array: Array<Any?> ->
             @Suppress("UNCHECKED_CAST")
             val groupEntities = array[0] as List<GroupEntity>
@@ -339,7 +339,9 @@ class ExpenseRepository(
                 val rawBlocks = blocksByGroup[entity.id].orEmpty()
                 val rawBalances = balancesByGroup[entity.id].orEmpty()
                 val rawExpenses = expensesByGroup[entity.id].orEmpty()
-                val pendingCount = outboxByGroup[entity.id]?.size ?: 0
+                val outstanding = outboxByGroup[entity.id].orEmpty()
+                val failedCount = outstanding.count { it.status == OutboxOperationEntity.STATUS_FAILED_PERMANENT }
+                val pendingCount = outstanding.size - failedCount
                 val detail = computeGroupDetail(
                     groupEntity = entity,
                     memberEntities = rawMembers,
@@ -348,7 +350,7 @@ class ExpenseRepository(
                     balProjections = rawBalances,
                     expProjections = rawExpenses
                 )
-                detail.group.copy(pendingSyncCount = pendingCount)
+                detail.group.copy(pendingSyncCount = pendingCount, failedSyncCount = failedCount)
             }
         }.flowOn(Dispatchers.Default)
     }
@@ -508,7 +510,7 @@ class ExpenseRepository(
                 MoneyMath.toMajorUnits(totalMinor, currencyByResolved[resolved])
             }
             suggestions = DebtSettlementEngine.simplifyDebts(netBalances)
-            isStructuralValid = operationEntities.isNotEmpty() && operationEntities.none { it.status == SignedOperationEntity.STATUS_REJECTED }
+            isStructuralValid = operationEntities.isNotEmpty() && operationEntities.all { it.status == SignedOperationEntity.STATUS_ACCEPTED }
 
             expenseItems = expProjections.mapNotNull { proj ->
                 try {
@@ -861,7 +863,7 @@ class ExpenseRepository(
 
         val cleanName = displayName.trim()
         val cleanPhone = KeyManager.normalizePhone(phone).takeIf { it.isNotBlank() }
-        val cleanUpi = upiId?.trim()?.takeIf { it.isNotBlank() }
+        val cleanUpi = upiId?.let { com.peersplit.app.util.UpiAddress.requireValidOrEmpty(it) }?.takeIf { it.isNotBlank() }
         // Generate deterministic 64-char hex pubkey identifier for offline member
         val ghostPubkey = HashUtil.sha256Hex("ghost:$groupId:${cleanName.lowercase()}")
 
@@ -1124,7 +1126,7 @@ class ExpenseRepository(
      * Updates the local UPI ID for a member in a group.
      */
     suspend fun updateMemberUpiId(groupId: String, pubkey: String, upiId: String) {
-        val cleanUpi = upiId.trim()
+        val cleanUpi = com.peersplit.app.util.UpiAddress.requireValidOrEmpty(upiId)
         database.memberDao().updateMemberUpiId(groupId, pubkey, cleanUpi)
     }
 
@@ -1133,7 +1135,7 @@ class ExpenseRepository(
      */
     suspend fun updateMemberContact(groupId: String, pubkey: String, phone: String?, upiId: String?) {
         val cleanPhone = KeyManager.normalizePhone(phone).takeIf { it.isNotBlank() }
-        val cleanUpi = upiId?.trim()?.takeIf { it.isNotBlank() }
+        val cleanUpi = upiId?.let { com.peersplit.app.util.UpiAddress.requireValidOrEmpty(it) }?.takeIf { it.isNotBlank() }
         database.memberDao().updateMemberContact(groupId, pubkey, cleanPhone, cleanUpi)
     }
 
@@ -1156,7 +1158,7 @@ class ExpenseRepository(
     ) = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
-        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withContext
+        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: error("Group or ledger is no longer available")
 
         val (expenseBlock, expenseOutboxOp) = syncManager.withLedgerLock<Pair<Block, OutboxOperationEntity>?> {
             val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
@@ -1226,11 +1228,14 @@ class ExpenseRepository(
             }
 
             Pair(block, outboxOp)
-        } ?: return@withContext
+        } ?: error("Group or ledger is no longer available")
 
         syncManager.broadcastBlock(expenseBlock, groupEntity.groupKeyBase64)
         syncManager.transmitOutboxOperation(expenseOutboxOp)
         syncManager.reconcileV2Group(groupId)
+        check(database.signedOperationDao().getOperationByIdSync(expenseOutboxOp.operationId)?.status == SignedOperationEntity.STATUS_ACCEPTED) {
+            "The ledger did not accept this change. Review current group membership and expense revisions before retrying."
+        }
     }
 
     /**
@@ -1254,7 +1259,7 @@ class ExpenseRepository(
     ) = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
-        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return@withContext
+        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: error("Group or ledger is no longer available")
 
         val (voidBlock, newExpenseBlock, updateOutboxOp) = syncManager.withLedgerLock<Triple<Block, Block, OutboxOperationEntity>?> {
             val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
@@ -1349,12 +1354,15 @@ class ExpenseRepository(
             }
 
             Triple(vBlock, expBlock, outboxOp)
-        } ?: return@withContext
+        } ?: error("Group or ledger is no longer available")
 
         syncManager.broadcastBlock(voidBlock, groupEntity.groupKeyBase64)
         syncManager.broadcastBlock(newExpenseBlock, groupEntity.groupKeyBase64)
         syncManager.transmitOutboxOperation(updateOutboxOp)
         syncManager.reconcileV2Group(groupId)
+        check(database.signedOperationDao().getOperationByIdSync(updateOutboxOp.operationId)?.status == SignedOperationEntity.STATUS_ACCEPTED) {
+            "The ledger did not accept this change. Review current group membership and expense revisions before retrying."
+        }
     }
 
     /**
@@ -1368,7 +1376,7 @@ class ExpenseRepository(
     ) {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
-        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
+        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: error("Group or ledger is no longer available")
 
         val (voidBlock, voidOutboxOp) = syncManager.withLedgerLock<Pair<Block, OutboxOperationEntity>?> {
             val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
@@ -1414,11 +1422,14 @@ class ExpenseRepository(
             }
 
             Pair(block, outboxOp)
-        } ?: return
+        } ?: error("Group or ledger is no longer available")
 
         syncManager.broadcastBlock(voidBlock, groupEntity.groupKeyBase64)
         syncManager.transmitOutboxOperation(voidOutboxOp)
         syncManager.reconcileV2Group(groupId)
+        check(database.signedOperationDao().getOperationByIdSync(voidOutboxOp.operationId)?.status == SignedOperationEntity.STATUS_ACCEPTED) {
+            "The ledger did not accept this change. Review current group membership and expense revisions before retrying."
+        }
     }
 
     /**
@@ -1433,7 +1444,7 @@ class ExpenseRepository(
     ) {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
-        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: return
+        val groupEntity = database.groupDao().getGroupByIdSync(groupId) ?: error("Group or ledger is no longer available")
 
         val (settlementBlock, settlementOutboxOp) = syncManager.withLedgerLock<Pair<Block, OutboxOperationEntity>?> {
             val latestBlockEntity = database.blockDao().getLatestBlockForGroup(groupId) ?: return@withLedgerLock null
@@ -1481,11 +1492,14 @@ class ExpenseRepository(
             }
 
             Pair(block, outboxOp)
-        } ?: return
+        } ?: error("Group or ledger is no longer available")
 
         syncManager.broadcastBlock(settlementBlock, groupEntity.groupKeyBase64)
         syncManager.transmitOutboxOperation(settlementOutboxOp)
         syncManager.reconcileV2Group(groupId)
+        check(database.signedOperationDao().getOperationByIdSync(settlementOutboxOp.operationId)?.status == SignedOperationEntity.STATUS_ACCEPTED) {
+            "The ledger did not accept this change. Review current group membership and expense revisions before retrying."
+        }
     }
 
     private fun encodeInviteUri(inviteData: GroupInviteData): String {
@@ -1500,9 +1514,10 @@ class ExpenseRepository(
         val cleanUri = Regex("peersplit://\\S+").find(inviteUri)?.value ?: inviteUri.trim()
         val base64Payload = cleanUri.removePrefix("peersplit://").trim()
         require(base64Payload.isNotBlank()) { "Empty invite code" }
+        require(base64Payload.length <= 512000) { "Invite is too large" }
         val rawBytes = Base64.decode(base64Payload, Base64.URL_SAFE or Base64.NO_WRAP)
         val jsonStr = if (rawBytes.size >= 2 && rawBytes[0] == 0x1f.toByte() && rawBytes[1] == 0x8b.toByte()) {
-            GZIPInputStream(ByteArrayInputStream(rawBytes)).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            com.peersplit.app.util.BoundedInput(GZIPInputStream(ByteArrayInputStream(rawBytes)), 2L * 1024 * 1024).bufferedReader(Charsets.UTF_8).use { it.readText() }
         } else {
             String(rawBytes, Charsets.UTF_8)
         }

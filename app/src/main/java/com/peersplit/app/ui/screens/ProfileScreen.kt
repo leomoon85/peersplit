@@ -41,6 +41,12 @@ import com.peersplit.app.ui.theme.ThemeManager
 import com.peersplit.app.ui.theme.ThemeMode
 import com.peersplit.app.util.NameUtil
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.peersplit.app.util.BoundedInput
+import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 
@@ -52,63 +58,68 @@ fun ProfileScreen(onBackClick: () -> Unit) {
     val database = PeerSplitApp.instance.database
     val identity = remember { KeyManager.getOrCreateIdentity(context) }
 
-    var displayName by remember { mutableStateOf(identity.displayName) }
-    var phone by remember { mutableStateOf(KeyManager.getPhone(context)) }
-    var upiId by remember { mutableStateOf(KeyManager.getUpiId(context)) }
+    var displayName by rememberSaveable { mutableStateOf(identity.displayName) }
+    var phone by rememberSaveable { mutableStateOf(KeyManager.getPhone(context)) }
+    var upiId by rememberSaveable { mutableStateOf(KeyManager.getUpiId(context)) }
     var showAdvancedInfo by remember { mutableStateOf(false) }
 
     // Backup state
-    var showExportPasswordDialog by remember { mutableStateOf(false) }
+    var showExportPasswordDialog by rememberSaveable { mutableStateOf(false) }
     var exportPassword by remember { mutableStateOf("") }
-    var pendingBackupBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingBackupPath by rememberSaveable { mutableStateOf<String?>(null) }
     var isExporting by remember { mutableStateOf(false) }
 
     // Restore state
-    var showRestorePasswordDialog by remember { mutableStateOf(false) }
+    var showRestorePasswordDialog by rememberSaveable { mutableStateOf(false) }
     var restorePassword by remember { mutableStateOf("") }
-    var pendingRestoreBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingRestorePath by rememberSaveable { mutableStateOf<String?>(null) }
     var isRestoring by remember { mutableStateOf(false) }
 
     // File saver launcher for .peersplit backup export
     val createDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri: Uri? ->
-        if (uri != null && pendingBackupBytes != null) {
+        val path = pendingBackupPath
+        if (path != null) {
             coroutineScope.launch {
                 try {
-                    context.contentResolver.openOutputStream(uri)?.use { output: OutputStream ->
-                        output.write(pendingBackupBytes!!)
-                        output.flush()
+                    if (uri != null) {
+                        withContext(Dispatchers.IO) {
+                            val output = context.contentResolver.openOutputStream(uri)
+                                ?: error("Unable to open destination file")
+                            output.use { out -> File(path).inputStream().use { it.copyTo(out) } }
+                        }
+                        Toast.makeText(context, "Encrypted backup saved", Toast.LENGTH_LONG).show()
                     }
-                    Toast.makeText(context, "Encrypted backup saved successfully!", Toast.LENGTH_LONG).show()
+                } catch (e: CancellationException) { throw e
                 } catch (e: Exception) {
-                    Toast.makeText(context, "Failed to write file: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "Backup write failed: ${e.message}", Toast.LENGTH_LONG).show()
                 } finally {
-                    pendingBackupBytes = null
+                    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { File(path).delete() }
+                    pendingBackupPath = null
                 }
             }
+        } else if (uri != null) {
+            Toast.makeText(context, "Backup preparation expired. Please export again.", Toast.LENGTH_LONG).show()
         }
     }
 
-    // File picker launcher for .peersplit restore
-    val openDocLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            coroutineScope.launch {
-                try {
-                    val bytes = context.contentResolver.openInputStream(uri)?.use { input: InputStream ->
-                        input.readBytes()
-                    }
-                    if (bytes != null && bytes.isNotEmpty()) {
-                        pendingRestoreBytes = bytes
-                        showRestorePasswordDialog = true
-                    } else {
-                        Toast.makeText(context, "Selected file is empty", Toast.LENGTH_SHORT).show()
-                    }
-                } catch (e: Exception) {
-                    Toast.makeText(context, "Failed to read backup: ${e.message}", Toast.LENGTH_LONG).show()
+    val openDocLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) coroutineScope.launch {
+            try {
+                pendingRestorePath = withContext(Dispatchers.IO) {
+                    val input = context.contentResolver.openInputStream(uri) ?: error("Unable to open backup")
+                    val temporary = File.createTempFile("peersplit-restore-", ".encrypted", context.cacheDir)
+                    try {
+                        input.use { source -> temporary.outputStream().use { BoundedInput(source, 32L * 1024 * 1024).copyTo(it) } }
+                        require(temporary.length() > 0) { "Selected file is empty" }
+                        temporary.absolutePath
+                    } catch (e: Exception) { temporary.delete(); throw e }
                 }
+                showRestorePasswordDialog = true
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                Toast.makeText(context, "Could not read backup: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -242,7 +253,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                     Button(
                         onClick = {
                             val clean = upiId.trim()
-                            if (clean.isNotBlank() && (!clean.contains("@") || clean.startsWith("@") || clean.endsWith("@"))) {
+                            if (clean.isNotBlank() && !com.peersplit.app.util.UpiAddress.isValid(clean)) {
                                 Toast.makeText(context, "Please enter a valid UPI format (e.g. name@bank)", Toast.LENGTH_SHORT).show()
                                 return@Button
                             }
@@ -450,10 +461,10 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                                             modifier = Modifier
                                                 .size(7.dp)
                                                 .clip(CircleShape)
-                                                .background(BalancePositive)
+                                                .background(MaterialTheme.colorScheme.onSurfaceVariant)
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Connected", style = MaterialTheme.typography.labelSmall, color = BalancePositive, fontSize = 10.sp)
+                                        Text("Configured", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
                                     }
                                 }
                             }
@@ -505,6 +516,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                     Spacer(modifier = Modifier.height(12.dp))
                     OutlinedTextField(
                         value = exportPassword,
+                        enabled = !isExporting,
                         onValueChange = { exportPassword = it },
                         label = { Text("Backup Password") },
                         visualTransformation = PasswordVisualTransformation(),
@@ -523,12 +535,17 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                             coroutineScope.launch {
                                 isExporting = true
                                 try {
-                                    val backupBytes = BackupManager.createEncryptedBackup(context, database, exportPassword)
-                                    pendingBackupBytes = backupBytes
+                                    val password = exportPassword
+                                    val backupBytes = BackupManager.createEncryptedBackup(context, database, password)
+                                    require(backupBytes.size <= 32 * 1024 * 1024) { "Backup exceeds the supported 32 MB limit" }
+                                    pendingBackupPath = withContext(Dispatchers.IO) {
+                                        File.createTempFile("peersplit-export-", ".encrypted", context.cacheDir).apply { writeBytes(backupBytes) }.absolutePath
+                                    }
                                     showExportPasswordDialog = false
                                     exportPassword = ""
                                     // Trigger document creation file picker
                                     createDocLauncher.launch("peersplit_backup_${System.currentTimeMillis()}.peersplit")
+                                } catch (e: CancellationException) { throw e
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "Backup failed: ${e.message}", Toast.LENGTH_LONG).show()
                                 } finally {
@@ -559,7 +576,8 @@ fun ProfileScreen(onBackClick: () -> Unit) {
             onDismissRequest = {
                 showRestorePasswordDialog = false
                 restorePassword = ""
-                pendingRestoreBytes = null
+                pendingRestorePath?.let { oldPath -> coroutineScope.launch(Dispatchers.IO) { File(oldPath).delete() } }
+                pendingRestorePath = null
             },
             title = { Text("Decrypt & Restore Vault") },
             text = {
@@ -568,6 +586,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                     Spacer(modifier = Modifier.height(12.dp))
                     OutlinedTextField(
                         value = restorePassword,
+                        enabled = !isRestoring,
                         onValueChange = { restorePassword = it },
                         label = { Text("Vault Password") },
                         visualTransformation = PasswordVisualTransformation(),
@@ -580,18 +599,23 @@ fun ProfileScreen(onBackClick: () -> Unit) {
             confirmButton = {
                 Button(
                     onClick = {
-                        val bytes = pendingRestoreBytes
-                        if (bytes != null) {
+                        val path = pendingRestorePath
+                        if (path != null) {
                             coroutineScope.launch {
                                 isRestoring = true
                                 try {
-                                    val success = BackupManager.restoreFromBackup(context, database, bytes, restorePassword)
+                                    val success = withContext(Dispatchers.IO) {
+                                        val bytes = File(path).inputStream().use { BoundedInput(it, 32L * 1024 * 1024).readBytes() }
+                                        BackupManager.restoreFromBackup(context, database, bytes, restorePassword)
+                                    }
                                     if (success) {
                                         showRestorePasswordDialog = false
                                         restorePassword = ""
-                                        pendingRestoreBytes = null
+                                        withContext(Dispatchers.IO) { File(path).delete() }
+                                        pendingRestorePath = null
                                         Toast.makeText(context, "Vault restored successfully! All groups and keys recovered.", Toast.LENGTH_LONG).show()
                                     }
+                                } catch (e: CancellationException) { throw e
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "Restore failed: ${e.message}", Toast.LENGTH_LONG).show()
                                 } finally {
@@ -609,7 +633,8 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                 TextButton(onClick = {
                     showRestorePasswordDialog = false
                     restorePassword = ""
-                    pendingRestoreBytes = null
+                    pendingRestorePath?.let { oldPath -> coroutineScope.launch(Dispatchers.IO) { File(oldPath).delete() } }
+                    pendingRestorePath = null
                 }) {
                     Text("Cancel")
                 }

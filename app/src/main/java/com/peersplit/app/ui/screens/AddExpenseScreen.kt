@@ -38,6 +38,11 @@ import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import com.peersplit.app.util.ExpenseAllocation
 import com.peersplit.app.util.AmountInputValidator
 import com.peersplit.app.util.AmountValidationResult
 import com.peersplit.app.util.CurrencyUtil
@@ -78,7 +83,11 @@ private val defaultRecurringPresets = listOf(
 @Composable
 fun AddExpenseScreen(
     groupDetail: GroupDetail?,
+    isLoading: Boolean = true,
+    loadError: String? = null,
+    onRetryLoad: () -> Unit = {},
     isSubmitting: Boolean,
+    submissionError: String? = null,
     editingExpenseId: String? = null,
     onBackClick: () -> Unit,
     onSubmitExpense: (
@@ -97,22 +106,7 @@ fun AddExpenseScreen(
     ) -> Unit
 ) {
     if (groupDetail == null) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text(if (editingExpenseId != null) "Edit Expense" else "Add Expense") },
-                    navigationIcon = {
-                        IconButton(onClick = onBackClick) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    }
-                )
-            }
-        ) { padding ->
-            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-        }
+        GroupUnavailableScreen("Expense", isLoading, loadError, onBackClick, onRetryLoad)
         return
     }
 
@@ -135,6 +129,7 @@ fun AddExpenseScreen(
     var splitMode by rememberSaveable { mutableStateOf(SplitMode.EQUAL) }
     var isOcrScanning by remember { mutableStateOf(false) }
     var hasUserModifiedSplits by rememberSaveable { mutableStateOf(false) }
+    var hasUserModifiedPayers by rememberSaveable { mutableStateOf(false) }
 
     // Expense Date (Today, Yesterday, or any past date via Calendar picker)
     var expenseDateMillis by rememberSaveable { mutableStateOf(System.currentTimeMillis()) }
@@ -179,13 +174,13 @@ fun AddExpenseScreen(
     var selectedPayerPubkey by rememberSaveable {
         mutableStateOf(members.firstOrNull { it.isCurrentUser }?.pubkey ?: members.firstOrNull()?.pubkey ?: "")
     }
-    val multiPayerAmounts = remember { mutableStateMapOf<String, String>() }
+    val multiPayerAmounts = rememberSaveable(saver = draftMapSaver<String>()) { mutableStateMapOf<String, String>() }
 
     // Split state holders
-    val equalSelected = remember { mutableStateMapOf<String, Boolean>() }
-    val exactAmounts = remember { mutableStateMapOf<String, String>() }
-    val percentageInputs = remember { mutableStateMapOf<String, String>() }
-    val sharesInputs = remember { mutableStateMapOf<String, String>() }
+    val equalSelected = rememberSaveable(saver = draftMapSaver<Boolean>()) { mutableStateMapOf<String, Boolean>() }
+    val exactAmounts = rememberSaveable(saver = draftMapSaver<String>()) { mutableStateMapOf<String, String>() }
+    val percentageInputs = rememberSaveable(saver = draftMapSaver<String>()) { mutableStateMapOf<String, String>() }
+    val sharesInputs = rememberSaveable(saver = draftMapSaver<String>()) { mutableStateMapOf<String, String>() }
     var hasInitializedFields by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(members, editingExpense) {
@@ -201,7 +196,7 @@ fun AddExpenseScreen(
             if (editingExpense != null) {
                 description = editingExpense.description
                 amountText = String.format(Locale.US, "%.2f", editingExpense.totalAmount)
-                note = editingExpense.note
+                note = com.peersplit.app.util.ImportNotes.display(editingExpense.note)
                 selectedCategory = ExpenseCategory.fromName(editingExpense.category)
                 expenseDateMillis = editingExpense.timestamp
 
@@ -240,16 +235,12 @@ fun AddExpenseScreen(
                         members.forEach { m ->
                             val amt = splitMap[m.pubkey] ?: 0.0
                             val pct = (amt / total) * 100.0
-                            percentageInputs[m.pubkey] = if (pct > 0) String.format(Locale.US, "%.1f", pct) else ""
+                            percentageInputs[m.pubkey] = if (pct > 0) String.format(Locale.US, "%.8f", pct).trimEnd('0').trimEnd('.') else ""
                         }
                     }
                     SplitMode.SHARES -> {
-                        val minNonZero = splitMap.values.filter { it > 0.0 }.minOrNull() ?: 1.0
-                        members.forEach { m ->
-                            val amt = splitMap[m.pubkey] ?: 0.0
-                            val sh = if (amt > 0) kotlin.math.round(amt / minNonZero).toInt().coerceAtLeast(1) else 0
-                            sharesInputs[m.pubkey] = sh.toString()
-                        }
+                        val weights = ExpenseAllocation.shareWeights(editingExpense.splits)
+                        members.forEach { m -> sharesInputs[m.pubkey] = weights[m.pubkey] ?: "0" }
                     }
                 }
             }
@@ -300,10 +291,12 @@ fun AddExpenseScreen(
 
     // Multiple Payers validation
     val (computedPayers, isValidPayer, payerStatusText) = remember(
-        totalAmount, isAmountValid, isMultiPayer, selectedPayerPubkey, multiPayerAmounts.toMap()
+        totalAmount, isAmountValid, isMultiPayer, selectedPayerPubkey, multiPayerAmounts.toMap(), editingExpense, hasUserModifiedPayers
     ) {
         if (!isAmountValid) {
             Triple(emptyList<SplitItem>(), false, amountFieldError ?: "Enter total bill amount first")
+        } else if (isMultiPayer && editingExpense != null && !hasUserModifiedPayers && editingExpense.payers.isNotEmpty()) {
+            Triple(ExpenseAllocation.rescale(MoneyMath.toMinorUnits(totalAmount), editingExpense.payers), true, "Original payer proportions")
         } else if (!isMultiPayer) {
             Triple(emptyList<SplitItem>(), selectedPayerPubkey.isNotBlank(), "Single payer")
         } else {
@@ -339,13 +332,20 @@ fun AddExpenseScreen(
 
     // Computed splits validation & generation
     val (computedSplits, isValidSplit, splitStatusText) = remember(
-        totalAmount, isAmountValid, splitMode, equalSelected.toMap(), exactAmounts.toMap(), percentageInputs.toMap(), sharesInputs.toMap()
+        totalAmount, isAmountValid, splitMode, equalSelected.toMap(), exactAmounts.toMap(), percentageInputs.toMap(), sharesInputs.toMap(), editingExpense, hasUserModifiedSplits
     ) {
         if (!isAmountValid) {
             return@remember Triple(emptyList<SplitItem>(), false, amountFieldError ?: "Enter an amount")
         }
 
         try {
+            if (editingExpense != null && !hasUserModifiedSplits && splitMode.name == editingExpense.splitType &&
+                (totalAmount == editingExpense.totalAmount || splitMode != SplitMode.EXACT)) {
+                return@remember Triple(
+                    ExpenseAllocation.rescale(MoneyMath.toMinorUnits(totalAmount), editingExpense.splits),
+                    true, "Original split proportions"
+                )
+            }
             when (splitMode) {
                 SplitMode.EQUAL -> {
                     val active = equalSelected.filter { it.value }.keys.toList()
@@ -459,7 +459,7 @@ fun AddExpenseScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding).imePadding()
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -544,7 +544,6 @@ fun AddExpenseScreen(
                     value = amountText,
                     onValueChange = {
                         amountText = it
-                        hasUserModifiedSplits = true
                     },
                     label = { Text("Total Amount ($currency)") },
                     prefix = { Text("$sym ") },
@@ -633,10 +632,11 @@ fun AddExpenseScreen(
                             Text("Multiple Payers", style = MaterialTheme.typography.bodySmall)
                             Spacer(modifier = Modifier.width(6.dp))
                             Switch(
+                                modifier = Modifier.semantics { contentDescription = "Multiple payers" },
                                 checked = isMultiPayer,
                                 onCheckedChange = {
                                     isMultiPayer = it
-                                    hasUserModifiedSplits = true
+                                    hasUserModifiedPayers = true
                                 }
                             )
                         }
@@ -657,10 +657,10 @@ fun AddExpenseScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
+                            .selectable(selected = selectedPayerPubkey == member.pubkey, role = Role.RadioButton, enabled = !isSubmitting, onClick = {
                                 selectedPayerPubkey = member.pubkey
-                                hasUserModifiedSplits = true
-                            },
+                                hasUserModifiedPayers = true
+                            }),
                         shape = RoundedCornerShape(10.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = if (selectedPayerPubkey == member.pubkey) {
@@ -703,7 +703,7 @@ fun AddExpenseScreen(
                             value = multiPayerAmounts[member.pubkey] ?: "",
                             onValueChange = {
                                 multiPayerAmounts[member.pubkey] = it
-                                hasUserModifiedSplits = true
+                                hasUserModifiedPayers = true
                             },
                             placeholder = { Text("0.00") },
                             prefix = { Text("$sym ") },
@@ -920,6 +920,9 @@ fun AddExpenseScreen(
                 )
             }
 
+            if (submissionError != null) {
+                item { Text(submissionError, color = MaterialTheme.colorScheme.error) }
+            }
             // Submit Button
             item {
                 Spacer(modifier = Modifier.height(12.dp))
@@ -928,20 +931,8 @@ fun AddExpenseScreen(
                 } else {
                     selectedPayerPubkey
                 }
-                val finalSplits = if (isEditMode && editingExpense != null && !hasUserModifiedSplits &&
-                    totalAmount == editingExpense.totalAmount && splitMode.name == editingExpense.splitType
-                ) {
-                    editingExpense.splits
-                } else {
-                    computedSplits
-                }
-                val finalPayers = if (isEditMode && editingExpense != null && !hasUserModifiedSplits &&
-                    totalAmount == editingExpense.totalAmount && isMultiPayer == (editingExpense.payers.size > 1)
-                ) {
-                    editingExpense.payers
-                } else {
-                    computedPayers
-                }
+                val finalSplits = computedSplits
+                val finalPayers = computedPayers
                 Button(
                     onClick = {
                         onSubmitExpense(
@@ -952,7 +943,7 @@ fun AddExpenseScreen(
                             finalSplits,
                             selectedCategory.name,
                             splitMode.name,
-                            note.trim(),
+                            com.peersplit.app.util.ImportNotes.retainReceipt(note, editingExpense?.note.orEmpty()),
                             finalPayers,
                             expenseDateMillis,
                             editingExpense?.id,
@@ -961,7 +952,7 @@ fun AddExpenseScreen(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(52.dp),
+                        .heightIn(min = 52.dp),
                     enabled = description.isNotBlank() && isAmountValid && isValidPayer && isValidSplit && !isSubmitting,
                     shape = RoundedCornerShape(12.dp)
                 ) {

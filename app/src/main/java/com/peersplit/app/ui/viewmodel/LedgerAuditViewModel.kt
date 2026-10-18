@@ -12,6 +12,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import androidx.room.withTransaction
 
 data class BlockAuditItem(
     val block: Block,
@@ -22,8 +25,10 @@ data class BlockAuditItem(
 
 data class LedgerAuditState(
     val blocks: List<BlockAuditItem> = emptyList(),
-    val isChainValid: Boolean = true,
+    val isChainValid: Boolean = false,
     val validationMessage: String = "All cryptographic blocks are verified and intact.",
+    val isPending: Boolean = false,
+    val statusTitle: String = "Awaiting verification",
     val isLoading: Boolean = true
 )
 
@@ -40,14 +45,25 @@ class LedgerAuditViewModel(private val groupId: String) : ViewModel() {
     }
 
     fun loadAndAuditLedger() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
             _state.value = _state.value.copy(isLoading = true)
 
-            val groupProtocol = database.groupProtocolDao().getGroupProtocolSync(groupId)
-            val opEntities = database.signedOperationDao().getOperationsForGroupSync(groupId)
+            val inputs = database.withTransaction {
+                AuditInputs(
+                    database.groupProtocolDao().getGroupProtocolSync(groupId),
+                    database.groupDao().getGroupByIdSync(groupId),
+                    database.signedOperationDao().getOperationsForGroupSync(groupId),
+                    database.projectionDao().getExpenseProjectionsForGroupSync(groupId),
+                    database.projectionDao().getBalanceProjectionsForGroupSync(groupId),
+                    database.blockDao().getBlocksForGroupSync(groupId)
+                )
+            }
+            val groupProtocol = inputs.protocol
+            val opEntities = inputs.operations
 
             if (groupProtocol != null || opEntities.isNotEmpty()) {
-                val groupEntity = database.groupDao().getGroupByIdSync(groupId)
+                val groupEntity = inputs.group
                 val domainOps = opEntities.map { com.peersplit.app.protocol.OperationEntityMapper.toDomain(it) }
                 val trustedGenesis = com.peersplit.app.reconciliation.TrustedGenesis(
                     groupId = groupId,
@@ -98,11 +114,16 @@ class LedgerAuditViewModel(private val groupId: String) : ViewModel() {
 
                 val allAccepted = domainOps.isNotEmpty() && domainOps.all { it.operationId in acceptedIds } && reconciliationResult.rejectedOperations.isEmpty()
                 val allIntegrityValid = auditItems.isNotEmpty() && auditItems.all { it.hasValidHash && it.hasValidSignature && it.isPrevHashLinked }
-                val allValid = allIntegrityValid && allAccepted
+                val projectionMatches = com.peersplit.app.reconciliation.ProjectionAudit.matches(reconciliationResult, inputs.expenses, inputs.balances) &&
+                    groupProtocol?.latestStateDigest == reconciliationResult.stateDigest
+                val allValid = allIntegrityValid && allAccepted && projectionMatches
+                val pending = reconciliationResult.pendingOperations.isNotEmpty()
 
                 val message = when {
                     auditItems.isEmpty() -> "Ledger empty; awaiting initial operations."
                     allValid -> "V2 Authoritative Ledger verified. ${reconciliationResult.acceptedOperations.size} accepted operations, state digest: ${reconciliationResult.stateDigest.take(8)}."
+                    pending -> "Awaiting ${reconciliationResult.pendingOperations.size} operation dependencies/admission proofs. Retry after synchronization."
+                    !projectionMatches -> "Stored balances or expenses differ from replayed history. A projection rebuild is required."
                     reconciliationResult.rejectedOperations.isNotEmpty() -> "Tamper/Conflict Alert: ${reconciliationResult.rejectedOperations.size} operation(s) rejected during authoritative reconciliation."
                     else -> "Tamper Alert: One or more V2 operations failed cryptographic signature, hash, or parent link verification."
                 }
@@ -110,13 +131,15 @@ class LedgerAuditViewModel(private val groupId: String) : ViewModel() {
                 _state.value = LedgerAuditState(
                     blocks = auditItems,
                     isChainValid = allValid,
+                    isPending = pending,
+                    statusTitle = when { auditItems.isEmpty() -> "Awaiting history"; allValid -> "Local ledger verified"; pending -> "Awaiting dependencies"; else -> "Verification needs attention" },
                     validationMessage = message,
                     isLoading = false
                 )
                 return@launch
             }
 
-            val blockEntities = database.blockDao().getBlocksForGroupSync(groupId)
+            val blockEntities = inputs.blocks
             val domainBlocks = blockEntities.map { it.toDomainBlock() }
 
             val validation = BlockchainEngine.validateChain(domainBlocks)
@@ -149,9 +172,24 @@ class LedgerAuditViewModel(private val groupId: String) : ViewModel() {
             _state.value = LedgerAuditState(
                 blocks = auditItems,
                 isChainValid = isValid,
+                statusTitle = if (domainBlocks.isEmpty()) "Awaiting history" else if (isValid) "Local ledger verified" else "Verification needs attention",
                 validationMessage = message,
                 isLoading = false
             )
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                _state.value = LedgerAuditState(isLoading = false, isChainValid = false,
+                    statusTitle = "Audit could not complete", validationMessage = e.message ?: "Retry audit")
+            }
         }
     }
 }
+
+private data class AuditInputs(
+    val protocol: com.peersplit.app.data.local.entity.GroupProtocolEntity?,
+    val group: com.peersplit.app.data.local.entity.GroupEntity?,
+    val operations: List<com.peersplit.app.data.local.entity.SignedOperationEntity>,
+    val expenses: List<com.peersplit.app.data.local.entity.ExpenseProjectionEntity>,
+    val balances: List<com.peersplit.app.data.local.entity.BalanceProjectionEntity>,
+    val blocks: List<com.peersplit.app.data.local.entity.BlockEntity>
+)

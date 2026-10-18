@@ -93,25 +93,21 @@ fun LedgerAuditScreen(
 fun LedgerStatusCard(state: LedgerAuditState) {
     val isEmpty = state.blocks.isEmpty()
     val containerBg = when {
-        isEmpty -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+        isEmpty || state.isPending -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
         state.isChainValid -> BalancePositive.copy(alpha = 0.12f)
         else -> BalanceNegative.copy(alpha = 0.12f)
     }
     val statusColor = when {
-        isEmpty -> MaterialTheme.colorScheme.onSurfaceVariant
+        isEmpty || state.isPending -> MaterialTheme.colorScheme.onSurfaceVariant
         state.isChainValid -> BalancePositive
         else -> BalanceNegative
     }
     val statusIcon = when {
-        isEmpty -> Icons.Default.Info
+        isEmpty || state.isPending -> Icons.Default.Info
         state.isChainValid -> Icons.Default.CheckCircle
         else -> Icons.Default.Warning
     }
-    val statusTitle = when {
-        isEmpty -> "Ledger Initialized"
-        state.isChainValid -> "Cryptographically Intact"
-        else -> "Tampering Detected"
-    }
+    val statusTitle = state.statusTitle
 
     Card(
         modifier = Modifier.fillMaxWidth(),

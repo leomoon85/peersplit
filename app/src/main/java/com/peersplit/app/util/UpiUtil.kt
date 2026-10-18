@@ -64,6 +64,8 @@ object UpiUtil {
         amount: Double,
         note: String = "PeerSplit Settlement"
     ): Uri {
+        require(UpiAddress.isValid(upiId)) { "Enter a valid UPI ID" }
+        require(amount.isFinite() && amount > 0) { "Enter a valid amount" }
         val formattedAmount = String.format(Locale.US, "%.2f", amount)
         val uriString = "upi://pay?pa=${Uri.encode(upiId.trim())}" +
                 "&pn=${Uri.encode(payeeName.trim())}" +
@@ -88,7 +90,7 @@ object UpiUtil {
             Toast.makeText(context, "UPI payments only support INR currency", Toast.LENGTH_SHORT).show()
             return false
         }
-        if (upiId.isBlank()) {
+        if (!UpiAddress.isValid(upiId) || !amount.isFinite() || amount <= 0) {
             Toast.makeText(context, "No UPI ID provided for this member", Toast.LENGTH_SHORT).show()
             return false
         }
@@ -115,7 +117,7 @@ object UpiUtil {
         note: String = "PeerSplit Settlement",
         size: Int = 360
     ): Bitmap? {
-        if (upiId.isBlank()) return null
+        if (!UpiAddress.isValid(upiId) || !amount.isFinite() || amount <= 0) return null
         val uri = buildUpiUri(upiId, payeeName, amount, note).toString()
         return try {
             QrCodeUtil.generateQrBitmap(uri, size, size)

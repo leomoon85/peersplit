@@ -1,6 +1,8 @@
 package com.peersplit.app.data.backup
 
 import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.data.local.AppDatabase
 import com.peersplit.app.data.local.entity.BlockEntity
@@ -138,7 +140,7 @@ object BackupManager {
     /**
      * Creates an encrypted byte array containing all groups, blocks, members, and keys.
      */
-    suspend fun createEncryptedBackup(context: Context, database: AppDatabase, password: String): ByteArray {
+    suspend fun createEncryptedBackup(context: Context, database: AppDatabase, password: String): ByteArray = withContext(Dispatchers.IO) {
         val identity = KeyManager.getOrCreateIdentity(context)
         val privKeyHex = KeyManager.getPrivateKeyHex(context)
 
@@ -276,13 +278,13 @@ object BackupManager {
         val ciphertext = cipher.doFinal(plainJsonBytes)
 
         // Packaging: MAGIC (8) + SALT (16) + IV (12) + CIPHERTEXT
-        return MAGIC_HEADER + salt + iv + ciphertext
+        return@withContext MAGIC_HEADER + salt + iv + ciphertext
     }
 
     /**
      * Decrypts and restores backup data into the local Room database and KeyManager.
      */
-    suspend fun restoreFromBackup(context: Context, database: AppDatabase, backupBytes: ByteArray, password: String): Boolean {
+    suspend fun restoreFromBackup(context: Context, database: AppDatabase, backupBytes: ByteArray, password: String): Boolean = withContext(Dispatchers.IO) {
         if (backupBytes.size < MAGIC_HEADER.size + SALT_LENGTH + IV_LENGTH + 16) {
             throw IllegalArgumentException("Invalid backup file: file too small or corrupted")
         }
@@ -463,6 +465,6 @@ object BackupManager {
             // Ignored in unit tests where PeerSplitApp singleton is not initialized
         }
 
-        return true
+        return@withContext true
     }
 }
