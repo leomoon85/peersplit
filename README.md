@@ -1,101 +1,42 @@
-# PeerSplit ⛓️📱
-> **Serverless Peer-to-Peer Expense Sharing Android App**  
-> *A Splitwise alternative built on group-scoped micro-blockchains and decentralized relays.*
+# PeerSplit
 
-PeerSplit eliminates the need for proprietary centralized database servers, monthly subscription fees, and server maintenance costs. All expense records are structured as **cryptographically signed, append-only micro-blockchains** stored locally on users' smartphones and synchronized peer-to-peer over decentralized relays.
+PeerSplit by **Peerloom Labs** is an Android app for shared expenses, group balances and settlement records. It is currently free, with no ads, in-app purchases or subscriptions.
 
----
+## How it works
 
-## 🌟 Key Features
+Records live in a local Room database. The V2 protocol uses signed operations, causal history and deterministic projections to calculate group state. Group payloads are encrypted with group-scoped keys and synchronized through public Nostr relays. There is no Peerloom Labs central expense database; synchronization still depends on network services and relay availability.
 
-- **No Central Server or Database**: No user credentials, financial transactions, or group records are ever uploaded to any proprietary server.
-- **Micro-Blockchain Ledger per Group**: Each group maintains its own append-only hash chain. Each expense, settlement, or member addition is an immutable block secured with `SHA-256` and `Ed25519` digital signatures.
-- **Tamper-Evident & Cryptographic Proof**: Any offline tampering with local database records breaks the cryptographic hash pointer (`prevHash`) and signature, alerting peers immediately.
-- **Visual Blockchain Explorer**: In-app ledger audit screen allows users to inspect block hashes, creator public keys, and cryptographic proofs for 100% financial transparency.
-- **Decentralized Relay Sync (Nostr Protocol)**: Devices synchronize in real-time over open, public Nostr relays (`wss://relay.damus.io`, `wss://nos.lol`, etc.). Relays only act as ephemeral routers.
-- **End-to-End Encryption (E2EE)**: Payloads are encrypted with high-entropy 256-bit AES-GCM keys generated at group genesis. Relays and third parties cannot inspect expense titles, amounts, or member identities.
-- **Min-Cash-Flow Debt Simplification**: Built-in greedy graph algorithm calculates the minimum number of settlements to square up balances across multi-person groups.
-- **Modern Jetpack Compose UI**: Material 3 interface with dynamic color, light/dark themes, edge-to-edge rendering, and intuitive navigation.
+Public relays can retain encrypted events and see connection and envelope metadata. Group members can read shared records and retain copies. Deleting local data does not erase distributed history. Local storage uses Android's sandbox; whole-database encryption at rest is not claimed.
 
----
+Features include equal/custom splits, multiple payers, group balance tracking, debt simplification, ledger inspection, CSV import/export, password-encrypted backups, selected-image receipt OCR, and INR UPI app/QR handoffs. Debt simplification uses a greedy algorithm and does not guarantee the mathematically fewest payments. A recorded settlement is not bank confirmation.
 
-## 🏗️ Architecture
+OCR runs on-device with ML Kit, which also collects SDK diagnostics and usage metrics. See the [privacy policy](PRIVACY_POLICY.md) before sharing sensitive information. No email/password registration is required; the app creates a persistent local cryptographic identity.
 
-```
-PeerSplit Architecture
-├── Cryptographic Layer (Ed25519, SHA-256, AES-256-GCM)
-│   ├── KeyManager.kt       -> Hardware-bound device identity & signing
-│   ├── HashUtil.kt         -> SHA-256 hashing & hex utilities
-│   └── EncryptionUtil.kt   -> AES-256-GCM group payload encryption
-│
-├── Blockchain Engine (Append-Only Hash Chains & Consensus)
-│   ├── Block.kt            -> Block data structure & hash calculation
-│   ├── BlockPayload.kt     -> GroupGenesis, Expense, Settlement payloads
-│   ├── BlockchainEngine.kt -> Block minting, chain validation, tamper detection
-│   └── DebtSettlementEngine.kt -> Greedy Min-Cash-Flow graph reduction
-│
-├── Data & Local Storage (Room SQLite Database)
-│   ├── AppDatabase.kt      -> Room database singleton
-│   ├── Entities.kt         -> Groups, Members, Blocks entities
-│   ├── Daos.kt             -> Reactive Room DAOs (Flows)
-│   └── ExpenseRepository.kt-> Clean Architecture repository
-│
-├── P2P Decentralized Network Layer (Nostr Protocol)
-│   ├── NostrEvent.kt       -> NIP-01 signed event creation & verification
-│   ├── NostrClient.kt      -> OkHttp WebSocket connection per relay
-│   ├── RelayPool.kt        -> Multi-relay manager with failover & deduplication
-│   └── P2PSyncManager.kt   -> E2EE block broadcasting & incoming ingestion
-│
-└── Presentation Layer (Jetpack Compose + Material 3)
-    ├── HomeScreen.kt       -> Overall balance & groups dashboard
-    ├── GroupDetailScreen.kt-> Member balances & simplified debts
-    ├── AddExpenseScreen.kt -> Equal & custom split calculation
-    ├── SettleUpScreen.kt   -> Debt repayment block minting
-    ├── CreateGroupScreen.kt-> Genesis block minting & invite generation
-    ├── JoinGroupScreen.kt  -> QR code / invite link ingestion
-    ├── LedgerAuditScreen.kt-> Interactive blockchain block explorer
-    └── ProfileScreen.kt    -> Ed25519 pubkey & relay diagnostics
+## Development
+
+Use Android Studio, JDK 17 and the SDK versions specified in the Gradle configuration. The current app has minimum SDK 26, compile/target SDK 35, package `com.peersplit.app` and version 1.0.0. Check current Google Play requirements before submission; this configuration alone is not a release approval.
+
+```powershell
+.\gradlew.bat :app:assembleDebug
+.\gradlew.bat :app:testDebugUnitTest :shared:testDebugUnitTest :shared:desktopTest
+.\gradlew.bat :app:lintDebug
+.\gradlew.bat :app:bundleRelease
 ```
 
----
+Configure release signing privately using the project's Gradle signing configuration. Keep keystores, signing passwords and local credential files out of version control. A successful release APK build does not verify the final Play app bundle or device compatibility.
 
-## 🚀 Getting Started
+## Release documentation
 
-### Prerequisites
-- [Android Studio Ladybug / Meerkat (or later)](https://developer.android.com/studio)
-- JDK 17 or higher
-- Android SDK 35 (Android 15)
+- [Privacy policy](PRIVACY_POLICY.md): contact details supplied; public hosting still required.
+- [Store listing copy](STORE_LISTING.md).
+- [Play publishing guide](PLAYSTORE_LISTING_GUIDE.md).
+- [Data Safety worksheet](docs/DATA_SAFETY.md).
+- [Release checklist](docs/RELEASE_CHECKLIST.md).
+- [Usage and data recovery notes](docs/USAGE_AND_RECOVERY.md).
+- [V2 protocol specification](docs/V2_PROTOCOL_SPEC.md) and [known limitations](docs/V2_KNOWN_LIMITATIONS.md).
 
-### Setup & Run
-1. Clone or open the project folder in Android Studio:
-   ```bash
-   cd l:/projectz/splitwise
-   ```
-2. Open Android Studio -> **File** -> **Open** -> select `splitwise`.
-3. Allow Gradle to sync dependencies.
-4. Run on an Android Emulator or connected physical device (Target SDK 35, Min SDK 26).
+The in-app offline policy is generated from `PRIVACY_POLICY.md`. After changing the policy, run `python scripts/sync_privacy_policy.py`; use `--check` to detect a stale packaged copy. Privacy and support contact: [leo.moon85@gmail.com](mailto:leo.moon85@gmail.com).
 
-### Running Unit Tests
-Execute the cryptographic, blockchain consensus, and debt simplification tests:
-```bash
-./gradlew test
-```
+On October 18, 2026, the reviewed implementation passed 83 JVM tests, debug and minified release APK builds, and lint with zero errors and nine warnings; some custom navigation lint checks were skipped. Physical-device, accessibility, payment-handoff and multi-device acceptance remain necessary. These results are a dated verification snapshot, not production certification.
 
----
-
-## 📦 Building for Google Play Store
-
-### 1. Generate a Release Signing Keystore
-In PowerShell / terminal:
-```bash
-keytool -genkey -v -keystore peersplit-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias peersplit
-```
-
-### 2. Build the Android App Bundle (AAB)
-```bash
-./gradlew bundleRelease
-```
-The optimized bundle will be generated at:
-`app/build/outputs/bundle/release/app-release.aab`
-
-Refer to [PLAYSTORE_LISTING_GUIDE.md](file:///l:/projectz/splitwise/PLAYSTORE_LISTING_GUIDE.md) for Google Play Console metadata, Privacy Policy declarations, and Data Safety guidelines.
+Repository visibility and an open-source license must be established before describing the app as open source. No LICENSE file was found in this review.

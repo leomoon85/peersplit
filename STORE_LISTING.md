@@ -1,58 +1,43 @@
-# PeerSplit Store Listing Copy
+# PeerSplit store listing copy
 
-## App Title
-PeerSplit: P2P Expense Tracker
+Developer display name: **Peerloom Labs**
 
-*(Alternative: PeerSplit - Group Expenses)*
+Support and privacy email: `leo.moon85@gmail.com`
 
----
+## App title
 
-## Short Description (80 Character Limit)
-Serverless peer-to-peer expense sharing secured with private micro-blockchains.
+PeerSplit: Group Expenses
 
----
+## Short description
 
-## Full Description (Up to 4,000 Characters)
-Tired of subscription paywalls, forced cloud accounts, and invasive tracking just to split bills with friends and roommates?
+Split bills, track group balances and share encrypted expense records.
 
-**PeerSplit** is a 100% serverless, private, and decentralized peer-to-peer expense sharing app. PeerSplit eliminates the need for central database servers, monthly fees, and corporate cloud storage. Every group maintains its own tamper-evident, append-only cryptographic micro-blockchain stored directly on your phone and synchronized peer-to-peer over decentralized relays.
+## Full description
 
-### 🌟 Key Features
+Keep shared expenses organized with PeerSplit. Track bills for trips, roommates, meals and everyday group spending.
 
-• **Zero Central Server or Cloud Accounts**
-No email signup, phone verification, or passwords required. Your financial data and transactions are never uploaded to any proprietary server or sold to third parties.
+SPLIT AND TRACK
+Record expenses, choose equal or custom splits, add multiple payers and see who owes whom. Suggested settlements help simplify group balances. Each group uses its own currency.
 
-• **Micro-Blockchain Security**
-Every expense, settlement, and member addition is minted as an immutable block secured with SHA-256 cryptographic hashes and Ed25519 digital signatures. Any offline tampering is immediately detected.
+SHARED RECORDS
+PeerSplit stores records on your phone and synchronizes encrypted group operations through public Nostr relays when connectivity is available. Signed history and the ledger audit screen help inspect recorded changes. Delivery depends on connectivity, relay availability and the receiving device.
 
-• **Visual Ledger Audit**
-Inspect the underlying blockchain ledger at any time. View block hashes, creator public keys, and cryptographic integrity proofs with 100% financial transparency.
+PRIVACY WITH CLEAR LIMITS
+No email/password registration is required. The app creates a local cryptographic identity. Group members can read shared records; public relays can retain encrypted events and observe connection and routing metadata. Deleting records locally does not erase copies held by other members or relays.
 
-• **Decentralized Real-Time Sync (Nostr)**
-Sync seamlessly with group members across open, decentralized Nostr relays. Relays act strictly as ephemeral routers and cannot read your data.
+EVERYDAY TOOLS
+Import or export CSV statements, recognize text from selected receipt images on your device, and create password-encrypted backups. ML Kit, used for receipt recognition, also collects technical diagnostics and usage metrics as explained in the privacy policy.
 
-• **End-to-End Encryption (E2EE)**
-All group messages, expense titles, amounts, and member lists are encrypted using 256-bit AES-GCM with group-scoped keys generated at creation.
+UPI HANDOFFS FOR INR GROUPS
+Open a compatible UPI app or share a payment QR code. PeerSplit does not process or hold money, and recording a settlement does not confirm a bank transfer. Verify payment details and status in your payment app.
 
-• **Smart Min-Cash-Flow Debt Simplification**
-Built-in greedy graph algorithms automatically calculate the minimum number of transactions needed to square balances across multi-person groups.
+CURRENTLY FREE
+No ads, in-app purchases or subscriptions.
 
-• **On-Device Receipt OCR**
-Scan receipts using on-device machine learning (ML Kit). Expense items and totals are extracted entirely in memory on your phone.
+Back up your identity and protect your backup password. Peerloom Labs cannot recover lost keys or passwords. Read the privacy policy for information about sharing, diagnostics, backups and deletion limits.
 
-• **One-Click UPI & Instant Settlement**
-Settle debts quickly via UPI deep links and QR codes (for INR groups) or mark cash settlements with cryptographic consensus.
+## Console notes — not part of the public description
 
-• **Excel & CSV Statement Export**
-Export full itemized group statements with UTF-8 encoding directly to spreadsheet apps or messaging sheets.
+Use [the Data Safety worksheet](docs/DATA_SAFETY.md), not the former blanket “no data collected/shared” answers. Do not claim anonymous networking, ephemeral-only relay storage, encrypted local SQLite, guaranteed delivery, verified payments, independent security certification or open-source licensing without evidence.
 
-• **Modern Material 3 Interface**
-Clean, intuitive Jetpack Compose design with Light, Dark, and System Default themes, edge-to-edge support, and smooth animations.
-
----
-
-## Data Safety Declarations (For Google Play Form)
-- **Data Collection:** No data collected.
-- **Data Sharing:** No data shared with third parties.
-- **Data Security:** All synchronization is End-to-End Encrypted (AES-GCM); local data is encrypted and sandboxed.
-- **Account Deletion:** Not applicable (serverless; uninstalling the app deletes all local device data).
+Validate title (30), short description (80) and full description (4,000) character limits before submission. Use screenshots from the final build. Enter `leo.moon85@gmail.com` as the support email and verify the public privacy-policy URL before publishing.

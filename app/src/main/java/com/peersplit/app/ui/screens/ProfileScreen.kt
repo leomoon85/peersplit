@@ -8,6 +8,9 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -62,6 +65,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
     var phone by rememberSaveable { mutableStateOf(KeyManager.getPhone(context)) }
     var upiId by rememberSaveable { mutableStateOf(KeyManager.getUpiId(context)) }
     var showAdvancedInfo by remember { mutableStateOf(false) }
+    var showPrivacyPolicy by rememberSaveable { mutableStateOf(false) }
 
     // Backup state
     var showExportPasswordDialog by rememberSaveable { mutableStateOf(false) }
@@ -491,15 +495,40 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            "PeerSplit is completely private and peer-to-peer. Your personal identity, expenses, and private groups are saved directly on your phone and encrypted before syncing.",
+                            "Group records are stored on your phone and encrypted before relay sync. Members can retain shared records; relays see connection metadata. Receipt recognition uses ML Kit, which collects technical diagnostics.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
+                TextButton(onClick = { showPrivacyPolicy = true }) {
+                    Text("Privacy policy")
+                }
                 Spacer(modifier = Modifier.height(24.dp))
             }
         }
+    }
+
+    if (showPrivacyPolicy) {
+        val policy = remember(context) {
+            context.assets.open("privacy_policy.txt").bufferedReader().use { it.readText() }
+        }
+        AlertDialog(
+            onDismissRequest = { showPrivacyPolicy = false },
+            title = { Text("Privacy policy") },
+            text = {
+                SelectionContainer {
+                    Text(
+                        policy,
+                        modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPrivacyPolicy = false }) { Text("Close") }
+            }
+        )
     }
 
     // Export Password Dialog
