@@ -215,7 +215,15 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                         }
                     }
                     is OperationPayload.MemberAdded -> {
-                        val hasDescendants = causalResult.childrenOf[op.operationId]?.isNotEmpty() == true
+                        val normTarget = p.memberPublicKey.trim().lowercase()
+                        val hasTrustedAdmission = if (p.invitationGrant != null) {
+                            topologicallyOrdered.any { cand ->
+                                val candAuthor = cand.authorPublicKey.trim().lowercase()
+                                candAuthor != normTarget &&
+                                    (candAuthor == normCreator || pass1ActiveMembers[candAuthor]?.role == ProtocolMemberInfo.ROLE_ADMIN) &&
+                                    op.operationId in (causalResult.ancestorsOf[cand.operationId] ?: emptySet())
+                            }
+                        } else false
                         val authOutcome = OperationAuthorization.evaluate(
                             operation = op,
                             trustedGenesis = normalizedGenesis,
@@ -227,7 +235,7 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                             consumedInvitationNonces = pass1ConsumedNonces,
                             ghostAliases = pass1GhostAliases,
                             parentTimestampProvider = { opsById[it]?.createdAtMillis },
-                            hasDescendants = hasDescendants,
+                            hasTrustedAdmission = hasTrustedAdmission,
                             maxLedgerTimestamp = maxLedgerTimestamp
                         )
                         if (authOutcome.isAuthorized) {
@@ -451,7 +459,15 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
             }
 
             // 7c. Evaluate membership authorization (including concurrent removal precedence)
-            val hasDescendants = causalResult.childrenOf[op.operationId]?.isNotEmpty() == true
+            val normTarget = (op.payload as? OperationPayload.MemberAdded)?.memberPublicKey?.trim()?.lowercase()
+            val hasTrustedAdmission = if (normTarget != null && (op.payload as OperationPayload.MemberAdded).invitationGrant != null) {
+                topologicallyOrdered.any { cand ->
+                    val candAuthor = cand.authorPublicKey.trim().lowercase()
+                    candAuthor != normTarget &&
+                        (candAuthor == normCreator || activeMembers[candAuthor]?.role == ProtocolMemberInfo.ROLE_ADMIN) &&
+                        op.operationId in (causalResult.ancestorsOf[cand.operationId] ?: emptySet())
+                }
+            } else false
             val authOutcome = OperationAuthorization.evaluate(
                 operation = op,
                 trustedGenesis = normalizedGenesis,
@@ -463,7 +479,7 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                 consumedInvitationNonces = consumedInvitationNonces,
                 ghostAliases = ghostAliases,
                 parentTimestampProvider = { opsById[it]?.createdAtMillis },
-                hasDescendants = hasDescendants,
+                hasTrustedAdmission = hasTrustedAdmission,
                 maxLedgerTimestamp = maxLedgerTimestamp
             )
             if (!authOutcome.isAuthorized) {

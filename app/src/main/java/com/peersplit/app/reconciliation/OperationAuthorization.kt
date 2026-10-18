@@ -43,8 +43,8 @@ object OperationAuthorization {
         consumedInvitationNonces: Set<String> = emptySet(),
         ghostAliases: Map<String, String> = emptyMap(),
         parentTimestampProvider: ((String) -> Long?)? = null,
-        currentTimeMillis: Long = System.currentTimeMillis(),
-        hasDescendants: Boolean = false,
+        currentTimeMillis: Long = 0L,
+        hasTrustedAdmission: Boolean = false,
         maxLedgerTimestamp: Long = 0L
     ): AuthOutcome {
         val author = operation.authorPublicKey
@@ -206,8 +206,7 @@ object OperationAuthorization {
                         activeMembers = activeMembers,
                         consumedInvitationNonces = consumedInvitationNonces,
                         parentTimestampProvider = parentTimestampProvider,
-                        currentTimeMillis = currentTimeMillis,
-                        hasDescendants = hasDescendants,
+                        hasTrustedAdmission = hasTrustedAdmission,
                         maxLedgerTimestamp = maxLedgerTimestamp
                     )
                 } else {
@@ -238,8 +237,7 @@ object OperationAuthorization {
                                 activeMembers = activeMembers,
                                 consumedInvitationNonces = consumedInvitationNonces,
                                 parentTimestampProvider = parentTimestampProvider,
-                                currentTimeMillis = currentTimeMillis,
-                                hasDescendants = hasDescendants,
+                                hasTrustedAdmission = hasTrustedAdmission,
                                 maxLedgerTimestamp = maxLedgerTimestamp
                             )
                         } else {
@@ -255,8 +253,7 @@ object OperationAuthorization {
                             activeMembers = activeMembers,
                             consumedInvitationNonces = consumedInvitationNonces,
                             parentTimestampProvider = parentTimestampProvider,
-                            currentTimeMillis = currentTimeMillis,
-                            hasDescendants = hasDescendants,
+                            hasTrustedAdmission = hasTrustedAdmission,
                             maxLedgerTimestamp = maxLedgerTimestamp
                         )
                     } else {
@@ -321,8 +318,7 @@ object OperationAuthorization {
         activeMembers: Map<String, ProtocolMemberInfo>,
         consumedInvitationNonces: Set<String>,
         parentTimestampProvider: ((String) -> Long?)? = null,
-        currentTimeMillis: Long = System.currentTimeMillis(),
-        hasDescendants: Boolean = false,
+        hasTrustedAdmission: Boolean = false,
         maxLedgerTimestamp: Long = 0L
     ): AuthOutcome {
         // 1. Group ID match
@@ -403,19 +399,12 @@ object OperationAuthorization {
                 )
             }
             // Stale ancestry check: group ledger timeline has already progressed past expiry
-            if (!hasDescendants && maxLedgerTimestamp > grant.expiresAtMillis) {
+            // without an authenticated admin admission committing this join
+            if (!hasTrustedAdmission && maxLedgerTimestamp > grant.expiresAtMillis) {
                 return AuthOutcome(
                     isAuthorized = false,
                     rejectionReason = RejectionReason.EXPIRED_INVITATION,
-                    detail = "Invitation grant expired at ${grant.expiresAtMillis} (ledger timeline $maxLedgerTimestamp already past expiry)"
-                )
-            }
-            // Admission time bound: unconfirmed leaf joins cannot be admitted after grant expiry
-            if (!hasDescendants && currentTimeMillis > grant.expiresAtMillis) {
-                return AuthOutcome(
-                    isAuthorized = false,
-                    rejectionReason = RejectionReason.EXPIRED_INVITATION,
-                    detail = "Invitation grant expired at ${grant.expiresAtMillis} (admission evaluation time $currentTimeMillis)"
+                    detail = "Invitation grant expired at ${grant.expiresAtMillis} (ledger timeline $maxLedgerTimestamp already past expiry without trusted admin admission)"
                 )
             }
         }
@@ -429,6 +418,29 @@ object OperationAuthorization {
             )
         }
 
+        return AuthOutcome(true)
+    }
+
+    /**
+     * Live admission check evaluated at the network or user boundary before an unconfirmed join
+     * is inserted into the local ledger database. Rejects expired invitation grants in real time
+     * while preserving deterministic replay for committed historical ledgers.
+     */
+    fun isLiveAdmissionValid(
+        operation: SignedOperation,
+        currentTimeMillis: Long = System.currentTimeMillis()
+    ): AuthOutcome {
+        val payload = operation.payload
+        if (payload is OperationPayload.MemberAdded && payload.invitationGrant != null) {
+            val grant = payload.invitationGrant
+            if (grant.expiresAtMillis > 0L && currentTimeMillis > grant.expiresAtMillis) {
+                return AuthOutcome(
+                    isAuthorized = false,
+                    rejectionReason = RejectionReason.EXPIRED_INVITATION,
+                    detail = "Invitation grant expired at ${grant.expiresAtMillis} (admission evaluation time $currentTimeMillis)"
+                )
+            }
+        }
         return AuthOutcome(true)
     }
 }

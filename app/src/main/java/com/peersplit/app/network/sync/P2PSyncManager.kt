@@ -539,12 +539,86 @@ class P2PSyncManager(
                 val myPubkey = identity.publicKeyHex.lowercase()
                 if (recipient != null && recipient == myPubkey) {
                     val epoch = event.tags.firstOrNull { it.size >= 2 && it[0] == "epoch" }?.get(1)?.toIntOrNull() ?: 1
+
+                    // Parse KeyDistributionEnvelope or fallback to tags
+                    val envelope = com.peersplit.app.crypto.KeyDistributionEnvelope.fromJson(event.content)
+                    val authorEd25519Pubkey = envelope?.authorPublicKey
+                        ?: event.tags.firstOrNull { it.size >= 2 && it[0] == "author" }?.get(1)?.lowercase()
+                    val transitionOpId = envelope?.transitionOperationId
+                        ?: event.tags.firstOrNull { it.size >= 2 && it[0] == "op" }?.get(1)
+                    val keyCiphertext = envelope?.keyCiphertext ?: event.content
+
+                    if (authorEd25519Pubkey.isNullOrBlank()) {
+                        Log.w(TAG, "Rejected key event: missing authenticated Ed25519 author")
+                        return
+                    }
+
+                    // Verify envelope cryptographic signature if envelope is present
+                    if (envelope != null && !envelope.verifySignature()) {
+                        Log.w(TAG, "Rejected key event: invalid Ed25519 signature on KeyDistributionEnvelope")
+                        return
+                    }
+
+                    // Buffer event if transition operation has not been stored yet
+                    val transitionOpEntity = if (transitionOpId != null) {
+                        database.signedOperationDao().getOperationByIdSync(transitionOpId)
+                    } else null
+
+                    if (transitionOpId != null && transitionOpEntity == null) {
+                        synchronized(earlyEvents) {
+                            val list = earlyEvents.getOrPut(groupId) { mutableListOf() }
+                            if (list.none { it.id == event.id }) {
+                                if (list.size >= MAX_EARLY_EVENTS_PER_GROUP) list.removeAt(0)
+                                list.add(event)
+                            }
+                        }
+                        Log.d(TAG, "Buffered key event for group $groupId epoch $epoch pending transition op $transitionOpId")
+                        return
+                    }
+
+                    // Verify transition operation details: must be MemberRemoved for this epoch and author
+                    if (transitionOpEntity != null) {
+                        val transitionOp = com.peersplit.app.protocol.OperationEntityMapper.toDomain(transitionOpEntity)
+                        val removalPayload = transitionOp.payload as? com.peersplit.app.protocol.OperationPayload.MemberRemoved
+                        if (removalPayload == null || removalPayload.newKeyEpoch != epoch) {
+                            Log.w(TAG, "Rejected key event: transition op $transitionOpId is not MemberRemoved for epoch $epoch")
+                            return
+                        }
+                        if (!transitionOp.authorPublicKey.equals(authorEd25519Pubkey, ignoreCase = true)) {
+                            Log.w(TAG, "Rejected key event: transition op author mismatch (${transitionOp.authorPublicKey} != $authorEd25519Pubkey)")
+                            return
+                        }
+                    }
+
+                    // Verify author authority in the group (must be group creator or active admin)
+                    val isCreator = groupEntity.creatorPubkey.equals(authorEd25519Pubkey, ignoreCase = true)
+                    if (!isCreator) {
+                        val existingOps = database.signedOperationDao().getOperationsForGroupSync(groupId)
+                        val domainOps = existingOps.map { com.peersplit.app.protocol.OperationEntityMapper.toDomain(it) }
+                        val protoMeta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+                        val currentRecon = com.peersplit.app.reconciliation.DefaultLedgerReconciliationEngine.reconcile(
+                            com.peersplit.app.reconciliation.TrustedGenesis(
+                                groupId = groupId,
+                                groupName = groupEntity.name,
+                                currency = groupEntity.currency,
+                                creatorPublicKey = groupEntity.creatorPubkey,
+                                genesisOperationId = protoMeta?.genesisOperationId
+                            ),
+                            domainOps
+                        )
+                        val authorRole = currentRecon.activeMembers[authorEd25519Pubkey]?.role
+                        if (authorRole != com.peersplit.app.protocol.ProtocolMemberInfo.ROLE_ADMIN) {
+                            Log.w(TAG, "Rejected key event: author $authorEd25519Pubkey is not an active admin or creator")
+                            return
+                        }
+                    }
+
                     try {
                         val myPrivHex = KeyManager.getPrivateKeyHex(context)
                         val keyBase64 = com.peersplit.app.crypto.KeyExchangeUtil.decryptFromPeer(
-                            ciphertext = event.content,
+                            ciphertext = keyCiphertext,
                             myPrivHex = myPrivHex,
-                            theirPubHex = event.pubkey
+                            theirPubHex = authorEd25519Pubkey
                         )
                         com.peersplit.app.crypto.KeyRotationManager.storeEpochKey(
                             database = database,
@@ -619,6 +693,16 @@ class P2PSyncManager(
                             )
                         )
                         return
+                    }
+
+                    // Live admission validation for unconfirmed incoming joins from the network
+                    val existingOpEntity = database.signedOperationDao().getOperationByIdSync(op.operationId)
+                    if (existingOpEntity == null) {
+                        val liveAuth = com.peersplit.app.reconciliation.OperationAuthorization.isLiveAdmissionValid(op)
+                        if (!liveAuth.isAuthorized) {
+                            Log.w(TAG, "Rejected incoming V2 op ${op.operationId} at live admission: ${liveAuth.detail}")
+                            return
+                        }
                     }
 
                     val entity = com.peersplit.app.protocol.OperationEntityMapper.toEntity(op)

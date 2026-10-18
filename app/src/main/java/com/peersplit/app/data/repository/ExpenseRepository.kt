@@ -947,18 +947,31 @@ class ExpenseRepository(
                         myPrivHex = privKeyHex,
                         theirPubHex = recipientPubkey
                     )
+                    val envelope = com.peersplit.app.crypto.KeyDistributionEnvelope.createAndSign(
+                        groupId = groupId,
+                        epoch = nextEpoch,
+                        authorPublicKey = identity.publicKeyHex,
+                        authorPrivateKeyHex = privKeyHex,
+                        recipientPublicKey = recipientPubkey,
+                        transitionOperationId = op.operationId,
+                        keyCiphertext = encryptedKeyForPeer
+                    )
+                    val envelopeJson = json.encodeToString(com.peersplit.app.crypto.KeyDistributionEnvelope.serializer(), envelope)
+
                     val keyEventTags = listOf(
                         listOf("t", "peersplit_key"),
                         listOf("g", groupId),
-                        listOf("p", recipientPubkey),
-                        listOf("epoch", nextEpoch.toString())
+                        listOf("p", recipientPubkey.lowercase()),
+                        listOf("epoch", nextEpoch.toString()),
+                        listOf("op", op.operationId),
+                        listOf("author", identity.publicKeyHex.lowercase())
                     )
                     val keyEvent = NostrEvent.createAndSign(
                         pubkey = identity.publicKeyHex,
                         privateKeyHex = privKeyHex,
                         kind = NostrEvent.KIND_PEERSPLIT_BLOCK,
                         tags = keyEventTags,
-                        content = encryptedKeyForPeer
+                        content = envelopeJson
                     )
                     val eventJson = json.encodeToString(NostrEvent.serializer(), keyEvent)
                     keyOutboxItems.add(
@@ -1861,10 +1874,12 @@ class ExpenseRepository(
                             p.memberPublicKey == identity.publicKeyHex
                         } catch (_: Exception) { false }
                     }
-
                     if (!alreadyJoinedV2) {
                         val grant = inviteData.invitationGrantJson?.let {
                             try { json.decodeFromString(MembershipInvitationGrant.serializer(), it) } catch (_: Exception) { null }
+                        }
+                        if (grant != null && grant.expiresAtMillis > 0L && System.currentTimeMillis() > grant.expiresAtMillis) {
+                            throw SecurityException("Invitation grant expired at ${grant.expiresAtMillis} (current time ${System.currentTimeMillis()})")
                         }
 
                         // Reconcile imported history to ensure projection and DAG heads are populated
