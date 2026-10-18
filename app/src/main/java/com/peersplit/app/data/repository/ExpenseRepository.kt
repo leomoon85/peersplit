@@ -2,6 +2,7 @@ package com.peersplit.app.data.repository
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import com.peersplit.app.blockchain.Block
 import com.peersplit.app.blockchain.BlockType
 import com.peersplit.app.blockchain.BlockchainEngine
@@ -36,6 +37,7 @@ import com.peersplit.app.protocol.OperationEntityMapper
 import com.peersplit.app.protocol.OperationId
 import com.peersplit.app.protocol.OperationPayload
 import com.peersplit.app.protocol.OperationSigner
+import com.peersplit.app.protocol.OperationVerifier
 import com.peersplit.app.protocol.ProtocolMemberInfo
 import com.peersplit.app.protocol.ProtocolVersion
 import com.peersplit.app.protocol.SignedOperation
@@ -73,7 +75,8 @@ data class GroupInviteData(
     val genesisBlockJson: String? = null,
     val blocksJson: List<String> = emptyList(),
     val invitationGrantJson: String? = null,
-    val protocolVersion: Int = 1
+    val protocolVersion: Int = 1,
+    val operationsJson: List<String> = emptyList()
 )
 
 data class GroupInvitePreview(
@@ -1252,6 +1255,11 @@ class ExpenseRepository(
         } catch (_: Exception) { null }
         val grantJson = grant?.let { json.encodeToString(MembershipInvitationGrant.serializer(), it) }
 
+        val acceptedOps = database.signedOperationDao().getAcceptedOperationsForGroupSync(groupId)
+        val allOpsJson = acceptedOps.map {
+            json.encodeToString(SignedOperation.serializer(), OperationEntityMapper.toDomain(it))
+        }
+
         val fullInvite = GroupInviteData(
             groupId = group.id,
             groupName = group.name,
@@ -1262,14 +1270,15 @@ class ExpenseRepository(
             genesisBlockJson = if (allBlocksJson.isEmpty()) genesisJson else null,
             blocksJson = allBlocksJson,
             invitationGrantJson = grantJson,
-            protocolVersion = 2
+            protocolVersion = ProtocolVersion.CURRENT,
+            operationsJson = allOpsJson
         )
         val encodedFull = encodeInviteUri(fullInvite)
         if (encodedFull.length <= 2200) {
             return encodedFull
         }
 
-        // If group has a large history, prioritize GENESIS + MEMBER_JOIN blocks + latest expenses that fit in a QR code
+        // If payload is large, trim non-essential V1 blocks first while keeping operations
         val essentialBlocks = blocks.filter {
             it.blockType == BlockType.GENESIS || it.blockType == BlockType.MEMBER_JOIN
         }
@@ -1292,11 +1301,50 @@ class ExpenseRepository(
             return trimmedUri
         }
 
-        // Ultimate fallback: Genesis block only so QR code never fails
+        // If still too large, trim older operations while keeping root operations and latest heads
+        val rootOps = acceptedOps.filter { it.parentsJson == "[]" || it.payloadType == "GENESIS_CREATED" || it.payloadType == "LEGACY_V1_CHECKPOINT" }
+        val nonRootOps = acceptedOps.filter { it !in rootOps }
+        val selectedOps = rootOps.toMutableList()
+        for (op in nonRootOps.asReversed()) {
+            val candidateOpsJson = (selectedOps + op).sortedBy { it.logicalClock }.map {
+                json.encodeToString(SignedOperation.serializer(), OperationEntityMapper.toDomain(it))
+            }
+            val candidateUri = encodeInviteUri(
+                fullInvite.copy(
+                    genesisBlockJson = genesisJson,
+                    blocksJson = emptyList(),
+                    operationsJson = candidateOpsJson
+                )
+            )
+            if (candidateUri.length <= 2500) {
+                selectedOps.add(op)
+            } else {
+                break
+            }
+        }
+        val finalOpsJson = selectedOps.sortedBy { it.logicalClock }.map {
+            json.encodeToString(SignedOperation.serializer(), OperationEntityMapper.toDomain(it))
+        }
+        val trimmedOpsUri = encodeInviteUri(
+            fullInvite.copy(
+                genesisBlockJson = genesisJson,
+                blocksJson = emptyList(),
+                operationsJson = finalOpsJson
+            )
+        )
+        if (trimmedOpsUri.length <= 2500) {
+            return trimmedOpsUri
+        }
+
+        // Ultimate fallback: Genesis block + root operations so fresh device always has valid causal roots
+        val rootOpsJson = rootOps.map {
+            json.encodeToString(SignedOperation.serializer(), OperationEntityMapper.toDomain(it))
+        }
         return encodeInviteUri(
             fullInvite.copy(
                 genesisBlockJson = genesisJson,
-                blocksJson = emptyList()
+                blocksJson = emptyList(),
+                operationsJson = rootOpsJson
             )
         )
     }
@@ -1418,6 +1466,32 @@ class ExpenseRepository(
                     syncManager.processBlockSideEffects(inviteData.groupId, block)
                 }
 
+                // Import V2 SignedOperations included in the invite
+                if (inviteData.operationsJson.isNotEmpty()) {
+                    for (opJson in inviteData.operationsJson) {
+                        try {
+                            val op = json.decodeFromString(SignedOperation.serializer(), opJson)
+                            if (op.groupId == inviteData.groupId && OperationVerifier.verify(op)) {
+                                database.signedOperationDao().insertOperationIgnore(
+                                    OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
+                                )
+                                val deps = OperationEntityMapper.toDependencyEntities(op)
+                                if (deps.isNotEmpty()) {
+                                    database.signedOperationDao().insertDependenciesIgnore(deps)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.w("ExpenseRepository", "Failed to ingest operation from invite: ${e.message}")
+                        }
+                    }
+                }
+
+                // If signed operations table is still empty but we have imported blocks, migrate to V2 so we have a root checkpoint
+                val currentOps = database.signedOperationDao().getOperationsForGroupSync(inviteData.groupId)
+                if (currentOps.isEmpty() && importedBlocks.isNotEmpty()) {
+                    migrationManager.migrateGroupToV2(inviteData.groupId)
+                }
+
                 // Determine if this phone should claim/assume an offline member added by the creator
                 val allCurrentBlocks = database.blockDao().getBlocksForGroupSync(inviteData.groupId).map { it.toDomainBlock() }
                 val alreadyClaimedGhosts = allCurrentBlocks
@@ -1524,6 +1598,10 @@ class ExpenseRepository(
                         val grant = inviteData.invitationGrantJson?.let {
                             try { json.decodeFromString(MembershipInvitationGrant.serializer(), it) } catch (_: Exception) { null }
                         }
+
+                        // Reconcile imported history to ensure projection and DAG heads are populated
+                        syncManager.reconcileV2Group(inviteData.groupId)
+
                         val parents = getDagHeads(inviteData.groupId)
                         val nextClock = getNextClock(inviteData.groupId, parents)
                         val memberPayload = OperationPayload.MemberAdded(
@@ -1536,7 +1614,7 @@ class ExpenseRepository(
                             invitationGrant = grant
                         )
                         val op = OperationSigner.createAndSign(
-                            protocolVersion = ProtocolVersion.V2_SIGNED_OPERATIONS,
+                            protocolVersion = ProtocolVersion.CURRENT,
                             groupId = inviteData.groupId,
                             authorPublicKey = identity.publicKeyHex,
                             privateKeyHex = privKeyHex,

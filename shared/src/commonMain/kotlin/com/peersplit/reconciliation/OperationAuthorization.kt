@@ -4,6 +4,7 @@ import com.peersplit.protocol.MembershipInvitationGrant
 import com.peersplit.protocol.OperationPayload
 import com.peersplit.protocol.OperationVerifier
 import com.peersplit.protocol.ProtocolMemberInfo
+import com.peersplit.protocol.ProtocolVersion
 import com.peersplit.protocol.SignedOperation
 
 /**
@@ -268,15 +269,15 @@ object OperationAuthorization {
             )
         }
 
-        // 5. Expiry check: operation createdAtMillis must be valid (> 0) and not past grant.expiresAtMillis
-        if (operation.createdAtMillis <= 0L) {
+        // 5. Expiry check: operation createdAtMillis must be valid (> 0) for V3+ and not past grant.expiresAtMillis
+        if (operation.protocolVersion >= ProtocolVersion.V3_SIGNED_OPERATIONS && operation.createdAtMillis <= 0L) {
             return AuthOutcome(
                 isAuthorized = false,
                 rejectionReason = RejectionReason.INVALID_INVITATION,
                 detail = "Operation createdAtMillis is invalid (${operation.createdAtMillis})"
             )
         }
-        if (grant.expiresAtMillis > 0L && operation.createdAtMillis > grant.expiresAtMillis) {
+        if (grant.expiresAtMillis > 0L && operation.createdAtMillis > 0L && operation.createdAtMillis > grant.expiresAtMillis) {
             return AuthOutcome(
                 isAuthorized = false,
                 rejectionReason = RejectionReason.EXPIRED_INVITATION,

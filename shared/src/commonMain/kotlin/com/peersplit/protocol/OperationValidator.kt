@@ -38,8 +38,10 @@ object OperationValidator {
         if (operation.keyEpoch < 0) {
             return OperationValidationOutcome.Invalid("INVALID_KEY_EPOCH", "keyEpoch must be >= 0")
         }
-        if (operation.createdAtMillis <= 0L) {
-            return OperationValidationOutcome.Invalid("INVALID_TIMESTAMP", "createdAtMillis must be > 0")
+        if (operation.protocolVersion >= ProtocolVersion.V3_SIGNED_OPERATIONS) {
+            if (operation.createdAtMillis <= 0L) {
+                return OperationValidationOutcome.Invalid("INVALID_TIMESTAMP", "createdAtMillis must be > 0")
+            }
         }
 
 

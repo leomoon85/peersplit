@@ -28,7 +28,7 @@ object OperationSigner {
      * Canonically encodes, hashes, and signs a new [SignedOperation].
      */
     fun createAndSign(
-        protocolVersion: Int = ProtocolVersion.V2_SIGNED_OPERATIONS,
+        protocolVersion: Int = ProtocolVersion.CURRENT,
         groupId: String,
         authorPublicKey: String,
         privateKeyHex: String,

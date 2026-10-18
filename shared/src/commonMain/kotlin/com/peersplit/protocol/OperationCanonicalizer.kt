@@ -64,7 +64,9 @@ object OperationCanonicalizer {
         }
         out.writeLong(logicalClock)
         out.writeInt(keyEpoch)
-        out.writeLong(createdAtMillis)
+        if (protocolVersion >= ProtocolVersion.V3_SIGNED_OPERATIONS) {
+            out.writeLong(createdAtMillis)
+        }
         writePayload(out, payload)
         return out.toByteArray()
     }

@@ -166,4 +166,68 @@ class SignedOperationProtocolTest {
         assertEquals(3333L, splitsA[m2])
         assertEquals(3333L, splitsA[m3])
     }
+
+    @Test
+    fun `legacy V2 operations verify correctly without createdAtMillis while V3 operations verify with createdAtMillis`() {
+        val alice = KeyManager.generateKeyPair()
+        val bob = KeyManager.generateKeyPair()
+        val parent = "f".repeat(64)
+
+        val payload = OperationPayload.ExpenseCreated(
+            expenseId = "exp_compat",
+            amountMinor = 5000L,
+            currency = "INR",
+            paidBy = alice.publicKeyHex,
+            splits = mapOf(alice.publicKeyHex to 2500L, bob.publicKeyHex to 2500L),
+            description = "Compatibility Lunch"
+        )
+
+        // 1. Author legacy V2 operation (protocolVersion = 2)
+        val v2Op = OperationSigner.createAndSign(
+            protocolVersion = ProtocolVersion.V2_SIGNED_OPERATIONS,
+            groupId = "grp_compat",
+            authorPublicKey = alice.publicKeyHex,
+            privateKeyHex = alice.privateKeyHex,
+            parents = listOf(parent),
+            logicalClock = 2L,
+            payload = payload,
+            createdAtMillis = 0L
+        )
+
+        assertEquals(ProtocolVersion.V2_SIGNED_OPERATIONS, v2Op.protocolVersion)
+        assertEquals(0L, v2Op.createdAtMillis)
+        assertTrue(OperationVerifier.verify(v2Op))
+        assertTrue(OperationValidator.validate(v2Op, "INR") is OperationValidationOutcome.Valid)
+
+        // 2. Author modern V3 operation (protocolVersion = 3)
+        val v3Timestamp = 1710000000000L
+        val v3Op = OperationSigner.createAndSign(
+            protocolVersion = ProtocolVersion.V3_SIGNED_OPERATIONS,
+            groupId = "grp_compat",
+            authorPublicKey = alice.publicKeyHex,
+            privateKeyHex = alice.privateKeyHex,
+            parents = listOf(parent),
+            logicalClock = 3L,
+            payload = payload,
+            createdAtMillis = v3Timestamp
+        )
+
+        assertEquals(ProtocolVersion.V3_SIGNED_OPERATIONS, v3Op.protocolVersion)
+        assertEquals(v3Timestamp, v3Op.createdAtMillis)
+        assertTrue(OperationVerifier.verify(v3Op))
+        assertTrue(OperationValidator.validate(v3Op, "INR") is OperationValidationOutcome.Valid)
+
+        // Ensure operation IDs differ because V3 binds createdAtMillis
+        assertNotEquals(v2Op.operationId, v3Op.operationId)
+
+        // 3. Modifying timestamp on V3 invalidates signature
+        val tamperedV3 = v3Op.copy(createdAtMillis = v3Timestamp + 1000L)
+        assertFalse(OperationVerifier.verify(tamperedV3))
+
+        // 4. V3 requires valid createdAtMillis > 0
+        val invalidTimestampV3 = v3Op.copy(createdAtMillis = 0L)
+        val validationResult = OperationValidator.validate(invalidTimestampV3, "INR")
+        assertTrue(validationResult is OperationValidationOutcome.Invalid)
+        assertEquals("INVALID_TIMESTAMP", (validationResult as OperationValidationOutcome.Invalid).code)
+    }
 }

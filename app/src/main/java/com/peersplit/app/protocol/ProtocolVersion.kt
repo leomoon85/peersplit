@@ -7,9 +7,10 @@ package com.peersplit.app.protocol
 object ProtocolVersion {
     const val V1_LEGACY_BLOCKCHAIN = 1
     const val V2_SIGNED_OPERATIONS = 2
-    const val CURRENT = V2_SIGNED_OPERATIONS
+    const val V3_SIGNED_OPERATIONS = 3
+    const val CURRENT = V3_SIGNED_OPERATIONS
 
-    val SUPPORTED_VERSIONS = setOf(V2_SIGNED_OPERATIONS)
+    val SUPPORTED_VERSIONS = setOf(V2_SIGNED_OPERATIONS, V3_SIGNED_OPERATIONS)
 
     // Cryptographic Domain Separation Tags
     const val DOMAIN_OPERATION_ID = "PeerSplit/V2/Operation"
