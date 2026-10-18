@@ -14,7 +14,7 @@ OCR runs on-device with ML Kit, which also collects SDK diagnostics and usage me
 
 ## Development
 
-Use Android Studio, JDK 17 and the SDK versions specified in the Gradle configuration. The current app has minimum SDK 26, compile/target SDK 35, package `com.peersplit.app` and version 1.0.0. Check current Google Play requirements before submission; this configuration alone is not a release approval.
+Use Android Studio, JDK 17 and the SDK versions specified in the Gradle configuration. The current app has minimum SDK 26, compile/target SDK 36, package `com.peersplit.app` and version 1.0.0. Check current Google Play requirements before submission; this configuration alone is not a release approval.
 
 ```powershell
 .\gradlew.bat :app:assembleDebug
@@ -27,7 +27,7 @@ Configure release signing privately using the project's Gradle signing configura
 
 ## Release documentation
 
-- [Privacy policy](PRIVACY_POLICY.md): contact details supplied; public hosting still required.
+- [Privacy policy](PRIVACY_POLICY.md): publicly accessible on GitHub and available offline in the app.
 - [Store listing copy](STORE_LISTING.md).
 - [Play publishing guide](PLAYSTORE_LISTING_GUIDE.md).
 - [Data Safety worksheet](docs/DATA_SAFETY.md).

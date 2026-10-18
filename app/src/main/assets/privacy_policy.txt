@@ -1,6 +1,6 @@
 Privacy Policy for PeerSplit
 
-Last updated: October 18, 2026
+Last updated: October 19, 2026
 
 Peerloom Labs develops PeerSplit (com.peersplit.app), an Android application for recording and sharing group expenses. This policy describes the current app. PeerSplit is currently free, with no advertising, in-app purchases, or subscriptions.
 
@@ -52,7 +52,7 @@ You can choose not to use OCR, contact selection, exports, backups or UPI handof
 
 Children and changes
 
-PeerSplit is a shared-expense utility. Peerloom Labs does not knowingly solicit children's personal information for marketing. Group members should avoid entering children's personal information. The published store audience and regional eligibility must be confirmed before release; this policy does not establish a verified age-checking process.
+PeerSplit is intended for people aged 13 and above, with initial availability planned for India. The app does not verify a user's age. Peerloom Labs does not knowingly solicit children's personal information for marketing. Avoid entering children's personal information in shared group records. For concerns about a child's information submitted directly to Peerloom Labs, contact the privacy email below.
 
 This policy may change when the app or its services change. Updates will be identified by the date above and published with the app's policy materials.
 

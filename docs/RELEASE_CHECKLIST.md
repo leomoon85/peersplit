@@ -7,13 +7,14 @@ Status snapshot: October 18, 2026. This checklist separates completed engineerin
 - [x] Replace inaccurate zero-telemetry, ephemeral-relay, camera-permission and global-deletion claims in root release documents.
 - [x] Prepare a consistent privacy policy, listing copy and Data Safety worksheet.
 - [x] Add the developer-supplied privacy/support contact, `leo.moon85@gmail.com`, and remove contact placeholders.
-- [ ] Publish the finalized policy at an active, public, non-geofenced, non-PDF URL; test without signing in.
+- [x] Verify the GitHub policy URL opens without signing in (HTTP 200 on October 18). Worldwide availability still depends on GitHub access.
 - [x] Add offline policy text under Profile > Privacy policy, generated from the root policy.
 - [ ] Verify policy access, scrolling and dismissal on a clean-install device.
 - [x] Regenerate the packaged policy after adding the supplied contact; `python scripts/sync_privacy_policy.py --check` passed. Repeat after any policy edit.
-- [ ] Enter the same policy URL in Play Console and confirm developer identity matches the listing.
+- [x] Save the policy URL in Peerloom Labs / PeerSplit Play Console.
 - [ ] Check exact SDK disclosures and network flows; finalize the Data Safety form and retention/deletion support procedure.
-- [ ] Confirm target audience, regional availability, content rating and financial-features declarations.
+- [x] Save ages 13+, no ads, government/health and expense-management financial declarations.
+- [ ] Finish India track availability and content rating.
 - [ ] Establish license terms before advertising the project as open source; do not infer a license from GitHub hosting.
 
 ## Engineering evidence already obtained
@@ -26,7 +27,7 @@ These results apply to that reviewed source snapshot. Re-run appropriate checks 
 
 ## Release gates still to verify
 
-- [ ] Meet current Play target API rules; source currently targets API 35. Confirm account-specific deadlines/extensions.
+- [x] Upgrade compile/target SDK to 36 with AGP 8.10.1 and checksum-pinned Gradle 8.11.1.
 - [ ] Validate the final signed AAB, signing identity, increasing version code, upload certificate and Play App Signing setup.
 - [ ] Check 16 KB native-library/page-size compatibility on the final bundle and supported architectures.
 - [ ] Run installation, upgrade, offline/reconnection and multi-device relay tests on physical devices.
