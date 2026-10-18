@@ -34,23 +34,7 @@ object ReconciliationProjector {
         val groupId = result.groupId
 
         return database.withTransaction {
-            val existingMeta = database.groupProtocolDao().getGroupProtocolSync(groupId)
-            if (existingMeta != null) {
-                // Prevent stale reconciliation from overwriting newer ledger state
-                if (existingMeta.maxLogicalClock > result.maxLogicalClock) {
-                    Log.w(
-                        TAG,
-                        "Ignored stale reconciliation result for group $groupId: DB clock ${existingMeta.maxLogicalClock} > result clock ${result.maxLogicalClock}"
-                    )
-                    return@withTransaction false
-                }
-                if (existingMeta.maxLogicalClock == result.maxLogicalClock && existingMeta.latestStateDigest == result.stateDigest) {
-                    // Already identical ledger state
-                    return@withTransaction false
-                }
-            }
-
-            // 1. Update status on signed_operations table
+            // 1. Update status on signed_operations table unconditionally (A27)
             for (op in result.acceptedOperations) {
                 database.signedOperationDao().updateOperationStatus(
                     operationId = op.operationId,
@@ -71,6 +55,42 @@ object ReconciliationProjector {
                     status = SignedOperationEntity.STATUS_PENDING,
                     rejectionReason = "Waiting for parents: ${pend.missingParentIds.joinToString(",")}"
                 )
+            }
+
+            // 1b. Materialize Member Projections (A11)
+            val existingMembers = database.memberDao().getMembersForGroupSync(groupId).associateBy { it.pubkey.lowercase() }
+            val membersToInsert = mutableListOf<com.peersplit.app.data.local.entity.MemberEntity>()
+            for ((pubkey, info) in result.activeMembers) {
+                val existing = existingMembers[pubkey.lowercase()]
+                val displayName = when {
+                    info.displayName.isNotBlank() -> info.displayName
+                    existing != null && existing.displayName.isNotBlank() -> existing.displayName
+                    else -> "Member ${pubkey.take(8)}"
+                }
+                membersToInsert.add(
+                    com.peersplit.app.data.local.entity.MemberEntity(
+                        id = existing?.id ?: 0,
+                        groupId = groupId,
+                        pubkey = pubkey,
+                        displayName = displayName,
+                        upiId = existing?.upiId,
+                        phone = existing?.phone
+                    )
+                )
+            }
+            if (membersToInsert.isNotEmpty()) {
+                database.memberDao().insertMembers(membersToInsert)
+            }
+            for (removedPubkey in result.removedMembers) {
+                database.memberDao().deleteMember(groupId, removedPubkey)
+            }
+            for (ghostPubkey in result.ghostAliases.keys) {
+                database.memberDao().deleteMember(groupId, ghostPubkey)
+            }
+
+            val existingMeta = database.groupProtocolDao().getGroupProtocolSync(groupId)
+            if (existingMeta != null && existingMeta.latestStateDigest == result.stateDigest && existingMeta.maxLogicalClock == result.maxLogicalClock) {
+                return@withTransaction true
             }
 
             // 2. Materialize Expense Projections

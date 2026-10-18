@@ -87,6 +87,27 @@ object OperationCanonicalizer {
         )
     }
 
+    /**
+     * Backward-compatible canonicalization for interim commit 79a036c records
+     * that encoded createdAtMillis under protocolVersion = 2.
+     */
+    fun canonicalizeUnsignedInterimV2(operation: SignedOperation): ByteArray {
+        val sortedParents = operation.parents.sorted()
+        val out = CanonicalByteBuffer()
+        out.writeInt(ProtocolVersion.V2_SIGNED_OPERATIONS)
+        writeString(out, normalizeString(operation.groupId.trim()))
+        writeString(out, normalizeString(operation.authorPublicKey.trim().lowercase()))
+        out.writeInt(sortedParents.size)
+        for (parentId in sortedParents) {
+            writeString(out, parentId)
+        }
+        out.writeLong(operation.logicalClock)
+        out.writeInt(operation.keyEpoch)
+        out.writeLong(operation.createdAtMillis)
+        writePayload(out, operation.payload)
+        return out.toByteArray()
+    }
+
 
     private fun writePayload(out: CanonicalByteBuffer, payload: OperationPayload) {
         when (payload) {

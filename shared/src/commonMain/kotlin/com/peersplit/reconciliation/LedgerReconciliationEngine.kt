@@ -110,55 +110,109 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
         )
         allEverKnownMembers.add(normCreator)
 
-        // Identify authorized removals in topological order
+        // Stage 1: Authenticated pre-pass for membership operations
+        // Only operations that pass envelope, root, parent acceptance, and authorization
+        // are recognized as authorized membership events (removals and readmissions).
         val preAuthorizedRemovalsByTarget = mutableMapOf<String, MutableList<SignedOperation>>()
+        val preAuthorizedReadmitsByTarget = mutableMapOf<String, MutableList<SignedOperation>>()
         run {
-            val simActive = LinkedHashMap(activeMembers)
-            val simRemoved = LinkedHashSet<String>()
+            val pass1AcceptedOpIds = mutableSetOf<String>()
+            val pass1ActiveMembers = LinkedHashMap(activeMembers)
+            val pass1RemovedMembers = LinkedHashSet<String>()
+            val pass1ConsumedNonces = LinkedHashSet<String>()
+            val pass1GhostAliases = LinkedHashMap<String, String>()
+            var pass1RootOpId: String? = null
+
             for (op in topologicallyOrdered) {
-                if (op.authorPublicKey in simRemoved) continue
+                // Check parent acceptance
+                val parentNotAccepted = op.parents.any { it !in pass1AcceptedOpIds }
+                if (op.parents.isNotEmpty() && parentNotAccepted) {
+                    continue
+                }
+
                 when (val p = op.payload) {
                     is OperationPayload.GenesisCreated -> {
-                        if (op.authorPublicKey == normCreator) {
-                            for (m in p.initialMembers) {
-                                val role = if (m.publicKey == normCreator) ProtocolMemberInfo.ROLE_ADMIN else m.role
-                                simActive[m.publicKey] = m.copy(role = role)
-                            }
+                        if (pass1RootOpId != null && pass1RootOpId != op.operationId) continue
+                        if (normalizedGenesis.genesisOperationId != null && op.operationId != normalizedGenesis.genesisOperationId) continue
+                        if (op.authorPublicKey != normCreator) continue
+                        pass1RootOpId = op.operationId
+                        pass1AcceptedOpIds.add(op.operationId)
+                        for (m in p.initialMembers) {
+                            val role = if (m.publicKey == normCreator) ProtocolMemberInfo.ROLE_ADMIN else m.role
+                            pass1ActiveMembers[m.publicKey] = m.copy(role = role)
                         }
                     }
                     is OperationPayload.LegacyV1Checkpoint -> {
-                        if (op.authorPublicKey == normCreator || op.authorPublicKey in simActive) {
-                            for (m in p.members) {
-                                val role = if (m.publicKey == normCreator) ProtocolMemberInfo.ROLE_ADMIN else m.role
-                                simActive[m.publicKey] = m.copy(role = role)
-                            }
+                        if (pass1RootOpId != null && pass1RootOpId != op.operationId) continue
+                        if (normalizedGenesis.genesisOperationId != null && op.operationId != normalizedGenesis.genesisOperationId) continue
+                        val isV1Member = p.members.any { it.publicKey.trim().lowercase() == op.authorPublicKey.trim().lowercase() }
+                        if (op.authorPublicKey != normCreator && !isV1Member && op.authorPublicKey !in pass1ActiveMembers) continue
+                        pass1RootOpId = op.operationId
+                        pass1AcceptedOpIds.add(op.operationId)
+                        for (m in p.members) {
+                            val role = if (m.publicKey == normCreator) ProtocolMemberInfo.ROLE_ADMIN else m.role
+                            pass1ActiveMembers[m.publicKey] = m.copy(role = role)
                         }
                     }
                     is OperationPayload.MemberAdded -> {
-                        val authorInfo = simActive[op.authorPublicKey]
-                        val isSelfJoin = op.authorPublicKey == p.memberPublicKey
-                        val canAdd = op.authorPublicKey == normCreator ||
-                            (authorInfo != null && authorInfo.role == ProtocolMemberInfo.ROLE_ADMIN) ||
-                            (isSelfJoin && p.invitationGrant != null && p.memberPublicKey !in simRemoved)
-                        if (canAdd) {
-                            simRemoved.remove(p.memberPublicKey)
-                            simActive[p.memberPublicKey] = ProtocolMemberInfo(
-                                publicKey = p.memberPublicKey,
-                                displayName = p.displayName,
-                                role = if (op.authorPublicKey == normCreator || authorInfo?.role == ProtocolMemberInfo.ROLE_ADMIN) p.role else ProtocolMemberInfo.ROLE_MEMBER
+                        val authOutcome = OperationAuthorization.evaluate(
+                            operation = op,
+                            trustedGenesis = normalizedGenesis,
+                            activeMembers = pass1ActiveMembers,
+                            removedMembers = pass1RemovedMembers,
+                            acceptedRemovalsByTarget = emptyMap(),
+                            acceptedReadmitsByTarget = emptyMap(),
+                            ancestorsOf = causalResult.ancestorsOf,
+                            consumedInvitationNonces = pass1ConsumedNonces,
+                            ghostAliases = pass1GhostAliases
+                        )
+                        if (authOutcome.isAuthorized) {
+                            pass1AcceptedOpIds.add(op.operationId)
+                            val normPk = p.memberPublicKey.trim().lowercase()
+                            val wasRemoved = normPk in pass1RemovedMembers
+                            pass1RemovedMembers.remove(normPk)
+                            val authorInfo = pass1ActiveMembers[op.authorPublicKey]
+                            val isCreator = op.authorPublicKey == normCreator
+                            val role = if (isCreator || authorInfo?.role == ProtocolMemberInfo.ROLE_ADMIN) p.role else ProtocolMemberInfo.ROLE_MEMBER
+                            pass1ActiveMembers[normPk] = ProtocolMemberInfo(
+                                publicKey = normPk,
+                                displayName = p.displayName.trim(),
+                                role = role
                             )
+                            p.invitationGrant?.let { pass1ConsumedNonces.add(it.invitationNonce.trim().lowercase()) }
+                            val claimedGhost = p.claimedGhostPubkey?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+                            if (claimedGhost != null && claimedGhost != normPk) {
+                                pass1GhostAliases[claimedGhost] = normPk
+                                pass1ActiveMembers.remove(claimedGhost)
+                            }
+                            if (wasRemoved || !isCreator) {
+                                preAuthorizedReadmitsByTarget.getOrPut(normPk) { mutableListOf() }.add(op)
+                            }
                         }
                     }
                     is OperationPayload.MemberRemoved -> {
-                        val authorInfo = simActive[op.authorPublicKey]
-                        val isAdmin = op.authorPublicKey == normCreator || authorInfo?.role == ProtocolMemberInfo.ROLE_ADMIN
-                        if (isAdmin && p.memberPublicKey != normCreator) {
-                            simActive.remove(p.memberPublicKey)
-                            simRemoved.add(p.memberPublicKey)
-                            preAuthorizedRemovalsByTarget.getOrPut(p.memberPublicKey) { mutableListOf() }.add(op)
+                        val authOutcome = OperationAuthorization.evaluate(
+                            operation = op,
+                            trustedGenesis = normalizedGenesis,
+                            activeMembers = pass1ActiveMembers,
+                            removedMembers = pass1RemovedMembers,
+                            acceptedRemovalsByTarget = emptyMap(),
+                            acceptedReadmitsByTarget = emptyMap(),
+                            ancestorsOf = causalResult.ancestorsOf,
+                            consumedInvitationNonces = pass1ConsumedNonces,
+                            ghostAliases = pass1GhostAliases
+                        )
+                        if (authOutcome.isAuthorized) {
+                            pass1AcceptedOpIds.add(op.operationId)
+                            val targetPk = p.memberPublicKey.trim().lowercase()
+                            pass1ActiveMembers.remove(targetPk)
+                            pass1RemovedMembers.add(targetPk)
+                            preAuthorizedRemovalsByTarget.getOrPut(targetPk) { mutableListOf() }.add(op)
                         }
                     }
-                    else -> {}
+                    else -> {
+                        pass1AcceptedOpIds.add(op.operationId)
+                    }
                 }
             }
         }
@@ -235,8 +289,10 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                 activeMembers = activeMembers,
                 removedMembers = removedMembers,
                 acceptedRemovalsByTarget = preAuthorizedRemovalsByTarget,
+                acceptedReadmitsByTarget = preAuthorizedReadmitsByTarget,
                 ancestorsOf = causalResult.ancestorsOf,
-                consumedInvitationNonces = consumedInvitationNonces
+                consumedInvitationNonces = consumedInvitationNonces,
+                ghostAliases = ghostAliases
             )
             if (!authOutcome.isAuthorized) {
                 rejected.add(
@@ -373,12 +429,12 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                             voidOp.operationId != op.operationId &&
                                 voidOp.parents.all { it in acceptedOpIds } &&
                                 OperationAuthorization.evaluate(
-                                    voidOp,
-                                    normalizedGenesis,
-                                    activeMembers,
-                                    removedMembers,
-                                    preAuthorizedRemovalsByTarget,
-                                    causalResult.ancestorsOf
+                                    operation = voidOp,
+                                    trustedGenesis = normalizedGenesis,
+                                    activeMembers = activeMembers,
+                                    removedMembers = removedMembers,
+                                    acceptedRemovalsByTarget = preAuthorizedRemovalsByTarget,
+                                    ancestorsOf = causalResult.ancestorsOf
                                 ).isAuthorized
                         }
 

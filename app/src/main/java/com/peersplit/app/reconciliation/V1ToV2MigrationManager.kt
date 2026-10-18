@@ -230,8 +230,25 @@ class V1ToV2MigrationManager(
             )
         )
 
-        // Reconcile into projections
-        syncManager.reconcileV2Group(groupId)
+        // Reconcile into projections and verify acceptance
+        val reconciled = syncManager.reconcileV2Group(groupId)
+        if (!reconciled) {
+            database.signedOperationDao().deleteOperationsForGroup(groupId)
+            database.groupProtocolDao().deleteGroupProtocol(groupId)
+            Log.e(TAG, "Migration checkpoint failed reconciliation for group $groupId")
+            return MigrationResult(
+                groupId = groupId,
+                isMigrated = false,
+                checkpointOperationId = null,
+                migratedExpenseCount = 0,
+                migratedSettlementCount = 0,
+                legacyChainVerified = isChainVerified,
+                message = "Migration checkpoint failed reconciliation validation"
+            )
+        }
+
+        val outboxOp = syncManager.buildOutboxOperation(signedOp, groupEntity.groupKeyBase64)
+        database.outboxDao().insertOutboxOperation(outboxOp)
 
         // Broadcast to peers
         syncManager.broadcastOperation(signedOp, groupEntity.groupKeyBase64)

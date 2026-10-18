@@ -195,6 +195,7 @@ object KeyManager {
     /**
      * Gets or creates the local device user identity.
      */
+    @Synchronized
     fun getOrCreateIdentity(context: Context): UserIdentity {
         cachedIdentity?.let { return it }
 
@@ -205,11 +206,13 @@ object KeyManager {
         val existingPhone = prefs.getString(KEY_PHONE, null)
 
         if (existingPubHex != null) {
-            // Migrate legacy plaintext private key if present
+            // Migrate legacy plaintext private key if present and Keystore succeeds
             val legacyPriv = prefs.getString(KEY_PRIV_HEX_LEGACY, null)
             if (legacyPriv != null) {
-                storePrivateKeyEncrypted(prefs, legacyPriv)
-                prefs.edit().remove(KEY_PRIV_HEX_LEGACY).apply()
+                val migrated = storePrivateKeyEncrypted(prefs, legacyPriv)
+                if (migrated) {
+                    prefs.edit().remove(KEY_PRIV_HEX_LEGACY).apply()
+                }
             }
             val identity = UserIdentity(
                 publicKeyHex = existingPubHex,
@@ -238,6 +241,7 @@ object KeyManager {
     /**
      * Retrieves the stored private key in hex (decrypted via Android Keystore).
      */
+    @Synchronized
     fun getPrivateKeyHex(context: Context): String {
         cachedPrivateKeyHex?.let { return it }
 
@@ -251,11 +255,13 @@ object KeyManager {
             }
         }
 
-        // Check legacy plaintext key and migrate
+        // Check legacy plaintext key and migrate if Keystore succeeds
         val legacyPriv = prefs.getString(KEY_PRIV_HEX_LEGACY, null)
         if (legacyPriv != null) {
-            storePrivateKeyEncrypted(prefs, legacyPriv)
-            prefs.edit().remove(KEY_PRIV_HEX_LEGACY).apply()
+            val migrated = storePrivateKeyEncrypted(prefs, legacyPriv)
+            if (migrated) {
+                prefs.edit().remove(KEY_PRIV_HEX_LEGACY).apply()
+            }
             cachedPrivateKeyHex = legacyPriv
             return legacyPriv
         }
@@ -305,6 +311,7 @@ object KeyManager {
     /**
      * Restores cryptographic identity from backup.
      */
+    @Synchronized
     fun restoreIdentity(
         context: Context,
         privHex: String,
@@ -314,24 +321,32 @@ object KeyManager {
         phone: String? = null
     ) {
         val prefs = getPrefs(context)
-        storePrivateKeyEncrypted(prefs, privHex)
-        prefs.edit()
-            .remove(KEY_PRIV_HEX_LEGACY)
+        val migrated = storePrivateKeyEncrypted(prefs, privHex)
+        val editor = prefs.edit()
             .putString(KEY_PUB_HEX, pubHex)
             .putString(KEY_USER_NAME, displayName)
             .putString(KEY_UPI_ID, upiId)
             .putString(KEY_PHONE, normalizePhone(phone))
-            .apply()
+        if (migrated) {
+            editor.remove(KEY_PRIV_HEX_LEGACY)
+        }
+        editor.apply()
+        cachedIdentity = null
+        cachedPrivateKeyHex = privHex
         notifyIdentityChanged()
     }
 
-    private fun storePrivateKeyEncrypted(prefs: SharedPreferences, privHex: String) {
+    private fun storePrivateKeyEncrypted(prefs: SharedPreferences, privHex: String): Boolean {
         val encrypted = encryptWithKeystore(privHex)
         if (encrypted != null) {
-            prefs.edit().putString(KEY_PRIV_ENC, encrypted).apply()
-        } else {
-            prefs.edit().putString(KEY_PRIV_HEX_LEGACY, privHex).apply()
+            val decrypted = decryptWithKeystore(encrypted)
+            if (decrypted == privHex) {
+                prefs.edit().putString(KEY_PRIV_ENC, encrypted).apply()
+                return true
+            }
         }
+        prefs.edit().putString(KEY_PRIV_HEX_LEGACY, privHex).apply()
+        return false
     }
 
     private fun getOrCreateKeystoreSecretKey(): SecretKey? {

@@ -24,8 +24,10 @@ object OperationAuthorization {
         activeMembers: Map<String, ProtocolMemberInfo>,
         removedMembers: Set<String>,
         acceptedRemovalsByTarget: Map<String, List<SignedOperation>>,
+        acceptedReadmitsByTarget: Map<String, List<SignedOperation>> = emptyMap(),
         ancestorsOf: Map<String, Set<String>>,
-        consumedInvitationNonces: Set<String> = emptySet()
+        consumedInvitationNonces: Set<String> = emptySet(),
+        ghostAliases: Map<String, String> = emptyMap()
     ): AuthOutcome {
         val author = operation.authorPublicKey
 
@@ -41,15 +43,26 @@ object OperationAuthorization {
         val removalsForAuthor = acceptedRemovalsByTarget[author].orEmpty()
         if (removalsForAuthor.isNotEmpty()) {
             val opAncestors = ancestorsOf[operation.operationId].orEmpty()
+            val readmitsForAuthor = acceptedReadmitsByTarget[author].orEmpty()
+
             for (removalOp in removalsForAuthor) {
                 val removalAncestors = ancestorsOf[removalOp.operationId].orEmpty()
                 val isOpCausalBeforeRemoval = operation.operationId in removalAncestors
-                if (!isOpCausalBeforeRemoval) {
-                    // Either removal is an ancestor of op, or removal and op are concurrent: removal wins!
+                if (isOpCausalBeforeRemoval) continue
+
+                // Check if author was explicitly readmitted by an admin after this removal and this op is after that readmission
+                val isOpAfterReadmission = readmitsForAuthor.any { readmitOp ->
+                    val readmitAncestors = ancestorsOf[readmitOp.operationId].orEmpty()
+                    val readmitIsAfterRemoval = removalOp.operationId in readmitAncestors
+                    val opIsAfterReadmit = readmitOp.operationId in opAncestors || operation.operationId == readmitOp.operationId
+                    readmitIsAfterRemoval && opIsAfterReadmit
+                }
+
+                if (!isOpAfterReadmission) {
                     return AuthOutcome(
                         isAuthorized = false,
                         rejectionReason = RejectionReason.UNAUTHORIZED_REMOVED_MEMBER,
-                        detail = "Operation by $author is concurrent with or subsequent to removal ${removalOp.operationId}"
+                        detail = "Operation by $author is concurrent with or subsequent to removal ${removalOp.operationId} without readmission"
                     )
                 }
             }
@@ -70,11 +83,12 @@ object OperationAuthorization {
             }
 
             is OperationPayload.LegacyV1Checkpoint -> {
-                if (author != trustedGenesis.creatorPublicKey && author !in activeMembers) {
+                val isV1Member = payload.members.any { it.publicKey.trim().lowercase() == author.trim().lowercase() }
+                if (author != trustedGenesis.creatorPublicKey && !isV1Member && author !in activeMembers) {
                     AuthOutcome(
                         isAuthorized = false,
                         rejectionReason = RejectionReason.UNAUTHORIZED_AUTHOR,
-                        detail = "LegacyV1Checkpoint must be authored by creator or authorized member"
+                        detail = "LegacyV1Checkpoint must be authored by creator or verified V1 member"
                     )
                 } else {
                     AuthOutcome(true)
@@ -82,6 +96,54 @@ object OperationAuthorization {
             }
 
             is OperationPayload.MemberAdded -> {
+                // A01: Validate ghost claim if present
+                val ghostClaim = payload.claimedGhostPubkey?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+                if (ghostClaim != null) {
+                    val normTarget = ghostClaim.lowercase()
+                    val normCreator = trustedGenesis.creatorPublicKey.trim().lowercase()
+                    if (normTarget == normCreator) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.UNAUTHORIZED_AUTHOR,
+                            detail = "Cannot claim the group creator as a ghost"
+                        )
+                    }
+                    if (normTarget == payload.memberPublicKey.trim().lowercase()) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.INVALID_ENVELOPE_OR_PAYLOAD,
+                            detail = "Cannot claim oneself as a ghost"
+                        )
+                    }
+                    val targetMember = activeMembers[normTarget]
+                    if (targetMember == null || targetMember.role != ProtocolMemberInfo.ROLE_GHOST) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.UNAUTHORIZED_AUTHOR,
+                            detail = "Target $normTarget is not an active unclaimed ghost member"
+                        )
+                    }
+                    if (normTarget in ghostAliases) {
+                        return AuthOutcome(
+                            isAuthorized = false,
+                            rejectionReason = RejectionReason.UNAUTHORIZED_AUTHOR,
+                            detail = "Ghost member $normTarget has already been claimed"
+                        )
+                    }
+                    var curr: String? = normTarget
+                    val visited = mutableSetOf<String>()
+                    while (curr != null) {
+                        if (!visited.add(curr) || curr == payload.memberPublicKey.trim().lowercase()) {
+                            return AuthOutcome(
+                                isAuthorized = false,
+                                rejectionReason = RejectionReason.UNAUTHORIZED_AUTHOR,
+                                detail = "Ghost claim would create an alias cycle"
+                            )
+                        }
+                        curr = ghostAliases[curr]
+                    }
+                }
+
                 val authorMember = activeMembers[author]
                 val isCreator = author == trustedGenesis.creatorPublicKey
                 val isAdmin = authorMember?.role == ProtocolMemberInfo.ROLE_ADMIN || isCreator

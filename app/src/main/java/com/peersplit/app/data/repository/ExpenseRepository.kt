@@ -3,6 +3,7 @@ package com.peersplit.app.data.repository
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import androidx.room.withTransaction
 import com.peersplit.app.blockchain.Block
 import com.peersplit.app.blockchain.BlockType
 import com.peersplit.app.blockchain.BlockchainEngine
@@ -283,7 +284,6 @@ class ExpenseRepository(
                     identity = identity,
                     balProjections = rawBalances
                 )
-                groupDetailCache[entity.id] = detail
                 detail.group
             }
         }.flowOn(Dispatchers.Default)
@@ -298,12 +298,25 @@ class ExpenseRepository(
             database.memberDao().getMembersForGroup(groupId),
             database.blockDao().getBlocksForGroup(groupId),
             database.projectionDao().getExpenseProjectionsForGroupFlow(groupId),
-            database.projectionDao().getBalanceProjectionsForGroupFlow(groupId)
-        ) { groupEntity, memberEntities, blockEntities, expProjections, balProjections ->
+            database.projectionDao().getBalanceProjectionsForGroupFlow(groupId),
+            database.signedOperationDao().getOperationsForGroupFlow(groupId)
+        ) { array: Array<Any?> ->
+            val groupEntity = array[0] as GroupEntity?
             if (groupEntity == null) {
                 groupDetailCache.remove(groupId)
                 return@combine null
             }
+            @Suppress("UNCHECKED_CAST")
+            val memberEntities = array[1] as List<MemberEntity>
+            @Suppress("UNCHECKED_CAST")
+            val blockEntities = array[2] as List<BlockEntity>
+            @Suppress("UNCHECKED_CAST")
+            val expProjections = array[3] as List<ExpenseProjectionEntity>
+            @Suppress("UNCHECKED_CAST")
+            val balProjections = array[4] as List<BalanceProjectionEntity>
+            @Suppress("UNCHECKED_CAST")
+            val opEntities = array[5] as List<SignedOperationEntity>
+
             val identity = KeyManager.getOrCreateIdentity(context)
             val detail = computeGroupDetail(
                 groupEntity = groupEntity,
@@ -311,7 +324,8 @@ class ExpenseRepository(
                 blockEntities = blockEntities,
                 identity = identity,
                 expProjections = expProjections,
-                balProjections = balProjections
+                balProjections = balProjections,
+                operationEntities = opEntities
             )
             groupDetailCache[groupId] = detail
             detail
@@ -324,7 +338,8 @@ class ExpenseRepository(
         blockEntities: List<BlockEntity>,
         identity: KeyManager.UserIdentity,
         expProjections: List<ExpenseProjectionEntity> = emptyList(),
-        balProjections: List<BalanceProjectionEntity> = emptyList()
+        balProjections: List<BalanceProjectionEntity> = emptyList(),
+        operationEntities: List<SignedOperationEntity> = emptyList()
     ): GroupDetail {
         val groupId = groupEntity.id
         val domainBlocks = blockEntities.map { it.toDomainBlock() }
@@ -375,6 +390,7 @@ class ExpenseRepository(
         val expenseItems: List<ExpenseItem>
 
         if (isV2) {
+            val opSignatures = operationEntities.associate { it.operationId to it.signature }
             netBalances = balProjections.associate {
                 val resolved = resolvePubkey(it.memberPublicKey)
                 resolved to MoneyMath.toMajorUnits(it.balanceMinor, it.currency)
@@ -415,6 +431,10 @@ class ExpenseRepository(
                     }
                     val share = if (proj.isVoided) 0.0 else (userPaid - userSplit)
 
+                    val actualSig = opSignatures[proj.currentRevisionOperationId]
+                        ?: opSignatures[proj.originOperationId]
+                        ?: proj.originOperationId
+
                     ExpenseItem(
                         id = proj.expenseId,
                         description = proj.description,
@@ -431,7 +451,7 @@ class ExpenseRepository(
                         splits = resolvedSplits,
                         payers = resolvedPayers,
                         blockHash = proj.currentRevisionOperationId,
-                        signature = proj.originOperationId,
+                        signature = actualSig,
                         isVoided = proj.isVoided,
                         editedFromExpenseId = null
                     )
@@ -673,6 +693,8 @@ class ExpenseRepository(
             database.signedOperationDao().insertOperationIgnore(
                 OperationEntityMapper.toEntity(op, SignedOperationEntity.STATUS_ACCEPTED)
             )
+            val outboxOp = syncManager.buildOutboxOperation(op, groupKeyBase64)
+            database.outboxDao().insertOutboxOperation(outboxOp)
 
             database.groupProtocolDao().upsertGroupProtocol(
                 GroupProtocolEntity(
@@ -783,6 +805,8 @@ class ExpenseRepository(
             if (deps.isNotEmpty()) {
                 database.signedOperationDao().insertDependenciesIgnore(deps)
             }
+            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
+            database.outboxDao().insertOutboxOperation(outboxOp)
 
             Pair(block, op)
         } ?: return
@@ -811,15 +835,19 @@ class ExpenseRepository(
      */
     suspend fun deleteGroup(groupId: String) {
         groupDetailCache.remove(groupId)
-        database.blockDao().deleteBlocksForGroup(groupId)
-        database.memberDao().deleteMembersForGroup(groupId)
-        database.signedOperationDao().deleteDependenciesForGroup(groupId)
-        database.signedOperationDao().deleteOperationsForGroup(groupId)
-        database.projectionDao().deleteExpenseProjectionsForGroup(groupId)
-        database.projectionDao().deleteBalanceProjectionsForGroup(groupId)
-        database.outboxDao().deleteOutboxForGroup(groupId)
-        database.groupProtocolDao().deleteGroupProtocol(groupId)
-        database.groupDao().deleteGroup(groupId)
+        database.withTransaction {
+            database.outboxDao().deleteRelayDeliveriesForGroup(groupId)
+            database.outboxDao().deleteOutboxForGroup(groupId)
+            database.groupKeyDao().deleteKeysForGroup(groupId)
+            database.blockDao().deleteBlocksForGroup(groupId)
+            database.memberDao().deleteMembersForGroup(groupId)
+            database.signedOperationDao().deleteDependenciesForGroup(groupId)
+            database.signedOperationDao().deleteOperationsForGroup(groupId)
+            database.projectionDao().deleteExpenseProjectionsForGroup(groupId)
+            database.projectionDao().deleteBalanceProjectionsForGroup(groupId)
+            database.groupProtocolDao().deleteGroupProtocol(groupId)
+            database.groupDao().deleteGroup(groupId)
+        }
     }
 
     /**
@@ -930,6 +958,8 @@ class ExpenseRepository(
             if (deps.isNotEmpty()) {
                 database.signedOperationDao().insertDependenciesIgnore(deps)
             }
+            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
+            database.outboxDao().insertOutboxOperation(outboxOp)
 
             Pair(block, op)
         } ?: return@withContext
@@ -1057,6 +1087,8 @@ class ExpenseRepository(
             if (deps.isNotEmpty()) {
                 database.signedOperationDao().insertDependenciesIgnore(deps)
             }
+            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
+            database.outboxDao().insertOutboxOperation(outboxOp)
 
             Triple(vBlock, expBlock, op)
         } ?: return@withContext
@@ -1126,6 +1158,8 @@ class ExpenseRepository(
             if (deps.isNotEmpty()) {
                 database.signedOperationDao().insertDependenciesIgnore(deps)
             }
+            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
+            database.outboxDao().insertOutboxOperation(outboxOp)
 
             Pair(block, op)
         } ?: return
@@ -1196,6 +1230,8 @@ class ExpenseRepository(
             if (deps.isNotEmpty()) {
                 database.signedOperationDao().insertDependenciesIgnore(deps)
             }
+            val outboxOp = syncManager.buildOutboxOperation(op, groupEntity.groupKeyBase64)
+            database.outboxDao().insertOutboxOperation(outboxOp)
 
             Pair(block, op)
         } ?: return

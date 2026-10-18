@@ -47,8 +47,10 @@ class OutboxRetryWorker(
         return try {
             val database = AppDatabase.getInstance(applicationContext)
             val syncManager = P2PSyncManager(applicationContext, database)
+            syncManager.initialize()
             syncManager.flushOutboxOperations()
             syncManager.flushUnsyncedBlocks()
+            kotlinx.coroutines.delay(3000L)
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "Error in outbox retry worker: ${e.message}", e)

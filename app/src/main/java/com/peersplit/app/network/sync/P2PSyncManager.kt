@@ -23,6 +23,7 @@ import com.peersplit.app.network.nostr.RelayPool
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -178,62 +179,116 @@ class P2PSyncManager(
     /**
      * Flushes any locally created blocks that have not yet been acknowledged by a relay.
      */
-    fun flushUnsyncedBlocks() {
-        scope.launch {
-            try {
-                val unsynced = database.blockDao().getUnsyncedBlocksSync()
-                if (unsynced.isEmpty()) return@launch
-                val groupsById = database.groupDao().getGroupsSync().associateBy { it.id }
-                for (entity in unsynced) {
-                    val group = groupsById[entity.groupId] ?: continue
-                    broadcastBlock(entity.toDomainBlock(), group.groupKeyBase64)
-                }
-                Log.d(TAG, "Flushed ${unsynced.size} unsynced block(s) from durable outbox")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error flushing unsynced blocks: ${e.message}")
+    suspend fun flushUnsyncedBlocks() = withContext(Dispatchers.IO) {
+        try {
+            val unsynced = database.blockDao().getUnsyncedBlocksSync()
+            if (unsynced.isEmpty()) return@withContext
+            val groupsById = database.groupDao().getGroupsSync().associateBy { it.id }
+            for (entity in unsynced) {
+                val group = groupsById[entity.groupId] ?: continue
+                broadcastBlock(entity.toDomainBlock(), group.groupKeyBase64)
             }
+            Log.d(TAG, "Flushed ${unsynced.size} unsynced block(s) from durable outbox")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error flushing unsynced blocks: ${e.message}")
         }
     }
 
     /**
      * Flushes any due V2 outbox operations with bounded exponential backoff and jitter.
      */
-    fun flushOutboxOperations() {
-        scope.launch {
-            try {
-                val now = System.currentTimeMillis()
-                val due = database.outboxDao().getDueOutboxOperationsSync(now, limit = 32)
-                if (due.isEmpty()) return@launch
+    suspend fun flushOutboxOperations() = withContext(Dispatchers.IO) {
+        try {
+            relayPool.connectAll()
+            val now = System.currentTimeMillis()
+            val due = database.outboxDao().getDueOutboxOperationsSync(now, limit = 32)
+            if (due.isEmpty()) return@withContext
 
-                for (outboxItem in due) {
-                    val event = try {
-                        json.decodeFromString(NostrEvent.serializer(), outboxItem.signedEventJson)
-                    } catch (_: Exception) { null } ?: continue
+            for (outboxItem in due) {
+                val event = try {
+                    json.decodeFromString(NostrEvent.serializer(), outboxItem.signedEventJson)
+                } catch (_: Exception) { null } ?: continue
 
-                    eventIdToOpId[outboxItem.nostrEventId] = outboxItem.operationId
-                    val published = relayPool.broadcast(event)
+                eventIdToOpId[outboxItem.nostrEventId] = outboxItem.operationId
+                val published = relayPool.broadcast(event)
 
-                    val nextAttempt = if (published) {
-                        now + 60_000L // check back in 1 min if no ACK
-                    } else {
-                        // Exponential backoff: 2s, 4s, 8s, 16s, up to 60s + jitter
-                        val backoffSecs = (2 shl (outboxItem.attemptCount.coerceAtMost(5))).toLong()
-                        val jitter = (0..2000).random()
-                        now + (backoffSecs * 1000L) + jitter
-                    }
-
-                    database.outboxDao().updateOutboxRetryState(
-                        operationId = outboxItem.operationId,
-                        attemptCount = outboxItem.attemptCount + 1,
-                        nextAttemptAtMillis = nextAttempt,
-                        status = if (published) com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_ACKED_PARTIAL
-                                 else com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_QUEUED
-                    )
+                val nextAttempt = if (published) {
+                    now + 60_000L // check back in 1 min if no ACK
+                } else {
+                    // Exponential backoff: 2s, 4s, 8s, 16s, up to 60s + jitter
+                    val backoffSecs = (2 shl (outboxItem.attemptCount.coerceAtMost(5))).toLong()
+                    val jitter = (0..2000).random()
+                    now + (backoffSecs * 1000L) + jitter
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in flushOutboxOperations: ${e.message}")
+
+                database.outboxDao().updateOutboxRetryState(
+                    operationId = outboxItem.operationId,
+                    attemptCount = outboxItem.attemptCount + 1,
+                    nextAttemptAtMillis = nextAttempt,
+                    status = if (published) com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_ACKED_PARTIAL
+                             else com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_QUEUED
+                )
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in flushOutboxOperations: ${e.message}")
         }
+    }
+
+    /**
+     * Constructs a durable outbox operation entry ready for immediate atomic persistence.
+     */
+    fun buildOutboxOperation(
+        operation: com.peersplit.app.protocol.SignedOperation,
+        groupKeyBase64: String
+    ): com.peersplit.app.data.local.entity.OutboxOperationEntity {
+        val epochKeyEntity = database.groupKeyDao().getKeySync(operation.groupId, operation.keyEpoch)
+        val effectiveKeyBase64 = epochKeyEntity?.groupKeyBase64 ?: groupKeyBase64
+        val groupKey = EncryptionUtil.keyFromBase64(effectiveKeyBase64)
+        val operationJson = com.peersplit.app.protocol.OperationEntityMapper.json.encodeToString(
+            com.peersplit.app.protocol.SignedOperation.serializer(),
+            operation
+        )
+        val wireEnvelope = com.peersplit.app.protocol.WireOperationEnvelope(
+            version = operation.protocolVersion,
+            groupId = operation.groupId,
+            operationId = operation.operationId,
+            keyEpoch = operation.keyEpoch,
+            serializedOperationJson = operationJson
+        )
+        val wireJson = json.encodeToString(com.peersplit.app.protocol.WireOperationEnvelope.serializer(), wireEnvelope)
+        val encryptedContent = EncryptionUtil.encryptString(wireJson, groupKey)
+
+        val identity = KeyManager.getOrCreateIdentity(context)
+        val privKeyHex = KeyManager.getPrivateKeyHex(context)
+
+        val tags = listOf(
+            listOf("t", "peersplit_${operation.groupId}"),
+            listOf("t", "peersplit_v2"),
+            listOf("g", operation.groupId),
+            listOf("op", operation.operationId),
+            listOf("v", operation.protocolVersion.toString()),
+            listOf("epoch", operation.keyEpoch.toString())
+        )
+
+        val event = NostrEvent.createAndSign(
+            pubkey = identity.publicKeyHex,
+            privateKeyHex = privKeyHex,
+            kind = NostrEvent.KIND_PEERSPLIT_BLOCK,
+            tags = tags,
+            content = encryptedContent
+        )
+
+        val eventJson = json.encodeToString(NostrEvent.serializer(), event)
+        return com.peersplit.app.data.local.entity.OutboxOperationEntity(
+            operationId = operation.operationId,
+            groupId = operation.groupId,
+            nostrEventId = event.id,
+            signedEventJson = eventJson,
+            keyEpoch = operation.keyEpoch,
+            attemptCount = 0,
+            nextAttemptAtMillis = System.currentTimeMillis() + 5000L,
+            status = com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_QUEUED
+        )
     }
 
     /**
@@ -245,57 +300,10 @@ class P2PSyncManager(
         groupKeyBase64: String
     ) {
         try {
-            val epochKeyEntity = database.groupKeyDao().getKeySync(operation.groupId, operation.keyEpoch)
-            val effectiveKeyBase64 = epochKeyEntity?.groupKeyBase64 ?: groupKeyBase64
-            val groupKey = EncryptionUtil.keyFromBase64(effectiveKeyBase64)
-            val operationJson = com.peersplit.app.protocol.OperationEntityMapper.json.encodeToString(
-                com.peersplit.app.protocol.SignedOperation.serializer(),
-                operation
-            )
-            val wireEnvelope = com.peersplit.app.protocol.WireOperationEnvelope(
-                version = operation.protocolVersion,
-                groupId = operation.groupId,
-                operationId = operation.operationId,
-                keyEpoch = operation.keyEpoch,
-                serializedOperationJson = operationJson
-            )
-            val wireJson = json.encodeToString(com.peersplit.app.protocol.WireOperationEnvelope.serializer(), wireEnvelope)
-            val encryptedContent = EncryptionUtil.encryptString(wireJson, groupKey)
+            val outboxItem = buildOutboxOperation(operation, groupKeyBase64)
+            database.outboxDao().insertOutboxOperation(outboxItem)
 
-            val identity = KeyManager.getOrCreateIdentity(context)
-            val privKeyHex = KeyManager.getPrivateKeyHex(context)
-
-            val tags = listOf(
-                listOf("t", "peersplit_${operation.groupId}"),
-                listOf("t", "peersplit_v2"),
-                listOf("g", operation.groupId),
-                listOf("op", operation.operationId),
-                listOf("v", operation.protocolVersion.toString()),
-                listOf("epoch", operation.keyEpoch.toString())
-            )
-
-            val event = NostrEvent.createAndSign(
-                pubkey = identity.publicKeyHex,
-                privateKeyHex = privKeyHex,
-                kind = NostrEvent.KIND_PEERSPLIT_BLOCK,
-                tags = tags,
-                content = encryptedContent
-            )
-
-            val eventJson = json.encodeToString(NostrEvent.serializer(), event)
-            database.outboxDao().insertOutboxOperation(
-                com.peersplit.app.data.local.entity.OutboxOperationEntity(
-                    operationId = operation.operationId,
-                    groupId = operation.groupId,
-                    nostrEventId = event.id,
-                    signedEventJson = eventJson,
-                    keyEpoch = operation.keyEpoch,
-                    attemptCount = 0,
-                    nextAttemptAtMillis = System.currentTimeMillis() + 5000L,
-                    status = com.peersplit.app.data.local.entity.OutboxOperationEntity.STATUS_QUEUED
-                )
-            )
-
+            val event = json.decodeFromString(NostrEvent.serializer(), outboxItem.signedEventJson)
             eventIdToOpId[event.id] = operation.operationId
             relayPool.broadcast(event)
             Log.d(TAG, "Broadcasted V2 operation ${operation.operationId.take(8)} for group ${operation.groupId}")

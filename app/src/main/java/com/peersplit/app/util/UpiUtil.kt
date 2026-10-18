@@ -81,8 +81,13 @@ object UpiUtil {
         upiId: String,
         payeeName: String,
         amount: Double,
+        currency: String = "INR",
         note: String = "PeerSplit Settlement"
     ): Boolean {
+        if (!currency.equals("INR", ignoreCase = true)) {
+            Toast.makeText(context, "UPI payments only support INR currency", Toast.LENGTH_SHORT).show()
+            return false
+        }
         if (upiId.isBlank()) {
             Toast.makeText(context, "No UPI ID provided for this member", Toast.LENGTH_SHORT).show()
             return false

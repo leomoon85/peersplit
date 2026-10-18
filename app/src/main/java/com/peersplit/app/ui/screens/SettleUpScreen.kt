@@ -238,8 +238,8 @@ fun SettleUpScreen(
                 )
             }
 
-            // UPI Deep Link & QR Payment Options (Enabled for INR or any payee with a UPI ID / Phone)
-            if (currency.equals("INR", ignoreCase = true) || payeeUpiId.isNotBlank() || !payeeMember?.phone.isNullOrBlank()) {
+            // UPI Deep Link & QR Payment Options (Enabled only for INR currency when payee has a UPI ID or Phone)
+            if (currency.equals("INR", ignoreCase = true) && (payeeUpiId.isNotBlank() || !payeeMember?.phone.isNullOrBlank())) {
                 val payeeName = payeeMember?.displayName ?: "Payee"
                 val payeePhone = payeeMember?.phone?.takeIf { it.isNotBlank() }
 

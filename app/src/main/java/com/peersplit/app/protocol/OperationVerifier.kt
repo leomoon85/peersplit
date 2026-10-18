@@ -20,7 +20,15 @@ object OperationVerifier {
             if (!OperationId.isValidFormat(operation.operationId)) return false
             val canonicalBytes = OperationCanonicalizer.canonicalizeUnsigned(operation)
             val expectedId = OperationId.compute(canonicalBytes)
-            expectedId == operation.operationId
+            if (expectedId == operation.operationId) return true
+
+            // Backward compatibility for interim commit 79a036c timestamp-signed V2 records:
+            if (operation.protocolVersion == ProtocolVersion.V2_SIGNED_OPERATIONS && operation.createdAtMillis > 0L) {
+                val interimBytes = OperationCanonicalizer.canonicalizeUnsignedInterimV2(operation)
+                val interimExpectedId = OperationId.compute(interimBytes)
+                return interimExpectedId == operation.operationId
+            }
+            false
         } catch (_: Exception) {
             false
         }
@@ -35,10 +43,23 @@ object OperationVerifier {
             if (!isValidHexKey(operation.signature, 128)) return false
             val canonicalBytes = OperationCanonicalizer.canonicalizeUnsigned(operation)
             val expectedId = OperationId.compute(canonicalBytes)
-            if (expectedId != operation.operationId) return false
+            if (expectedId == operation.operationId) {
+                val signingDigest = OperationSigner.computeSigningDigest(operation.operationId, canonicalBytes)
+                if (KeyManager.verifyHex(signingDigest, operation.signature, operation.authorPublicKey)) {
+                    return true
+                }
+            }
 
-            val signingDigest = OperationSigner.computeSigningDigest(operation.operationId, canonicalBytes)
-            KeyManager.verifyHex(signingDigest, operation.signature, operation.authorPublicKey)
+            // Backward compatibility for interim commit 79a036c timestamp-signed V2 records:
+            if (operation.protocolVersion == ProtocolVersion.V2_SIGNED_OPERATIONS && operation.createdAtMillis > 0L) {
+                val interimBytes = OperationCanonicalizer.canonicalizeUnsignedInterimV2(operation)
+                val interimExpectedId = OperationId.compute(interimBytes)
+                if (interimExpectedId == operation.operationId) {
+                    val signingDigest = OperationSigner.computeSigningDigest(operation.operationId, interimBytes)
+                    return KeyManager.verifyHex(signingDigest, operation.signature, operation.authorPublicKey)
+                }
+            }
+            false
         } catch (_: Exception) {
             false
         }

@@ -222,6 +222,9 @@ interface OutboxDao {
     @Query("SELECT COUNT(*) FROM relay_deliveries WHERE operationId = :operationId AND accepted = 1")
     suspend fun countAcceptedRelaysForOperationSync(operationId: String): Int
 
+    @Query("DELETE FROM relay_deliveries WHERE operationId IN (SELECT operationId FROM signed_operations WHERE groupId = :groupId)")
+    suspend fun deleteRelayDeliveriesForGroup(groupId: String)
+
     @Query("DELETE FROM outbox_operations WHERE groupId = :groupId")
     suspend fun deleteOutboxForGroup(groupId: String)
 }
