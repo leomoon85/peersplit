@@ -501,4 +501,267 @@ class AuditRegressionProbeTest {
         assertTrue("Interim V2 record must have valid signature", OperationVerifier.hasValidSignature(interimOp))
         assertTrue("Interim V2 record must verify completely", OperationVerifier.verify(interimOp))
     }
+
+    /**
+     * Blocker 1 [P1]: Inverted probe for untrusted checkpoint self-authorizing its own signer.
+     * When trustedGenesis has creatorPublicKey but NO genesisOperationId (as in unpinned bootstrap),
+     * an outsider signing a LegacyV1Checkpoint declaring themselves ADMIN and altering balances
+     * MUST BE REJECTED.
+     */
+    @Test
+    fun untrustedCheckpointCanDeclareItsOwnSignerAdmin_InvertedSafetyRegression() {
+        // Trusted genesis anchor has creatorKey but genesisOperationId is null (unpinned bootstrap)
+        val unpinnedGenesis = TrustedGenesis(
+            groupId = groupId,
+            groupName = "Audit Probe Group",
+            currency = "INR",
+            creatorPublicKey = creatorKey.publicKeyHex,
+            genesisOperationId = null
+        )
+        val now = System.currentTimeMillis()
+
+        // Attacker creates and signs a checkpoint listing themselves as ADMIN
+        val checkpointOp = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = attackerKey.publicKeyHex,
+            privateKeyHex = attackerKey.privateKeyHex,
+            parents = emptyList(),
+            logicalClock = 1L,
+            payload = OperationPayload.LegacyV1Checkpoint(
+                v1TipBlockHash = "v1-fake-tip-hash",
+                v1BlockCount = 5L,
+                isLegacyChainFullyVerified = true,
+                currency = "INR",
+                members = listOf(
+                    ProtocolMemberInfo(
+                        publicKey = attackerKey.publicKeyHex,
+                        displayName = "Attacker",
+                        role = ProtocolMemberInfo.ROLE_ADMIN
+                    ),
+                    ProtocolMemberInfo(
+                        publicKey = creatorKey.publicKeyHex,
+                        displayName = "Creator",
+                        role = ProtocolMemberInfo.ROLE_MEMBER
+                    )
+                ),
+                activeExpenses = listOf(
+                    OperationPayload.ExpenseCreated(
+                        expenseId = "v1-exp-1",
+                        amountMinor = 100000L,
+                        currency = "INR",
+                        paidBy = attackerKey.publicKeyHex,
+                        splits = mapOf(creatorKey.publicKeyHex to 100000L),
+                        description = "Fake debt"
+                    )
+                ),
+                voidedExpenseIds = emptyList(),
+                settlements = emptyList()
+            ),
+            createdAtMillis = now
+        )
+
+        val result = DefaultLedgerReconciliationEngine.reconcile(
+            trustedGenesis = unpinnedGenesis,
+            operations = listOf(checkpointOp)
+        )
+
+        // Outsider checkpoint MUST be rejected
+        assertTrue("Attacker-signed checkpoint must be rejected", checkpointOp.operationId in result.rejectedOperations.map { it.operation.operationId })
+        assertFalse("Attacker must NOT become an active member or admin", result.activeMembers.containsKey(attackerKey.publicKeyHex))
+    }
+
+    /**
+     * Blocker 2 [P1]: Inverted probe for rejected financial ancestor poisoning removal pre-pass.
+     * An ExpenseCreated duplicates an accepted expense ID. An unauthorized or invalid removal
+     * references that duplicate as parent. The pre-pass must NOT grant precedence to that removal
+     * to suppress a concurrent legitimate expense.
+     */
+    @Test
+    fun rejectedFinancialAncestorStillPoisonsRemovalPrepass_InvertedSafetyRegression() {
+        val (trustedGenesis, genesisOp) = setupGenesis()
+        val now = System.currentTimeMillis()
+
+        // 1. Bob joins legitimately
+        val grantForBob = OperationSigner.createInvitationGrant(
+            inviterPublicKey = creatorKey.publicKeyHex,
+            inviterPrivateKeyHex = creatorKey.privateKeyHex,
+            groupId = groupId,
+            invitedPublicKey = bobKey.publicKeyHex,
+            invitationNonce = "nonce-bob-poison",
+            expiresAtMillis = now + 86400_000L
+        )
+        val bobJoinOp = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = bobKey.publicKeyHex,
+            privateKeyHex = bobKey.privateKeyHex,
+            parents = listOf(genesisOp.operationId),
+            logicalClock = 2L,
+            payload = OperationPayload.MemberAdded(
+                memberPublicKey = bobKey.publicKeyHex,
+                displayName = "Bob",
+                role = ProtocolMemberInfo.ROLE_MEMBER,
+                invitationGrant = grantForBob
+            ),
+            createdAtMillis = now
+        )
+
+        // 2. Creator creates legitimate expense 1
+        val exp1 = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = creatorKey.publicKeyHex,
+            privateKeyHex = creatorKey.privateKeyHex,
+            parents = listOf(bobJoinOp.operationId),
+            logicalClock = 3L,
+            payload = OperationPayload.ExpenseCreated(
+                expenseId = "exp-dup-target",
+                amountMinor = 10000L,
+                currency = "INR",
+                paidBy = creatorKey.publicKeyHex,
+                splits = mapOf(creatorKey.publicKeyHex to 5000L, bobKey.publicKeyHex to 5000L),
+                description = "Legitimate Exp 1"
+            ),
+            createdAtMillis = now + 1000L
+        )
+
+        // 3. Duplicate ExpenseCreated with same expenseId "exp-dup-target" at higher clock
+        val dupExp = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = creatorKey.publicKeyHex,
+            privateKeyHex = creatorKey.privateKeyHex,
+            parents = listOf(bobJoinOp.operationId),
+            logicalClock = 4L,
+            payload = OperationPayload.ExpenseCreated(
+                expenseId = "exp-dup-target",
+                amountMinor = 99000L,
+                currency = "INR",
+                paidBy = creatorKey.publicKeyHex,
+                splits = mapOf(creatorKey.publicKeyHex to 99000L),
+                description = "Duplicate conflicting exp"
+            ),
+            createdAtMillis = now + 1100L
+        )
+
+        // 4. A removal referencing the duplicate expense as parent, attempting to remove Bob
+        val maliciousRemoval = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = creatorKey.publicKeyHex,
+            privateKeyHex = creatorKey.privateKeyHex,
+            parents = listOf(dupExp.operationId),
+            logicalClock = 5L,
+            payload = OperationPayload.MemberRemoved(
+                memberPublicKey = bobKey.publicKeyHex,
+                reason = "Removed referencing invalid parent"
+            ),
+            createdAtMillis = now + 1200L
+        )
+
+        // 5. Bob authors a legitimate expense concurrent with the duplicate/removal
+        val bobLegitExpense = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = bobKey.publicKeyHex,
+            privateKeyHex = bobKey.privateKeyHex,
+            parents = listOf(exp1.operationId),
+            logicalClock = 4L,
+            payload = OperationPayload.ExpenseCreated(
+                expenseId = "exp-bob-legit",
+                amountMinor = 40000L,
+                currency = "INR",
+                paidBy = bobKey.publicKeyHex,
+                splits = mapOf(bobKey.publicKeyHex to 20000L, creatorKey.publicKeyHex to 20000L),
+                description = "Bob's legitimate dinner"
+            ),
+            createdAtMillis = now + 1300L
+        )
+
+        val result = DefaultLedgerReconciliationEngine.reconcile(
+            trustedGenesis = trustedGenesis,
+            operations = listOf(genesisOp, bobJoinOp, exp1, dupExp, maliciousRemoval, bobLegitExpense)
+        )
+
+        val acceptedIds = result.acceptedOperations.map { it.operationId }
+        val rejectedIds = result.rejectedOperations.map { it.operation.operationId }
+
+        // exp1 must be accepted
+        assertTrue("exp1 accepted", exp1.operationId in acceptedIds)
+        // dupExp must be rejected (duplicate expense ID)
+        assertTrue("dupExp rejected", dupExp.operationId in rejectedIds)
+        // maliciousRemoval must be rejected (parent rejected or conflict)
+        assertTrue("maliciousRemoval rejected", maliciousRemoval.operationId in rejectedIds)
+        // Bob's expense MUST BE ACCEPTED (not poisoned by the pre-pass)
+        assertTrue("Bob's legitimate expense must be accepted", bobLegitExpense.operationId in acceptedIds)
+        assertTrue(result.effectiveExpenses.containsKey("exp-bob-legit"))
+    }
+
+    /**
+     * Blocker 3 [P1]: Inverted probe for expired grant with intentionally backdated V3 join.
+     * When a grant expires at T_expire = 1000, genesis was at T_genesis = 2000,
+     * a joiner backdating their join op to T_join = 500 MUST BE REJECTED.
+     */
+    @Test
+    fun expiredGrantStillWorksWithIntentionallyBackdatedV3Join_InvertedSafetyRegression() {
+        val initialMembers = listOf(
+            ProtocolMemberInfo(
+                publicKey = creatorKey.publicKeyHex,
+                displayName = "Creator",
+                role = ProtocolMemberInfo.ROLE_ADMIN
+            )
+        )
+        val genesisOp = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = creatorKey.publicKeyHex,
+            privateKeyHex = creatorKey.privateKeyHex,
+            parents = emptyList(),
+            logicalClock = 1L,
+            payload = OperationPayload.GenesisCreated(
+                groupId = groupId,
+                groupName = "Audit Probe Group",
+                currency = "INR",
+                creatorPublicKey = creatorKey.publicKeyHex,
+                initialMembers = initialMembers
+            ),
+            createdAtMillis = 2000L
+        )
+        val trustedGenesis = TrustedGenesis(
+            groupId = groupId,
+            groupName = "Audit Probe Group",
+            currency = "INR",
+            creatorPublicKey = creatorKey.publicKeyHex,
+            genesisOperationId = genesisOp.operationId
+        )
+
+        // Admin grant expired at 1000L (before genesis at 2000L)
+        val expiredGrant = OperationSigner.createInvitationGrant(
+            inviterPublicKey = creatorKey.publicKeyHex,
+            inviterPrivateKeyHex = creatorKey.privateKeyHex,
+            groupId = groupId,
+            invitedPublicKey = bobKey.publicKeyHex,
+            invitationNonce = "nonce-backdate-probe",
+            expiresAtMillis = 1000L
+        )
+
+        // Bob creates a V3 join operation with an intentionally backdated timestamp (500L < 1000L)
+        val backdatedJoinOp = OperationSigner.createAndSign(
+            groupId = groupId,
+            authorPublicKey = bobKey.publicKeyHex,
+            privateKeyHex = bobKey.privateKeyHex,
+            parents = listOf(genesisOp.operationId),
+            logicalClock = 2L,
+            payload = OperationPayload.MemberAdded(
+                memberPublicKey = bobKey.publicKeyHex,
+                displayName = "Bob",
+                role = ProtocolMemberInfo.ROLE_MEMBER,
+                invitationGrant = expiredGrant
+            ),
+            createdAtMillis = 500L
+        )
+
+        val result = DefaultLedgerReconciliationEngine.reconcile(
+            trustedGenesis = trustedGenesis,
+            operations = listOf(genesisOp, backdatedJoinOp)
+        )
+
+        // Must be rejected as INVALID_INVITATION
+        assertTrue("Backdated join with expired grant must be rejected", backdatedJoinOp.operationId in result.rejectedOperations.map { it.operation.operationId })
+        assertFalse("Bob must NOT become an active member", result.activeMembers.containsKey(bobKey.publicKeyHex))
+    }
 }

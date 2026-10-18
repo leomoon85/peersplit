@@ -242,7 +242,11 @@ class P2PSyncManager(
         groupKeyBase64: String
     ): com.peersplit.app.data.local.entity.OutboxOperationEntity {
         val epochKeyEntity = database.groupKeyDao().getKeySync(operation.groupId, operation.keyEpoch)
-        val effectiveKeyBase64 = epochKeyEntity?.groupKeyBase64 ?: groupKeyBase64
+        val effectiveKeyBase64 = if (operation.keyEpoch > 0) {
+            epochKeyEntity?.groupKeyBase64 ?: throw IllegalStateException("Missing encryption key for epoch ${operation.keyEpoch} in group ${operation.groupId}")
+        } else {
+            epochKeyEntity?.groupKeyBase64 ?: groupKeyBase64
+        }
         val groupKey = EncryptionUtil.keyFromBase64(effectiveKeyBase64)
         val operationJson = com.peersplit.app.protocol.OperationEntityMapper.json.encodeToString(
             com.peersplit.app.protocol.SignedOperation.serializer(),

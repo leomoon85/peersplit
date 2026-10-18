@@ -41,7 +41,8 @@ object OperationAuthorization {
         acceptedReadmitsByTarget: Map<String, List<SignedOperation>> = emptyMap(),
         ancestorsOf: Map<String, Set<String>>,
         consumedInvitationNonces: Set<String> = emptySet(),
-        ghostAliases: Map<String, String> = emptyMap()
+        ghostAliases: Map<String, String> = emptyMap(),
+        parentTimestampProvider: ((String) -> Long?)? = null
     ): AuthOutcome {
         val author = operation.authorPublicKey
 
@@ -97,12 +98,14 @@ object OperationAuthorization {
             }
 
             is OperationPayload.LegacyV1Checkpoint -> {
-                val isV1Member = payload.members.any { it.publicKey.trim().lowercase() == author.trim().lowercase() }
-                if (author != trustedGenesis.creatorPublicKey && !isV1Member && author !in activeMembers) {
+                val matchesPinnedGenesis = trustedGenesis.genesisOperationId != null &&
+                    operation.operationId.trim().lowercase() == trustedGenesis.genesisOperationId.trim().lowercase()
+                val isCreator = author.trim().lowercase() == trustedGenesis.creatorPublicKey.trim().lowercase()
+                if (!matchesPinnedGenesis && !isCreator && author !in activeMembers) {
                     AuthOutcome(
                         isAuthorized = false,
                         rejectionReason = RejectionReason.UNAUTHORIZED_AUTHOR,
-                        detail = "LegacyV1Checkpoint must be authored by creator or verified V1 member"
+                        detail = "LegacyV1Checkpoint must be authored by group creator ${trustedGenesis.creatorPublicKey} or match pinned genesis operation"
                     )
                 } else {
                     AuthOutcome(true)
@@ -198,7 +201,8 @@ object OperationAuthorization {
                         operation = operation,
                         trustedGenesis = trustedGenesis,
                         activeMembers = activeMembers,
-                        consumedInvitationNonces = consumedInvitationNonces
+                        consumedInvitationNonces = consumedInvitationNonces,
+                        parentTimestampProvider = parentTimestampProvider
                     )
                 } else {
                     // Non-self addition (an existing user is adding someone else)
@@ -226,7 +230,8 @@ object OperationAuthorization {
                                 operation = operation,
                                 trustedGenesis = trustedGenesis,
                                 activeMembers = activeMembers,
-                                consumedInvitationNonces = consumedInvitationNonces
+                                consumedInvitationNonces = consumedInvitationNonces,
+                                parentTimestampProvider = parentTimestampProvider
                             )
                         } else {
                             AuthOutcome(true)
@@ -239,7 +244,8 @@ object OperationAuthorization {
                             operation = operation,
                             trustedGenesis = trustedGenesis,
                             activeMembers = activeMembers,
-                            consumedInvitationNonces = consumedInvitationNonces
+                            consumedInvitationNonces = consumedInvitationNonces,
+                            parentTimestampProvider = parentTimestampProvider
                         )
                     } else {
                         AuthOutcome(
@@ -301,7 +307,8 @@ object OperationAuthorization {
         operation: SignedOperation,
         trustedGenesis: TrustedGenesis,
         activeMembers: Map<String, ProtocolMemberInfo>,
-        consumedInvitationNonces: Set<String>
+        consumedInvitationNonces: Set<String>,
+        parentTimestampProvider: ((String) -> Long?)? = null
     ): AuthOutcome {
         // 1. Group ID match
         if (grant.groupId != operation.groupId) {
@@ -361,12 +368,25 @@ object OperationAuthorization {
                 detail = "Operation createdAtMillis is invalid (${operation.createdAtMillis})"
             )
         }
-        if (grant.expiresAtMillis > 0L && operation.createdAtMillis > grant.expiresAtMillis) {
+
+        // Causal timestamp lower bound: join operation cannot be backdated before its causal parents
+        val minCausalTimestamp = operation.parents.mapNotNull { parentTimestampProvider?.invoke(it) }.maxOrNull() ?: 0L
+        if (minCausalTimestamp > 0L && operation.createdAtMillis < minCausalTimestamp) {
             return AuthOutcome(
                 isAuthorized = false,
                 rejectionReason = RejectionReason.EXPIRED_INVITATION,
-                detail = "Invitation grant expired at ${grant.expiresAtMillis} (operation timestamp ${operation.createdAtMillis})"
+                detail = "Operation createdAtMillis (${operation.createdAtMillis}) is earlier than causal parent timestamp ($minCausalTimestamp)"
             )
+        }
+
+        if (grant.expiresAtMillis > 0L) {
+            if (operation.createdAtMillis > grant.expiresAtMillis || minCausalTimestamp > grant.expiresAtMillis) {
+                return AuthOutcome(
+                    isAuthorized = false,
+                    rejectionReason = RejectionReason.EXPIRED_INVITATION,
+                    detail = "Invitation grant expired at ${grant.expiresAtMillis} (operation timestamp ${operation.createdAtMillis}, causal parent timestamp $minCausalTimestamp)"
+                )
+            }
         }
 
         // 6. Cryptographic signature check

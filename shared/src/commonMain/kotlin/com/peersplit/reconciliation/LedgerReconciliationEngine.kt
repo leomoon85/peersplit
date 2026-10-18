@@ -110,9 +110,23 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
         )
         allEverKnownMembers.add(normCreator)
 
+        val opsById = operations.associateBy { it.operationId }
+
+        // Pre-pass for Concurrent Void Precedence over Edit on the same (expenseId, expectedRevisionId)
+        val voidOperationsByTargetRevision = mutableMapOf<Pair<String, String>, SignedOperation>()
+        for (op in topologicallyOrdered) {
+            val p = op.payload
+            if (p is OperationPayload.ExpenseVoided) {
+                val key = p.expenseId to p.expectedRevisionId
+                if (key !in voidOperationsByTargetRevision) {
+                    voidOperationsByTargetRevision[key] = op
+                }
+            }
+        }
+
         // Stage 1: Authenticated pre-pass for membership operations
-        // Only operations that pass envelope, root, parent acceptance, and authorization
-        // are recognized as authorized membership events (removals and readmissions).
+        // Only operations that pass envelope, root, parent acceptance, authorization,
+        // and conflict resolution are recognized as valid ancestors and authorized membership events.
         val preAuthorizedRemovalsByTarget = mutableMapOf<String, MutableList<SignedOperation>>()
         val preAuthorizedReadmitsByTarget = mutableMapOf<String, MutableList<SignedOperation>>()
         run {
@@ -121,6 +135,9 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
             val pass1RemovedMembers = LinkedHashSet<String>()
             val pass1ConsumedNonces = LinkedHashSet<String>()
             val pass1GhostAliases = LinkedHashMap<String, String>()
+            val pass1AllKnownMembers = LinkedHashSet<String>(allEverKnownMembers)
+            val pass1Expenses = LinkedHashMap<String, ReconciledExpense>()
+            val pass1Settlements = LinkedHashMap<String, ReconciledSettlement>()
             var pass1RootOpId: String? = null
 
             for (op in topologicallyOrdered) {
@@ -139,19 +156,61 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                         pass1AcceptedOpIds.add(op.operationId)
                         for (m in p.initialMembers) {
                             val role = if (m.publicKey == normCreator) ProtocolMemberInfo.ROLE_ADMIN else m.role
-                            pass1ActiveMembers[m.publicKey] = m.copy(role = role)
+                            val normPk = m.publicKey.trim().lowercase()
+                            pass1ActiveMembers[normPk] = m.copy(publicKey = normPk, role = role)
+                            pass1AllKnownMembers.add(normPk)
                         }
                     }
                     is OperationPayload.LegacyV1Checkpoint -> {
                         if (pass1RootOpId != null && pass1RootOpId != op.operationId) continue
                         if (normalizedGenesis.genesisOperationId != null && op.operationId != normalizedGenesis.genesisOperationId) continue
-                        val isV1Member = p.members.any { it.publicKey.trim().lowercase() == op.authorPublicKey.trim().lowercase() }
-                        if (op.authorPublicKey != normCreator && !isV1Member && op.authorPublicKey !in pass1ActiveMembers) continue
+                        val matchesPinned = normalizedGenesis.genesisOperationId != null && op.operationId == normalizedGenesis.genesisOperationId
+                        val isCreator = op.authorPublicKey == normCreator
+                        if (!isCreator && !matchesPinned && op.authorPublicKey !in pass1ActiveMembers) continue
                         pass1RootOpId = op.operationId
                         pass1AcceptedOpIds.add(op.operationId)
                         for (m in p.members) {
                             val role = if (m.publicKey == normCreator) ProtocolMemberInfo.ROLE_ADMIN else m.role
-                            pass1ActiveMembers[m.publicKey] = m.copy(role = role)
+                            val normPk = m.publicKey.trim().lowercase()
+                            pass1ActiveMembers[normPk] = m.copy(publicKey = normPk, role = role)
+                            pass1AllKnownMembers.add(normPk)
+                        }
+                        for ((ghostPk, realPk) in p.ghostAliases) {
+                            val normGhost = ghostPk.trim().lowercase()
+                            val normReal = realPk.trim().lowercase()
+                            pass1GhostAliases[normGhost] = normReal
+                            pass1AllKnownMembers.add(normGhost)
+                            pass1AllKnownMembers.add(normReal)
+                        }
+                        val voidedSet = p.voidedExpenseIds.toSet()
+                        for (exp in p.activeExpenses) {
+                            pass1AllKnownMembers.add(exp.paidBy.trim().lowercase())
+                            pass1AllKnownMembers.addAll(exp.payers.keys.map { it.trim().lowercase() })
+                            pass1AllKnownMembers.addAll(exp.splits.keys.map { it.trim().lowercase() })
+                            pass1Expenses[exp.expenseId] = ReconciledExpense(
+                                expenseId = exp.expenseId,
+                                originOperationId = op.operationId,
+                                currentRevisionOperationId = op.operationId,
+                                authorPublicKey = op.authorPublicKey,
+                                logicalClock = op.logicalClock,
+                                createdAtMillis = op.createdAtMillis,
+                                payload = exp,
+                                isVoided = exp.expenseId in voidedSet,
+                                voidedByOperationId = if (exp.expenseId in voidedSet) op.operationId else null,
+                                voidReason = if (exp.expenseId in voidedSet) "Legacy V1 Void" else null
+                            )
+                        }
+                        for (stl in p.settlements) {
+                            pass1AllKnownMembers.add(stl.fromMember.trim().lowercase())
+                            pass1AllKnownMembers.add(stl.toMember.trim().lowercase())
+                            pass1Settlements[stl.settlementId] = ReconciledSettlement(
+                                settlementId = stl.settlementId,
+                                operationId = op.operationId,
+                                authorPublicKey = op.authorPublicKey,
+                                logicalClock = op.logicalClock,
+                                createdAtMillis = op.createdAtMillis,
+                                payload = stl
+                            )
                         }
                     }
                     is OperationPayload.MemberAdded -> {
@@ -164,7 +223,8 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                             acceptedReadmitsByTarget = emptyMap(),
                             ancestorsOf = causalResult.ancestorsOf,
                             consumedInvitationNonces = pass1ConsumedNonces,
-                            ghostAliases = pass1GhostAliases
+                            ghostAliases = pass1GhostAliases,
+                            parentTimestampProvider = { opsById[it]?.createdAtMillis }
                         )
                         if (authOutcome.isAuthorized) {
                             pass1AcceptedOpIds.add(op.operationId)
@@ -179,11 +239,13 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                                 displayName = p.displayName.trim(),
                                 role = role
                             )
+                            pass1AllKnownMembers.add(normPk)
                             p.invitationGrant?.let { pass1ConsumedNonces.add(it.invitationNonce.trim().lowercase()) }
                             val claimedGhost = p.claimedGhostPubkey?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
                             if (claimedGhost != null && claimedGhost != normPk) {
                                 pass1GhostAliases[claimedGhost] = normPk
                                 pass1ActiveMembers.remove(claimedGhost)
+                                pass1AllKnownMembers.add(claimedGhost)
                             }
                             if (wasRemoved || !isCreator) {
                                 preAuthorizedReadmitsByTarget.getOrPut(normPk) { mutableListOf() }.add(op)
@@ -200,7 +262,8 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                             acceptedReadmitsByTarget = emptyMap(),
                             ancestorsOf = causalResult.ancestorsOf,
                             consumedInvitationNonces = pass1ConsumedNonces,
-                            ghostAliases = pass1GhostAliases
+                            ghostAliases = pass1GhostAliases,
+                            parentTimestampProvider = { opsById[it]?.createdAtMillis }
                         )
                         if (authOutcome.isAuthorized) {
                             pass1AcceptedOpIds.add(op.operationId)
@@ -210,21 +273,110 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                             preAuthorizedRemovalsByTarget.getOrPut(targetPk) { mutableListOf() }.add(op)
                         }
                     }
-                    else -> {
-                        pass1AcceptedOpIds.add(op.operationId)
+                    is OperationPayload.ExpenseCreated -> {
+                        val authOutcome = OperationAuthorization.evaluate(
+                            operation = op,
+                            trustedGenesis = normalizedGenesis,
+                            activeMembers = pass1ActiveMembers,
+                            removedMembers = pass1RemovedMembers,
+                            acceptedRemovalsByTarget = emptyMap(),
+                            acceptedReadmitsByTarget = emptyMap(),
+                            ancestorsOf = causalResult.ancestorsOf,
+                            consumedInvitationNonces = pass1ConsumedNonces,
+                            ghostAliases = pass1GhostAliases,
+                            parentTimestampProvider = { opsById[it]?.createdAtMillis }
+                        )
+                        if (authOutcome.isAuthorized) {
+                            val outcome = OperationConflictResolver.applyExpenseCreated(
+                                op = op,
+                                payload = p,
+                                groupCurrency = normCurrency,
+                                knownMemberKeys = pass1AllKnownMembers,
+                                expenses = pass1Expenses
+                            )
+                            if (outcome is OperationConflictResolver.ApplicationOutcome.Applied) {
+                                pass1AcceptedOpIds.add(op.operationId)
+                            }
+                        }
                     }
-                }
-            }
-        }
-
-        // Pre-pass for Concurrent Void Precedence over Edit on the same (expenseId, expectedRevisionId)
-        val voidOperationsByTargetRevision = mutableMapOf<Pair<String, String>, SignedOperation>()
-        for (op in topologicallyOrdered) {
-            val p = op.payload
-            if (p is OperationPayload.ExpenseVoided) {
-                val key = p.expenseId to p.expectedRevisionId
-                if (key !in voidOperationsByTargetRevision) {
-                    voidOperationsByTargetRevision[key] = op
+                    is OperationPayload.ExpenseUpdated -> {
+                        val authOutcome = OperationAuthorization.evaluate(
+                            operation = op,
+                            trustedGenesis = normalizedGenesis,
+                            activeMembers = pass1ActiveMembers,
+                            removedMembers = pass1RemovedMembers,
+                            acceptedRemovalsByTarget = emptyMap(),
+                            acceptedReadmitsByTarget = emptyMap(),
+                            ancestorsOf = causalResult.ancestorsOf,
+                            consumedInvitationNonces = pass1ConsumedNonces,
+                            ghostAliases = pass1GhostAliases,
+                            parentTimestampProvider = { opsById[it]?.createdAtMillis }
+                        )
+                        if (authOutcome.isAuthorized) {
+                            val concurrentVoid = voidOperationsByTargetRevision[p.expenseId to p.expectedRevisionId]
+                            val outcome = OperationConflictResolver.applyExpenseUpdated(
+                                op = op,
+                                payload = p,
+                                groupCurrency = normCurrency,
+                                knownMemberKeys = pass1AllKnownMembers,
+                                expenses = pass1Expenses,
+                                concurrentVoidWinnerOpId = concurrentVoid?.operationId
+                            )
+                            if (outcome is OperationConflictResolver.ApplicationOutcome.Applied) {
+                                pass1AcceptedOpIds.add(op.operationId)
+                            }
+                        }
+                    }
+                    is OperationPayload.ExpenseVoided -> {
+                        val authOutcome = OperationAuthorization.evaluate(
+                            operation = op,
+                            trustedGenesis = normalizedGenesis,
+                            activeMembers = pass1ActiveMembers,
+                            removedMembers = pass1RemovedMembers,
+                            acceptedRemovalsByTarget = emptyMap(),
+                            acceptedReadmitsByTarget = emptyMap(),
+                            ancestorsOf = causalResult.ancestorsOf,
+                            consumedInvitationNonces = pass1ConsumedNonces,
+                            ghostAliases = pass1GhostAliases,
+                            parentTimestampProvider = { opsById[it]?.createdAtMillis }
+                        )
+                        if (authOutcome.isAuthorized) {
+                            val outcome = OperationConflictResolver.applyExpenseVoided(
+                                op = op,
+                                payload = p,
+                                expenses = pass1Expenses
+                            )
+                            if (outcome is OperationConflictResolver.ApplicationOutcome.Applied) {
+                                pass1AcceptedOpIds.add(op.operationId)
+                            }
+                        }
+                    }
+                    is OperationPayload.SettlementRecorded -> {
+                        val authOutcome = OperationAuthorization.evaluate(
+                            operation = op,
+                            trustedGenesis = normalizedGenesis,
+                            activeMembers = pass1ActiveMembers,
+                            removedMembers = pass1RemovedMembers,
+                            acceptedRemovalsByTarget = emptyMap(),
+                            acceptedReadmitsByTarget = emptyMap(),
+                            ancestorsOf = causalResult.ancestorsOf,
+                            consumedInvitationNonces = pass1ConsumedNonces,
+                            ghostAliases = pass1GhostAliases,
+                            parentTimestampProvider = { opsById[it]?.createdAtMillis }
+                        )
+                        if (authOutcome.isAuthorized) {
+                            val outcome = OperationConflictResolver.applySettlementRecorded(
+                                op = op,
+                                payload = p,
+                                groupCurrency = normCurrency,
+                                knownMemberKeys = pass1AllKnownMembers,
+                                settlements = pass1Settlements
+                            )
+                            if (outcome is OperationConflictResolver.ApplicationOutcome.Applied) {
+                                pass1AcceptedOpIds.add(op.operationId)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -252,6 +404,10 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                     )
                 )
                 dynamicRejectedIds.add(op.operationId)
+                if (op.payload is OperationPayload.MemberRemoved) {
+                    val targetPk = op.payload.memberPublicKey.trim().lowercase()
+                    preAuthorizedRemovalsByTarget[targetPk]?.removeAll { it.operationId == op.operationId }
+                }
                 continue
             }
 
@@ -267,6 +423,10 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                         )
                     )
                     dynamicRejectedIds.add(op.operationId)
+                    if (op.payload is OperationPayload.MemberRemoved) {
+                        val targetPk = op.payload.memberPublicKey.trim().lowercase()
+                        preAuthorizedRemovalsByTarget[targetPk]?.removeAll { it.operationId == op.operationId }
+                    }
                     continue
                 }
                 if (rootOperationId != null && rootOperationId != op.operationId) {
@@ -278,6 +438,10 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                         )
                     )
                     dynamicRejectedIds.add(op.operationId)
+                    if (op.payload is OperationPayload.MemberRemoved) {
+                        val targetPk = op.payload.memberPublicKey.trim().lowercase()
+                        preAuthorizedRemovalsByTarget[targetPk]?.removeAll { it.operationId == op.operationId }
+                    }
                     continue
                 }
             }
@@ -292,7 +456,8 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                 acceptedReadmitsByTarget = preAuthorizedReadmitsByTarget,
                 ancestorsOf = causalResult.ancestorsOf,
                 consumedInvitationNonces = consumedInvitationNonces,
-                ghostAliases = ghostAliases
+                ghostAliases = ghostAliases,
+                parentTimestampProvider = { opsById[it]?.createdAtMillis }
             )
             if (!authOutcome.isAuthorized) {
                 rejected.add(
@@ -303,6 +468,10 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                     )
                 )
                 dynamicRejectedIds.add(op.operationId)
+                if (op.payload is OperationPayload.MemberRemoved) {
+                    val targetPk = op.payload.memberPublicKey.trim().lowercase()
+                    preAuthorizedRemovalsByTarget[targetPk]?.removeAll { it.operationId == op.operationId }
+                }
                 continue
             }
 
@@ -434,7 +603,8 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                                     activeMembers = activeMembers,
                                     removedMembers = removedMembers,
                                     acceptedRemovalsByTarget = preAuthorizedRemovalsByTarget,
-                                    ancestorsOf = causalResult.ancestorsOf
+                                    ancestorsOf = causalResult.ancestorsOf,
+                                    parentTimestampProvider = { opsById[it]?.createdAtMillis }
                                 ).isAuthorized
                         }
 
@@ -494,6 +664,10 @@ object DefaultLedgerReconciliationEngine : LedgerReconciliationEngine {
                 currentKeyEpoch = maxOf(currentKeyEpoch, op.keyEpoch)
             } else {
                 dynamicRejectedIds.add(op.operationId)
+                if (op.payload is OperationPayload.MemberRemoved) {
+                    val targetPk = op.payload.memberPublicKey.trim().lowercase()
+                    preAuthorizedRemovalsByTarget[targetPk]?.removeAll { it.operationId == op.operationId }
+                }
             }
         }
 

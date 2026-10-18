@@ -232,10 +232,12 @@ class V1ToV2MigrationManager(
 
         // Reconcile into projections and verify acceptance
         val reconciled = syncManager.reconcileV2Group(groupId)
-        if (!reconciled) {
+        val checkpointOp = database.signedOperationDao().getOperationByIdSync(signedOp.operationId)
+        val isAccepted = checkpointOp?.status == com.peersplit.app.data.local.entity.SignedOperationEntity.STATUS_ACCEPTED
+        if (!reconciled || !isAccepted) {
             database.signedOperationDao().deleteOperationsForGroup(groupId)
             database.groupProtocolDao().deleteGroupProtocol(groupId)
-            Log.e(TAG, "Migration checkpoint failed reconciliation for group $groupId")
+            Log.e(TAG, "Migration checkpoint failed reconciliation for group $groupId (reconciled=$reconciled, accepted=$isAccepted)")
             return MigrationResult(
                 groupId = groupId,
                 isMigrated = false,
