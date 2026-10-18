@@ -1256,8 +1256,10 @@ class ExpenseRepository(
         val grantJson = grant?.let { json.encodeToString(MembershipInvitationGrant.serializer(), it) }
 
         val acceptedOps = database.signedOperationDao().getAcceptedOperationsForGroupSync(groupId)
-        val allOpsJson = acceptedOps.map {
-            json.encodeToString(SignedOperation.serializer(), OperationEntityMapper.toDomain(it))
+        val domainOps = acceptedOps.map { OperationEntityMapper.toDomain(it) }
+        val domainOpsById = domainOps.associateBy { it.operationId }
+        val allOpsJson = domainOps.map {
+            json.encodeToString(SignedOperation.serializer(), it)
         }
 
         val fullInvite = GroupInviteData(
@@ -1301,29 +1303,88 @@ class ExpenseRepository(
             return trimmedUri
         }
 
-        // If still too large, trim older operations while keeping root operations and latest heads
-        val rootOps = acceptedOps.filter { it.parentsJson == "[]" || it.payloadType == "GENESIS_CREATED" || it.payloadType == "LEGACY_V1_CHECKPOINT" }
-        val nonRootOps = acceptedOps.filter { it !in rootOps }
-        val selectedOps = rootOps.toMutableList()
-        for (op in nonRootOps.asReversed()) {
-            val candidateOpsJson = (selectedOps + op).sortedBy { it.logicalClock }.map {
-                json.encodeToString(SignedOperation.serializer(), OperationEntityMapper.toDomain(it))
+        // Helper to compute causal ancestor closure within accepted operations
+        fun getCausalClosure(seedOpIds: Collection<String>): Set<String> {
+            val closure = LinkedHashSet<String>()
+            val queue = ArrayDeque<String>()
+            for (id in seedOpIds) {
+                if (closure.add(id)) {
+                    queue.add(id)
+                }
             }
-            val candidateUri = encodeInviteUri(
-                fullInvite.copy(
-                    genesisBlockJson = genesisJson,
-                    blocksJson = emptyList(),
-                    operationsJson = candidateOpsJson
+            while (queue.isNotEmpty()) {
+                val currentId = queue.removeFirst()
+                val op = domainOpsById[currentId] ?: continue
+                for (parentId in op.parents) {
+                    if (parentId in domainOpsById && closure.add(parentId)) {
+                        queue.add(parentId)
+                    }
+                }
+            }
+            return closure
+        }
+
+        // Identify root operations and inviter admin-authorization chain
+        val rootOps = domainOps.filter {
+            it.parents.isEmpty() ||
+            it.payload is OperationPayload.GenesisCreated ||
+            it.payload is OperationPayload.LegacyV1Checkpoint
+        }
+        val inviterPubkey = identity.publicKeyHex
+        val inviterAddOp = if (inviterPubkey != group.creatorPubkey) {
+            domainOps.firstOrNull {
+                it.payload is OperationPayload.MemberAdded && it.payload.memberPublicKey == inviterPubkey
+            }
+        } else null
+        val inviterClosureIds = if (inviterAddOp != null) {
+            getCausalClosure(listOf(inviterAddOp.operationId))
+        } else {
+            emptySet()
+        }
+
+        // All membership operations and their causal closures
+        val membershipOps = domainOps.filter {
+            it.payload is OperationPayload.MemberAdded || it.payload is OperationPayload.MemberRemoved
+        }
+        val membershipClosureIds = getCausalClosure(membershipOps.map { it.operationId })
+
+        // Essential operations: Roots + Inviter chain + Membership operations with complete causal ancestors
+        val essentialOpIds = LinkedHashSet<String>().apply {
+            addAll(rootOps.map { it.operationId })
+            addAll(inviterClosureIds)
+            addAll(membershipClosureIds)
+        }
+        val essentialOps = domainOps.filter { it.operationId in essentialOpIds }.sortedBy { it.logicalClock }
+
+        // Start with essential operations, then greedily append other accepted operations in causal/clock order
+        val selectedOps = essentialOps.toMutableList()
+        val selectedOpIds = selectedOps.map { it.operationId }.toMutableSet()
+        val remainingOps = domainOps.filter { it.operationId !in selectedOpIds }.sortedBy { it.logicalClock }
+
+        for (op in remainingOps) {
+            if (op.parents.all { it in selectedOpIds }) {
+                val candidateOps = (selectedOps + op).sortedBy { it.logicalClock }
+                val candidateOpsJson = candidateOps.map {
+                    json.encodeToString(SignedOperation.serializer(), it)
+                }
+                val candidateUri = encodeInviteUri(
+                    fullInvite.copy(
+                        genesisBlockJson = genesisJson,
+                        blocksJson = emptyList(),
+                        operationsJson = candidateOpsJson
+                    )
                 )
-            )
-            if (candidateUri.length <= 2500) {
-                selectedOps.add(op)
-            } else {
-                break
+                if (candidateUri.length <= 2200) {
+                    selectedOps.add(op)
+                    selectedOpIds.add(op.operationId)
+                } else {
+                    break
+                }
             }
         }
+
         val finalOpsJson = selectedOps.sortedBy { it.logicalClock }.map {
-            json.encodeToString(SignedOperation.serializer(), OperationEntityMapper.toDomain(it))
+            json.encodeToString(SignedOperation.serializer(), it)
         }
         val trimmedOpsUri = encodeInviteUri(
             fullInvite.copy(
@@ -1336,15 +1397,20 @@ class ExpenseRepository(
             return trimmedOpsUri
         }
 
-        // Ultimate fallback: Genesis block + root operations so fresh device always has valid causal roots
-        val rootOpsJson = rootOps.map {
-            json.encodeToString(SignedOperation.serializer(), OperationEntityMapper.toDomain(it))
+        // Fallback: strictly root operations + inviter's causal authorization chain (guaranteed to include inviter as admin)
+        val minimalInviterOpIds = LinkedHashSet<String>().apply {
+            addAll(rootOps.map { it.operationId })
+            addAll(inviterClosureIds)
+        }
+        val minimalOps = domainOps.filter { it.operationId in minimalInviterOpIds }.sortedBy { it.logicalClock }
+        val minimalOpsJson = minimalOps.map {
+            json.encodeToString(SignedOperation.serializer(), it)
         }
         return encodeInviteUri(
             fullInvite.copy(
                 genesisBlockJson = genesisJson,
                 blocksJson = emptyList(),
-                operationsJson = rootOpsJson
+                operationsJson = minimalOpsJson
             )
         )
     }

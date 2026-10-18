@@ -283,15 +283,23 @@ object OperationAuthorization {
             )
         }
 
-        // 5. Expiry check: operation createdAtMillis must be valid (> 0) for V3+ and not past grant.expiresAtMillis
-        if (operation.protocolVersion >= ProtocolVersion.V3_SIGNED_OPERATIONS && operation.createdAtMillis <= 0L) {
+        // 5. Version & Expiry check:
+        // Any operation presenting an invitation grant must be V3+ and have valid createdAtMillis
+        if (operation.protocolVersion < ProtocolVersion.V3_SIGNED_OPERATIONS) {
+            return AuthOutcome(
+                isAuthorized = false,
+                rejectionReason = RejectionReason.INVALID_INVITATION,
+                detail = "Invitation grants require protocol version ${ProtocolVersion.V3_SIGNED_OPERATIONS} or higher"
+            )
+        }
+        if (operation.createdAtMillis <= 0L) {
             return AuthOutcome(
                 isAuthorized = false,
                 rejectionReason = RejectionReason.INVALID_INVITATION,
                 detail = "Operation createdAtMillis is invalid (${operation.createdAtMillis})"
             )
         }
-        if (grant.expiresAtMillis > 0L && operation.createdAtMillis > 0L && operation.createdAtMillis > grant.expiresAtMillis) {
+        if (grant.expiresAtMillis > 0L && operation.createdAtMillis > grant.expiresAtMillis) {
             return AuthOutcome(
                 isAuthorized = false,
                 rejectionReason = RejectionReason.EXPIRED_INVITATION,
