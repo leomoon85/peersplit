@@ -53,6 +53,7 @@ import com.peersplit.app.data.repository.GroupDetail
 import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import com.peersplit.app.util.CurrencyUtil
 import com.peersplit.app.util.ExportUtil
@@ -83,7 +84,7 @@ fun GroupDetailScreen(
     onUpdateMemberContact: (pubkey: String, phone: String?, upiId: String?) -> Unit = { _, _, _ -> },
     isSyncing: Boolean = false,
     onManualSync: (onDone: () -> Unit) -> Unit = {},
-    onImportExpenses: (List<com.peersplit.app.util.ParsedImportExpense>, (Int, Int) -> Unit, (Int) -> Unit) -> Unit = { _, _, _ -> }
+    onImportExpenses: (List<com.peersplit.app.util.ParsedImportExpense>, (Int, Int) -> Unit, (Int, Int) -> Unit) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
     val pagerState = rememberPagerState(pageCount = { 3 })
@@ -147,8 +148,52 @@ fun GroupDetailScreen(
     }
 
     if (groupDetail == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Group") },
+                    navigationIcon = {
+                        IconButton(onClick = onBackClick) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                )
+            }
+        ) { padding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(24.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Info,
+                        contentDescription = "Group not found",
+                        modifier = Modifier.size(56.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Group Not Found",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "This group may have been deleted or the link is invalid.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(onClick = onBackClick) {
+                        Text("Back to Home")
+                    }
+                }
+            }
         }
         return
     }
@@ -181,7 +226,7 @@ fun GroupDetailScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
@@ -1052,10 +1097,14 @@ fun GroupDetailScreen(
                                 { done, total ->
                                     importProgressText = "Imported $done of $total..."
                                 },
-                                { count ->
+                                { imported, failed ->
                                     isImportingInProgress = false
                                     showImportConfirmDialog = null
-                                    Toast.makeText(context, "Successfully imported $count expenses! ⚡", Toast.LENGTH_SHORT).show()
+                                    if (failed > 0) {
+                                        Toast.makeText(context, "Imported $imported expenses ($failed failed)", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        Toast.makeText(context, "Successfully imported $imported expenses! ⚡", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                             )
                         }
@@ -1171,11 +1220,17 @@ fun BalancesAndDebtsTab(
         groupDetail.expenses.filter { !it.isVoided && it.splitType != "SETTLEMENT" }.sumOf { it.totalAmount }
     }
     val mvpPubkey = remember(groupDetail.expenses) {
-        groupDetail.expenses
-            .filter { !it.isVoided }
-            .groupBy { it.payerPubkey }
-            .maxByOrNull { entry -> entry.value.sumOf { exp -> exp.totalAmount } }
-            ?.key
+        val spendMap = mutableMapOf<String, Double>()
+        groupDetail.expenses.filter { !it.isVoided && it.splitType != "SETTLEMENT" }.forEach { exp ->
+            if (exp.payers.isNotEmpty()) {
+                exp.payers.forEach { p ->
+                    spendMap[p.userPubkey] = (spendMap[p.userPubkey] ?: 0.0) + p.amount
+                }
+            } else {
+                spendMap[exp.payerPubkey] = (spendMap[exp.payerPubkey] ?: 0.0) + exp.totalAmount
+            }
+        }
+        spendMap.maxByOrNull { it.value }?.key
     }
     val recentActiveExpenses = remember(groupDetail.expenses) {
         groupDetail.expenses.filter { !it.isVoided }.take(3)
@@ -1997,9 +2052,17 @@ fun AnalyticsTab(
 
     val memberBreakdown = remember(expenses, groupDetail.members) {
         val memberMap = groupDetail.members.associateBy { it.pubkey }
-        expenses.groupBy { it.payerPubkey }
-            .mapValues { entry -> entry.value.sumOf { it.totalAmount } }
-            .toList()
+        val spendMap = mutableMapOf<String, Double>()
+        expenses.forEach { exp ->
+            if (exp.payers.isNotEmpty()) {
+                exp.payers.forEach { p ->
+                    spendMap[p.userPubkey] = (spendMap[p.userPubkey] ?: 0.0) + p.amount
+                }
+            } else {
+                spendMap[exp.payerPubkey] = (spendMap[exp.payerPubkey] ?: 0.0) + exp.totalAmount
+            }
+        }
+        spendMap.toList()
             .sortedByDescending { it.second }
             .mapIndexed { index, (pubkey, amount) ->
                 val memberName = memberMap[pubkey]?.displayName ?: "Member (${pubkey.take(4)})"

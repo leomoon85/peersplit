@@ -22,18 +22,21 @@ data class HomeUiState(
     val totalOwedToUser: Double = 0.0,
     val totalUserOwes: Double = 0.0,
     val primaryCurrency: String = "INR",
+    val otherCurrencyBalances: Map<String, Double> = emptyMap(),
     val isOnline: Boolean = true
 )
 
 class HomeViewModel : ViewModel() {
 
     private val repository = PeerSplitApp.instance.repository
+    private val syncManager = PeerSplitApp.instance.syncManager
     private val unlockedPin = MutableStateFlow<String?>(null)
 
     val uiState: StateFlow<HomeUiState> = combine(
         repository.getGroups(),
-        unlockedPin.asStateFlow()
-    ) { allGroups, pin ->
+        unlockedPin.asStateFlow(),
+        syncManager.isOnline
+    ) { allGroups, pin, isOnline ->
         val activeRegular = allGroups.filter { !it.isSecret && !it.isArchived }
         val archived = allGroups.filter { !it.isSecret && it.isArchived }
         val allSecret = allGroups.filter { it.isSecret }
@@ -58,13 +61,18 @@ class HomeViewModel : ViewModel() {
         var totalBalance = 0.0
         var owedToUser = 0.0
         var userOwes = 0.0
+        val otherBalances = mutableMapOf<String, Double>()
 
-        for (g in countedGroups.filter { it.currency == primaryCurrency }) {
-            totalBalance += g.userNetBalance
-            if (g.userNetBalance > 0) {
-                owedToUser += g.userNetBalance
-            } else if (g.userNetBalance < 0) {
-                userOwes += -g.userNetBalance
+        for (g in countedGroups) {
+            if (g.currency == primaryCurrency) {
+                totalBalance += g.userNetBalance
+                if (g.userNetBalance > 0) {
+                    owedToUser += g.userNetBalance
+                } else if (g.userNetBalance < 0) {
+                    userOwes += -g.userNetBalance
+                }
+            } else {
+                otherBalances[g.currency] = (otherBalances[g.currency] ?: 0.0) + g.userNetBalance
             }
         }
 
@@ -77,7 +85,8 @@ class HomeViewModel : ViewModel() {
             totalOwedToUser = owedToUser,
             totalUserOwes = userOwes,
             primaryCurrency = primaryCurrency,
-            isOnline = true
+            otherCurrencyBalances = otherBalances.filter { Math.abs(it.value) > 0.001 },
+            isOnline = isOnline
         )
     }.stateIn(
         scope = viewModelScope,
@@ -97,14 +106,15 @@ class HomeViewModel : ViewModel() {
         }
     }
 
-    fun unlockVault(pin: String): Boolean {
+    suspend fun unlockVault(pin: String): Boolean = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
         val allSecret = uiState.value.secretGroups
         val matches = allSecret.any { KeyManager.verifySecretPin(pin, it.secretPinHash) }
         if (matches || allSecret.isEmpty()) {
             unlockedPin.value = pin
-            return true
+            true
+        } else {
+            false
         }
-        return false
     }
 
     fun lockVault() {

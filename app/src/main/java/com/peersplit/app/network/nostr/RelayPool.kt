@@ -5,8 +5,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.Collections
 
@@ -50,6 +53,11 @@ class RelayPool(
     private val _ackedEventIds = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 128)
     val ackedEventIds: SharedFlow<String> = _ackedEventIds.asSharedFlow()
 
+    private val _isConnected = MutableStateFlow(false)
+    val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+    fun isConnected(): Boolean = _isConnected.value
+
     fun connectAll() {
         synchronized(clients) {
             if (clients.isNotEmpty()) {
@@ -61,6 +69,13 @@ class RelayPool(
                 val client = NostrClient(url)
                 clients.add(client)
                 client.connect()
+
+                scope.launch {
+                    client.isConnectedFlow.collect {
+                        val anyConnected = synchronized(clients) { clients.any { it.isConnected() } }
+                        _isConnected.value = anyConnected
+                    }
+                }
 
                 scope.launch {
                     client.eventsFlow.collect { event ->

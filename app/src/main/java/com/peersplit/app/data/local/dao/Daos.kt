@@ -202,6 +202,15 @@ interface OutboxDao {
     @Query("SELECT * FROM outbox_operations WHERE status IN ('QUEUED', 'ACKED_PARTIAL') AND nextAttemptAtMillis <= :nowMillis ORDER BY createdAtMillis ASC LIMIT :limit")
     suspend fun getDueOutboxOperationsSync(nowMillis: Long, limit: Int = 64): List<OutboxOperationEntity>
 
+    @Query("SELECT * FROM outbox_operations WHERE status IN ('QUEUED', 'ACKED_PARTIAL') ORDER BY createdAtMillis ASC")
+    fun getAllPendingOutboxFlow(): Flow<List<OutboxOperationEntity>>
+
+    @Query("SELECT COUNT(*) FROM outbox_operations WHERE status IN ('QUEUED', 'ACKED_PARTIAL')")
+    fun getPendingOutboxCountFlow(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM outbox_operations WHERE groupId = :groupId AND status IN ('QUEUED', 'ACKED_PARTIAL')")
+    fun getPendingOutboxCountForGroupFlow(groupId: String): Flow<Int>
+
     @Query("SELECT * FROM outbox_operations WHERE groupId = :groupId ORDER BY createdAtMillis ASC")
     suspend fun getOutboxForGroupSync(groupId: String): List<OutboxOperationEntity>
 

@@ -32,6 +32,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.ui.theme.BlockchainAccent
 import com.peersplit.app.util.CurrencyUtil
@@ -54,21 +55,22 @@ fun CreateGroupScreen(
         isSecret: Boolean,
         secretPin: String?,
         isPersonalSolo: Boolean,
-        initialMembers: List<String>
+        initialMembers: List<String>,
+        onError: () -> Unit
     ) -> Unit
 ) {
     val context = LocalContext.current
-    var groupName by remember { mutableStateOf("") }
+    var groupName by rememberSaveable { mutableStateOf("") }
     val currencies = listOf("INR", "USD", "EUR", "GBP", "CAD", "AUD", "JPY")
-    var selectedCurrency by remember { mutableStateOf("INR") }
-    var isSecret by remember { mutableStateOf(false) }
-    var secretPin by remember { mutableStateOf("") }
-    var isPersonalSolo by remember { mutableStateOf(false) }
+    var selectedCurrency by rememberSaveable { mutableStateOf("INR") }
+    var isSecret by rememberSaveable { mutableStateOf(false) }
+    var secretPin by rememberSaveable { mutableStateOf("") }
+    var isPersonalSolo by rememberSaveable { mutableStateOf(false) }
     var isCreating by remember { mutableStateOf(false) }
 
     // Friends added right during group creation (formatted as "Name" or "Name|Phone")
-    var friendInput by remember { mutableStateOf("") }
-    var friendPhoneInput by remember { mutableStateOf("") }
+    var friendInput by rememberSaveable { mutableStateOf("") }
+    var friendPhoneInput by rememberSaveable { mutableStateOf("") }
     val addedFriends = remember { mutableStateListOf<String>() }
 
     val contactPickerLauncher = rememberLauncherForActivityResult(
@@ -413,7 +415,9 @@ fun CreateGroupScreen(
                             if (isSecret && secretPin.isNotBlank()) secretPin else null,
                             isPersonalSolo,
                             finalFriends
-                        )
+                        ) {
+                            isCreating = false
+                        }
                     }
                 },
                 modifier = Modifier

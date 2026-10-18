@@ -26,10 +26,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.peersplit.app.PeerSplitApp
 import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.crypto.QrCodeUtil
 import com.peersplit.app.ui.navigation.PendingInvite
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -38,17 +42,18 @@ fun JoinGroupScreen(
     onJoinGroup: (inviteUri: String, claimedGhostPubkey: String?, onFailed: () -> Unit) -> Unit
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val repository = remember { PeerSplitApp.instance.repository }
     val currentIdentity = remember { KeyManager.getOrCreateIdentity(context) }
 
-    var inviteCode by remember { mutableStateOf("") }
+    var inviteCode by rememberSaveable { mutableStateOf("") }
     var isJoining by remember { mutableStateOf(false) }
 
     val preview = remember(inviteCode) {
         if (inviteCode.isNotBlank()) repository.parseInvitePreview(inviteCode) else null
     }
 
-    // Default to matching ghost member by 10-digit phone number first, then by displayName, then 1st unclaimed member
+    // Default to matching ghost member by 10-digit phone number first, then by displayName, otherwise default to Join as New ("NONE")
     var selectedGhostPubkey by remember(preview) {
         val ghosts = preview?.unclaimedGhostMembers.orEmpty()
         val normMyPhone = KeyManager.normalizePhone(currentIdentity.phone)
@@ -57,8 +62,8 @@ fun JoinGroupScreen(
         } else null
         val matching = byPhone ?: ghosts.firstOrNull {
             it.displayName.trim().equals(currentIdentity.displayName.trim(), ignoreCase = true)
-        } ?: ghosts.firstOrNull()
-        mutableStateOf<String?>(matching?.pubkey)
+        }
+        mutableStateOf<String?>(matching?.pubkey ?: "NONE")
     }
 
     // Prefill from a tapped peersplit:// link (also when this screen is already open)
@@ -75,17 +80,23 @@ fun JoinGroupScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            try {
-                val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
-                val decoded = bitmap?.let { QrCodeUtil.decodeQrBitmap(it) }
-                if (!decoded.isNullOrBlank()) {
-                    inviteCode = decoded.trim()
-                    Toast.makeText(context, "QR code recognized!", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "No QR code detected in selected image", Toast.LENGTH_SHORT).show()
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                    val decoded = bitmap?.let { QrCodeUtil.decodeQrBitmap(it) }
+                    withContext(Dispatchers.Main) {
+                        if (!decoded.isNullOrBlank()) {
+                            inviteCode = decoded.trim()
+                            Toast.makeText(context, "QR code recognized!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "No QR code detected in selected image", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Failed to read image: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
                 }
-            } catch (e: Exception) {
-                Toast.makeText(context, "Failed to read image: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }

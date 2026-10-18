@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.data.repository.GroupDetail
 import com.peersplit.app.ui.theme.BlockchainAccent
@@ -59,7 +60,7 @@ fun SettleUpScreen(
     val members = groupDetail.members
     val currency = groupDetail.group.currency
 
-    var selectedPayer by remember {
+    var selectedPayer by rememberSaveable {
         mutableStateOf(
             initialPayer?.takeIf { p -> members.any { it.pubkey == p } }
                 ?: members.firstOrNull { it.netBalance < 0 }?.pubkey
@@ -67,7 +68,7 @@ fun SettleUpScreen(
                 ?: ""
         )
     }
-    var selectedPayee by remember {
+    var selectedPayee by rememberSaveable {
         mutableStateOf(
             initialPayee?.takeIf { p -> members.any { it.pubkey == p } }
                 ?: members.firstOrNull { it.netBalance > 0 }?.pubkey
@@ -75,20 +76,22 @@ fun SettleUpScreen(
                 ?: ""
         )
     }
-    var amountText by remember {
+    var amountText by rememberSaveable {
         mutableStateOf(
             initialAmount?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: ""
         )
     }
     var isSubmitting by remember { mutableStateOf(false) }
+    var hasInitializedRecommendation by rememberSaveable { mutableStateOf(false) }
 
-    // Pre-populate recommended settlement if not passed via navigation
+    // Pre-populate recommended settlement once on load if not passed via navigation
     LaunchedEffect(groupDetail.settlements) {
-        if (initialPayer == null && initialPayee == null && groupDetail.settlements.isNotEmpty()) {
+        if (!hasInitializedRecommendation && initialPayer == null && initialPayee == null && groupDetail.settlements.isNotEmpty()) {
             val rec = groupDetail.settlements.first()
             selectedPayer = rec.fromPubkey
             selectedPayee = rec.toPubkey
             amountText = String.format(java.util.Locale.US, "%.2f", rec.amount)
+            hasInitializedRecommendation = true
         }
     }
 
@@ -508,6 +511,10 @@ fun SettleUpScreen(
                             Toast.makeText(context, "Please enter a valid UPI ID", Toast.LENGTH_SHORT).show()
                             return@Button
                         }
+                        if (!clean.contains("@") || clean.startsWith("@") || clean.endsWith("@")) {
+                            Toast.makeText(context, "Please enter a valid UPI format (e.g. name@bank)", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
                         payeeUpiId = clean
                         onUpdatePayeeUpi(selectedPayee, clean)
                         showEnterUpiDialog = false
@@ -523,8 +530,18 @@ fun SettleUpScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showEnterUpiDialog = false }) {
-                    Text("Cancel")
+                Row {
+                    TextButton(onClick = {
+                        dialogUpiInput = ""
+                        payeeUpiId = ""
+                        onUpdatePayeeUpi(selectedPayee, "")
+                        showEnterUpiDialog = false
+                    }) {
+                        Text("Clear", color = MaterialTheme.colorScheme.error)
+                    }
+                    TextButton(onClick = { showEnterUpiDialog = false }) {
+                        Text("Cancel")
+                    }
                 }
             }
         )

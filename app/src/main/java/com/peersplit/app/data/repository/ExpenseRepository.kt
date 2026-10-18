@@ -310,25 +310,45 @@ class ExpenseRepository(
             database.groupDao().getAllGroups(),
             database.memberDao().getAllMembersFlow(),
             database.blockDao().getAllBlocksFlow(),
-            database.projectionDao().getAllBalanceProjectionsFlow()
-        ) { groupEntities, allMembers, allBlocks, allBalanceProjections ->
+            database.projectionDao().getAllBalanceProjectionsFlow(),
+            database.projectionDao().getAllExpenseProjectionsFlow(),
+            database.outboxDao().getAllPendingOutboxFlow()
+        ) { array: Array<Any?> ->
+            @Suppress("UNCHECKED_CAST")
+            val groupEntities = array[0] as List<GroupEntity>
+            @Suppress("UNCHECKED_CAST")
+            val allMembers = array[1] as List<MemberEntity>
+            @Suppress("UNCHECKED_CAST")
+            val allBlocks = array[2] as List<BlockEntity>
+            @Suppress("UNCHECKED_CAST")
+            val allBalanceProjections = array[3] as List<BalanceProjectionEntity>
+            @Suppress("UNCHECKED_CAST")
+            val allExpenseProjections = array[4] as List<ExpenseProjectionEntity>
+            @Suppress("UNCHECKED_CAST")
+            val allPendingOutbox = array[5] as List<OutboxOperationEntity>
+
             val identity = KeyManager.getOrCreateIdentity(context)
             val membersByGroup = allMembers.groupBy { it.groupId }
             val blocksByGroup = allBlocks.groupBy { it.groupId }
             val balancesByGroup = allBalanceProjections.groupBy { it.groupId }
+            val expensesByGroup = allExpenseProjections.groupBy { it.groupId }
+            val outboxByGroup = allPendingOutbox.groupBy { it.groupId }
 
             groupEntities.map { entity ->
                 val rawMembers = membersByGroup[entity.id].orEmpty()
                 val rawBlocks = blocksByGroup[entity.id].orEmpty()
                 val rawBalances = balancesByGroup[entity.id].orEmpty()
+                val rawExpenses = expensesByGroup[entity.id].orEmpty()
+                val pendingCount = outboxByGroup[entity.id]?.size ?: 0
                 val detail = computeGroupDetail(
                     groupEntity = entity,
                     memberEntities = rawMembers,
                     blockEntities = rawBlocks,
                     identity = identity,
-                    balProjections = rawBalances
+                    balProjections = rawBalances,
+                    expProjections = rawExpenses
                 )
-                detail.group
+                detail.group.copy(pendingSyncCount = pendingCount)
             }
         }.flowOn(Dispatchers.Default)
     }
@@ -389,14 +409,56 @@ class ExpenseRepository(
         val domainBlocks = blockEntities.map { it.toDomainBlock() }
         val isV2 = expProjections.isNotEmpty() || balProjections.isNotEmpty()
 
-        val aliasMap = buildAliasMap(
-            groupId = groupId,
-            memberEntities = memberEntities,
-            blocks = domainBlocks,
-            currentIdentityPubkey = identity.publicKeyHex,
-            currentIdentityName = identity.displayName,
-            currentIdentityPhone = identity.phone
-        )
+        val aliasMap: Map<String, String> = if (isV2) {
+            // Strictly ledger-authorized ghost claims from accepted operations.
+            // Never reassign balances or identities based on phone or name heuristics.
+            val v2Aliases = mutableMapOf<String, String>()
+            for (opEntity in operationEntities) {
+                if (opEntity.status == SignedOperationEntity.STATUS_ACCEPTED) {
+                    try {
+                        val payload = OperationEntityMapper.json.decodeFromString(OperationPayload.serializer(), opEntity.payloadJson)
+                        when (payload) {
+                            is OperationPayload.MemberAdded -> {
+                                val claimed = payload.claimedGhostPubkey
+                                if (!claimed.isNullOrBlank() && claimed != payload.memberPublicKey) {
+                                    v2Aliases[claimed] = payload.memberPublicKey
+                                }
+                            }
+                            is OperationPayload.GenesisCreated -> {
+                                for (m in payload.initialMembers) {
+                                    if (!m.claimedGhostPubkey.isNullOrBlank() && m.claimedGhostPubkey != m.publicKey) {
+                                        v2Aliases[m.claimedGhostPubkey] = m.publicKey
+                                    }
+                                }
+                            }
+                            is OperationPayload.LegacyV1Checkpoint -> {
+                                payload.ghostAliases.forEach { (ghost, real) ->
+                                    if (ghost.isNotBlank() && real.isNotBlank() && ghost != real) {
+                                        v2Aliases[ghost] = real
+                                    }
+                                }
+                                for (m in payload.members) {
+                                    if (!m.claimedGhostPubkey.isNullOrBlank() && m.claimedGhostPubkey != m.publicKey) {
+                                        v2Aliases[m.claimedGhostPubkey] = m.publicKey
+                                    }
+                                }
+                            }
+                            else -> {}
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+            v2Aliases
+        } else {
+            buildAliasMap(
+                groupId = groupId,
+                memberEntities = memberEntities,
+                blocks = domainBlocks,
+                currentIdentityPubkey = identity.publicKeyHex,
+                currentIdentityName = identity.displayName,
+                currentIdentityPhone = identity.phone
+            )
+        }
         val resolvePubkey = { pk: String -> aliasMap[pk] ?: pk }
 
         // Build deduplicated members list (merging any claimed ghost member into the real member)
@@ -435,12 +497,18 @@ class ExpenseRepository(
 
         if (isV2) {
             val opSignatures = operationEntities.associate { it.operationId to it.signature }
-            netBalances = balProjections.associate {
-                val resolved = resolvePubkey(it.memberPublicKey)
-                resolved to MoneyMath.toMajorUnits(it.balanceMinor, it.currency)
+            val minorSumsByResolved = mutableMapOf<String, Long>()
+            val currencyByResolved = mutableMapOf<String, String>()
+            for (bal in balProjections) {
+                val resolved = resolvePubkey(bal.memberPublicKey)
+                minorSumsByResolved[resolved] = (minorSumsByResolved[resolved] ?: 0L) + bal.balanceMinor
+                currencyByResolved[resolved] = bal.currency
+            }
+            netBalances = minorSumsByResolved.mapValues { (resolved, totalMinor) ->
+                MoneyMath.toMajorUnits(totalMinor, currencyByResolved[resolved])
             }
             suggestions = DebtSettlementEngine.simplifyDebts(netBalances)
-            isStructuralValid = true
+            isStructuralValid = operationEntities.isNotEmpty() && operationEntities.none { it.status == SignedOperationEntity.STATUS_REJECTED }
 
             expenseItems = expProjections.mapNotNull { proj ->
                 try {

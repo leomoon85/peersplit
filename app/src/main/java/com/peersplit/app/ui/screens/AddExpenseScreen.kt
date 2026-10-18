@@ -37,9 +37,14 @@ import com.peersplit.app.data.repository.GroupDetail
 import com.peersplit.app.ui.theme.BalanceNegative
 import com.peersplit.app.ui.theme.BalancePositive
 import com.peersplit.app.ui.theme.BlockchainAccent
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.peersplit.app.util.AmountInputValidator
+import com.peersplit.app.util.AmountValidationResult
 import com.peersplit.app.util.CurrencyUtil
 import com.peersplit.app.util.ReceiptScannerUtil
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -92,8 +97,21 @@ fun AddExpenseScreen(
     ) -> Unit
 ) {
     if (groupDetail == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text(if (editingExpenseId != null) "Edit Expense" else "Add Expense") },
+                    navigationIcon = {
+                        IconButton(onClick = onBackClick) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                )
+            }
+        ) { padding ->
+            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
         }
         return
     }
@@ -110,15 +128,16 @@ fun AddExpenseScreen(
     }
     val isEditMode = editingExpense != null
 
-    var description by remember { mutableStateOf("") }
-    var amountText by remember { mutableStateOf("") }
-    var note by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf(ExpenseCategory.FOOD) }
-    var splitMode by remember { mutableStateOf(SplitMode.EQUAL) }
+    var description by rememberSaveable { mutableStateOf("") }
+    var amountText by rememberSaveable { mutableStateOf("") }
+    var note by rememberSaveable { mutableStateOf("") }
+    var selectedCategory by rememberSaveable { mutableStateOf(ExpenseCategory.FOOD) }
+    var splitMode by rememberSaveable { mutableStateOf(SplitMode.EQUAL) }
     var isOcrScanning by remember { mutableStateOf(false) }
+    var hasUserModifiedSplits by rememberSaveable { mutableStateOf(false) }
 
     // Expense Date (Today, Yesterday, or any past date via Calendar picker)
-    var expenseDateMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    var expenseDateMillis by rememberSaveable { mutableStateOf(System.currentTimeMillis()) }
     val dateFormatter = remember { SimpleDateFormat("EEE, dd MMM yyyy", Locale.getDefault()) }
 
     val isTodaySelected = remember(expenseDateMillis) {
@@ -156,8 +175,8 @@ fun AddExpenseScreen(
     }
 
     // Single vs Multiple Payers
-    var isMultiPayer by remember { mutableStateOf(false) }
-    var selectedPayerPubkey by remember {
+    var isMultiPayer by rememberSaveable { mutableStateOf(false) }
+    var selectedPayerPubkey by rememberSaveable {
         mutableStateOf(members.firstOrNull { it.isCurrentUser }?.pubkey ?: members.firstOrNull()?.pubkey ?: "")
     }
     val multiPayerAmounts = remember { mutableStateMapOf<String, String>() }
@@ -167,7 +186,7 @@ fun AddExpenseScreen(
     val exactAmounts = remember { mutableStateMapOf<String, String>() }
     val percentageInputs = remember { mutableStateMapOf<String, String>() }
     val sharesInputs = remember { mutableStateMapOf<String, String>() }
-    var hasInitializedFields by remember { mutableStateOf(false) }
+    var hasInitializedFields by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(members, editingExpense) {
         if (!hasInitializedFields && members.isNotEmpty()) {
@@ -246,159 +265,177 @@ fun AddExpenseScreen(
             .take(4)
     }
 
-    // Receipt OCR Photo Picker
+    // Receipt OCR Photo Picker (Executed off Main thread on Dispatchers.IO)
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            coroutineScope.launch {
+            coroutineScope.launch(Dispatchers.IO) {
                 isOcrScanning = true
                 val parsed = ReceiptScannerUtil.scanReceipt(context, uri)
-                isOcrScanning = false
-                if (parsed != null) {
-                    if (description.isBlank() && parsed.suggestedTitle.isNotBlank()) {
-                        description = parsed.suggestedTitle
+                withContext(Dispatchers.Main) {
+                    isOcrScanning = false
+                    if (parsed != null) {
+                        if (description.isBlank() && parsed.suggestedTitle.isNotBlank()) {
+                            description = parsed.suggestedTitle
+                        }
+                        if (parsed.suggestedAmount != null && parsed.suggestedAmount > 0) {
+                            amountText = String.format(Locale.US, "%.2f", parsed.suggestedAmount)
+                        }
+                        Toast.makeText(context, "Receipt scanned successfully!", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Could not detect receipt totals. Please type manually.", Toast.LENGTH_SHORT).show()
                     }
-                    if (parsed.suggestedAmount != null && parsed.suggestedAmount > 0) {
-                        amountText = String.format(Locale.US, "%.2f", parsed.suggestedAmount)
-                    }
-                    Toast.makeText(context, "Receipt scanned successfully!", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Could not detect receipt totals. Please type manually.", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
-    val totalAmount = amountText.replace(',', '.').toDoubleOrNull() ?: 0.0
+    val amountValidation = remember(amountText) {
+        AmountInputValidator.validate(amountText)
+    }
+    val totalAmount = (amountValidation as? AmountValidationResult.Valid)?.majorAmount ?: 0.0
+    val isAmountValid = amountValidation.isValid
+    val amountFieldError = (amountValidation as? AmountValidationResult.Invalid)?.error
 
     // Multiple Payers validation
     val (computedPayers, isValidPayer, payerStatusText) = remember(
-        totalAmount, isMultiPayer, selectedPayerPubkey, multiPayerAmounts.toMap()
+        totalAmount, isAmountValid, isMultiPayer, selectedPayerPubkey, multiPayerAmounts.toMap()
     ) {
-        if (!isMultiPayer) {
+        if (!isAmountValid) {
+            Triple(emptyList<SplitItem>(), false, amountFieldError ?: "Enter total bill amount first")
+        } else if (!isMultiPayer) {
             Triple(emptyList<SplitItem>(), selectedPayerPubkey.isNotBlank(), "Single payer")
         } else {
-            var sumPaid = 0.0
-            val list = mutableListOf<SplitItem>()
-            for (m in members) {
-                val paid = multiPayerAmounts[m.pubkey]?.replace(',', '.')?.toDoubleOrNull() ?: 0.0
-                sumPaid += paid
-                if (paid > 0) {
-                    list.add(SplitItem(userPubkey = m.pubkey, amount = paid))
+            try {
+                var sumPaid = 0.0
+                val list = mutableListOf<SplitItem>()
+                for (m in members) {
+                    val paid = multiPayerAmounts[m.pubkey]?.replace(',', '.')?.toDoubleOrNull() ?: 0.0
+                    sumPaid += paid
+                    if (paid > 0) {
+                        list.add(SplitItem(userPubkey = m.pubkey, amount = paid))
+                    }
                 }
+                val diff = totalAmount - sumPaid
+                val valid = totalAmount > 0 && kotlin.math.abs(diff) < 0.05 && list.isNotEmpty()
+                val finalList = if (valid) {
+                    val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                    val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
+                    val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
+                    list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
+                } else {
+                    list
+                }
+                val status = if (valid) "Paid total matches ($sym${String.format(Locale.US, "%.2f", sumPaid)})"
+                else if (diff > 0) "Remaining to pay: $sym${String.format(Locale.US, "%.2f", diff)}"
+                else "Exceeds bill by: $sym${String.format(Locale.US, "%.2f", -diff)}"
+                Triple(finalList, valid, status)
+            } catch (_: Exception) {
+                Triple(emptyList(), false, "Invalid payer amounts")
             }
-            val diff = totalAmount - sumPaid
-            val valid = totalAmount > 0 && kotlin.math.abs(diff) < 0.05 && list.isNotEmpty()
-            val finalList = if (valid) {
-                val totalMinor = MoneyMath.toMinorUnits(totalAmount)
-                val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
-                val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
-                list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
-            } else {
-                list
-            }
-            val status = if (totalAmount <= 0) "Enter total bill amount first"
-            else if (valid) "Paid total matches ($sym${String.format(Locale.US, "%.2f", sumPaid)})"
-            else if (diff > 0) "Remaining to pay: $sym${String.format(Locale.US, "%.2f", diff)}"
-            else "Exceeds bill by: $sym${String.format(Locale.US, "%.2f", -diff)}"
-            Triple(finalList, valid, status)
         }
     }
 
     // Computed splits validation & generation
     val (computedSplits, isValidSplit, splitStatusText) = remember(
-        totalAmount, splitMode, equalSelected.toMap(), exactAmounts.toMap(), percentageInputs.toMap(), sharesInputs.toMap()
+        totalAmount, isAmountValid, splitMode, equalSelected.toMap(), exactAmounts.toMap(), percentageInputs.toMap(), sharesInputs.toMap()
     ) {
-        if (totalAmount <= 0) return@remember Triple(emptyList<SplitItem>(), false, "Enter an amount")
+        if (!isAmountValid) {
+            return@remember Triple(emptyList<SplitItem>(), false, amountFieldError ?: "Enter an amount")
+        }
 
-        when (splitMode) {
-            SplitMode.EQUAL -> {
-                val active = equalSelected.filter { it.value }.keys.toList()
-                if (active.isEmpty()) {
-                    Triple(emptyList(), false, "Select at least 1 member")
-                } else {
-                    val totalMinor = MoneyMath.toMinorUnits(totalAmount)
-                    val eqSplits = MoneyMath.allocateEqualSplits(totalMinor, active)
-                    val list = active.map { pubkey ->
-                        SplitItem(userPubkey = pubkey, amount = MoneyMath.toMajorDouble(eqSplits[pubkey] ?: 0L))
-                    }
-                    val perPersonAvg = totalAmount / active.size
-                    Triple(list, true, "${CurrencyUtil.formatAmount(perPersonAvg, currency)} / person")
-                }
-            }
-            SplitMode.EXACT -> {
-                var sum = 0.0
-                val list = mutableListOf<SplitItem>()
-                for (m in members) {
-                    val a = exactAmounts[m.pubkey]?.toDoubleOrNull() ?: 0.0
-                    sum += a
-                    if (a > 0) list.add(SplitItem(userPubkey = m.pubkey, amount = a))
-                }
-                val diff = totalAmount - sum
-                val valid = kotlin.math.abs(diff) < 0.05 && list.isNotEmpty()
-                val finalList = if (valid) {
-                    val totalMinor = MoneyMath.toMinorUnits(totalAmount)
-                    val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
-                    val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
-                    list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
-                } else {
-                    list
-                }
-                val status = if (valid) "Exact amounts match total ($sym${String.format(Locale.US, "%.2f", sum)})"
-                else if (diff > 0) "Remaining to assign: $sym${String.format(Locale.US, "%.2f", diff)}"
-                else "Exceeds total by: $sym${String.format(Locale.US, "%.2f", -diff)}"
-                Triple(finalList, valid, status)
-            }
-            SplitMode.PERCENTAGE -> {
-                var sumPct = 0.0
-                val list = mutableListOf<SplitItem>()
-                for (m in members) {
-                    val p = percentageInputs[m.pubkey]?.toDoubleOrNull() ?: 0.0
-                    sumPct += p
-                    if (p > 0) {
-                        val computed = (totalAmount * p) / 100.0
-                        list.add(SplitItem(userPubkey = m.pubkey, amount = computed))
+        try {
+            when (splitMode) {
+                SplitMode.EQUAL -> {
+                    val active = equalSelected.filter { it.value }.keys.toList()
+                    if (active.isEmpty()) {
+                        Triple(emptyList(), false, "Select at least 1 member")
+                    } else {
+                        val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                        val eqSplits = MoneyMath.allocateEqualSplits(totalMinor, active)
+                        val list = active.map { pubkey ->
+                            SplitItem(userPubkey = pubkey, amount = MoneyMath.toMajorDouble(eqSplits[pubkey] ?: 0L))
+                        }
+                        val perPersonAvg = totalAmount / active.size
+                        Triple(list, true, "${CurrencyUtil.formatAmount(perPersonAvg, currency)} / person")
                     }
                 }
-                val diff = 100.0 - sumPct
-                val valid = kotlin.math.abs(diff) < 0.5 && list.isNotEmpty()
-                val finalList = if (valid) {
-                    val totalMinor = MoneyMath.toMinorUnits(totalAmount)
-                    val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
-                    val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
-                    list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
-                } else {
-                    list
-                }
-                val status = if (valid) "100% assigned"
-                else if (diff > 0) "Remaining: ${String.format(Locale.US, "%.1f", diff)}%"
-                else "Exceeds by: ${String.format(Locale.US, "%.1f", -diff)}%"
-                Triple(finalList, valid, status)
-            }
-            SplitMode.SHARES -> {
-                var totalShares = 0.0
-                for (m in members) {
-                    val s = sharesInputs[m.pubkey]?.toDoubleOrNull() ?: 0.0
-                    totalShares += s
-                }
-                if (totalShares <= 0) {
-                    Triple(emptyList(), false, "At least 1 share required")
-                } else {
-                    val list = members.mapNotNull { m ->
-                        val s = sharesInputs[m.pubkey]?.toDoubleOrNull() ?: 0.0
-                        if (s > 0) {
-                            val computed = (totalAmount * s) / totalShares
-                            SplitItem(userPubkey = m.pubkey, amount = computed)
-                        } else null
+                SplitMode.EXACT -> {
+                    var sum = 0.0
+                    val list = mutableListOf<SplitItem>()
+                    for (m in members) {
+                        val a = exactAmounts[m.pubkey]?.replace(',', '.')?.toDoubleOrNull() ?: 0.0
+                        sum += a
+                        if (a > 0) list.add(SplitItem(userPubkey = m.pubkey, amount = a))
                     }
-                    val totalMinor = MoneyMath.toMinorUnits(totalAmount)
-                    val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
-                    val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
-                    val finalList = list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
-                    Triple(finalList, true, "${String.format(Locale.US, "%.0f", totalShares)} total shares")
+                    val diff = totalAmount - sum
+                    val valid = kotlin.math.abs(diff) < 0.05 && list.isNotEmpty()
+                    val finalList = if (valid) {
+                        val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                        val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
+                        val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
+                        list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
+                    } else {
+                        list
+                    }
+                    val status = if (valid) "Exact amounts match total ($sym${String.format(Locale.US, "%.2f", sum)})"
+                    else if (diff > 0) "Remaining to assign: $sym${String.format(Locale.US, "%.2f", diff)}"
+                    else "Exceeds total by: $sym${String.format(Locale.US, "%.2f", -diff)}"
+                    Triple(finalList, valid, status)
+                }
+                SplitMode.PERCENTAGE -> {
+                    var sumPct = 0.0
+                    val list = mutableListOf<SplitItem>()
+                    for (m in members) {
+                        val p = percentageInputs[m.pubkey]?.replace(',', '.')?.toDoubleOrNull() ?: 0.0
+                        sumPct += p
+                        if (p > 0) {
+                            val computed = (totalAmount * p) / 100.0
+                            list.add(SplitItem(userPubkey = m.pubkey, amount = computed))
+                        }
+                    }
+                    val diff = 100.0 - sumPct
+                    val valid = kotlin.math.abs(diff) < 0.5 && list.isNotEmpty()
+                    val finalList = if (valid) {
+                        val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                        val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
+                        val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
+                        list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
+                    } else {
+                        list
+                    }
+                    val status = if (valid) "100% assigned"
+                    else if (diff > 0) "Remaining: ${String.format(Locale.US, "%.1f", diff)}%"
+                    else "Exceeds by: ${String.format(Locale.US, "%.1f", -diff)}%"
+                    Triple(finalList, valid, status)
+                }
+                SplitMode.SHARES -> {
+                    var totalShares = 0.0
+                    for (m in members) {
+                        val s = sharesInputs[m.pubkey]?.replace(',', '.')?.toDoubleOrNull() ?: 0.0
+                        totalShares += s
+                    }
+                    if (totalShares <= 0) {
+                        Triple(emptyList(), false, "At least 1 share required")
+                    } else {
+                        val list = members.mapNotNull { m ->
+                            val s = sharesInputs[m.pubkey]?.replace(',', '.')?.toDoubleOrNull() ?: 0.0
+                            if (s > 0) {
+                                val computed = (totalAmount * s) / totalShares
+                                SplitItem(userPubkey = m.pubkey, amount = computed)
+                            } else null
+                        }
+                        val totalMinor = MoneyMath.toMinorUnits(totalAmount)
+                        val rawMinor = list.associate { it.userPubkey to MoneyMath.toMinorUnits(it.amount) }
+                        val normalized = MoneyMath.normalizeSplitsToExactTotal(totalMinor, rawMinor)
+                        val finalList = list.map { SplitItem(userPubkey = it.userPubkey, amount = MoneyMath.toMajorDouble(normalized[it.userPubkey] ?: 0L)) }
+                        Triple(finalList, true, "${String.format(Locale.US, "%.0f", totalShares)} total shares")
+                    }
                 }
             }
+        } catch (_: Exception) {
+            Triple(emptyList(), false, "Invalid split configuration")
         }
     }
 
@@ -505,10 +542,17 @@ fun AddExpenseScreen(
             item {
                 OutlinedTextField(
                     value = amountText,
-                    onValueChange = { amountText = it },
+                    onValueChange = {
+                        amountText = it
+                        hasUserModifiedSplits = true
+                    },
                     label = { Text("Total Amount ($currency)") },
                     prefix = { Text("$sym ") },
                     placeholder = { Text("0.00") },
+                    isError = amountFieldError != null,
+                    supportingText = amountFieldError?.let { err ->
+                        { Text(err, color = MaterialTheme.colorScheme.error) }
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -588,7 +632,13 @@ fun AddExpenseScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Multiple Payers", style = MaterialTheme.typography.bodySmall)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Switch(checked = isMultiPayer, onCheckedChange = { isMultiPayer = it })
+                            Switch(
+                                checked = isMultiPayer,
+                                onCheckedChange = {
+                                    isMultiPayer = it
+                                    hasUserModifiedSplits = true
+                                }
+                            )
                         }
                     }
                 }
@@ -607,7 +657,10 @@ fun AddExpenseScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { selectedPayerPubkey = member.pubkey },
+                            .clickable {
+                                selectedPayerPubkey = member.pubkey
+                                hasUserModifiedSplits = true
+                            },
                         shape = RoundedCornerShape(10.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = if (selectedPayerPubkey == member.pubkey) {
@@ -648,7 +701,10 @@ fun AddExpenseScreen(
                         )
                         OutlinedTextField(
                             value = multiPayerAmounts[member.pubkey] ?: "",
-                            onValueChange = { multiPayerAmounts[member.pubkey] = it },
+                            onValueChange = {
+                                multiPayerAmounts[member.pubkey] = it
+                                hasUserModifiedSplits = true
+                            },
                             placeholder = { Text("0.00") },
                             prefix = { Text("$sym ") },
                             modifier = Modifier.width(135.dp),
@@ -685,7 +741,10 @@ fun AddExpenseScreen(
                         FilterChip(
                             modifier = Modifier.weight(1f),
                             selected = splitMode == mode,
-                            onClick = { splitMode = mode },
+                            onClick = {
+                                splitMode = mode
+                                hasUserModifiedSplits = true
+                            },
                             label = {
                                 Text(
                                     "${mode.icon} ${mode.label}",
@@ -706,13 +765,19 @@ fun AddExpenseScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { equalSelected[member.pubkey] = !isChecked }
+                                .clickable {
+                                    equalSelected[member.pubkey] = !isChecked
+                                    hasUserModifiedSplits = true
+                                }
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Checkbox(
                                 checked = isChecked,
-                                onCheckedChange = { equalSelected[member.pubkey] = it }
+                                onCheckedChange = {
+                                    equalSelected[member.pubkey] = it
+                                    hasUserModifiedSplits = true
+                                }
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
@@ -749,7 +814,10 @@ fun AddExpenseScreen(
                             )
                             OutlinedTextField(
                                 value = exactAmounts[member.pubkey] ?: "",
-                                onValueChange = { exactAmounts[member.pubkey] = it },
+                                onValueChange = {
+                                    exactAmounts[member.pubkey] = it
+                                    hasUserModifiedSplits = true
+                                },
                                 placeholder = { Text("0.00") },
                                 prefix = { Text("$sym ") },
                                 modifier = Modifier.width(130.dp),
@@ -784,7 +852,10 @@ fun AddExpenseScreen(
                             }
                             OutlinedTextField(
                                 value = percentageInputs[member.pubkey] ?: "",
-                                onValueChange = { percentageInputs[member.pubkey] = it },
+                                onValueChange = {
+                                    percentageInputs[member.pubkey] = it
+                                    hasUserModifiedSplits = true
+                                },
                                 placeholder = { Text("0") },
                                 suffix = { Text("%") },
                                 modifier = Modifier.width(110.dp),
@@ -820,7 +891,10 @@ fun AddExpenseScreen(
                             }
                             OutlinedTextField(
                                 value = sharesInputs[member.pubkey] ?: "",
-                                onValueChange = { sharesInputs[member.pubkey] = it },
+                                onValueChange = {
+                                    sharesInputs[member.pubkey] = it
+                                    hasUserModifiedSplits = true
+                                },
                                 placeholder = { Text("1") },
                                 suffix = { Text("share") },
                                 modifier = Modifier.width(115.dp),
@@ -854,6 +928,20 @@ fun AddExpenseScreen(
                 } else {
                     selectedPayerPubkey
                 }
+                val finalSplits = if (isEditMode && editingExpense != null && !hasUserModifiedSplits &&
+                    totalAmount == editingExpense.totalAmount && splitMode.name == editingExpense.splitType
+                ) {
+                    editingExpense.splits
+                } else {
+                    computedSplits
+                }
+                val finalPayers = if (isEditMode && editingExpense != null && !hasUserModifiedSplits &&
+                    totalAmount == editingExpense.totalAmount && isMultiPayer == (editingExpense.payers.size > 1)
+                ) {
+                    editingExpense.payers
+                } else {
+                    computedPayers
+                }
                 Button(
                     onClick = {
                         onSubmitExpense(
@@ -861,11 +949,11 @@ fun AddExpenseScreen(
                             totalAmount,
                             currency,
                             primaryPayer,
-                            computedSplits,
+                            finalSplits,
                             selectedCategory.name,
                             splitMode.name,
                             note.trim(),
-                            computedPayers,
+                            finalPayers,
                             expenseDateMillis,
                             editingExpense?.id,
                             editingExpense?.description
@@ -874,7 +962,7 @@ fun AddExpenseScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp),
-                    enabled = description.isNotBlank() && totalAmount > 0 && isValidPayer && isValidSplit && !isSubmitting,
+                    enabled = description.isNotBlank() && isAmountValid && isValidPayer && isValidSplit && !isSubmitting,
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     if (isSubmitting) {

@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,7 +41,7 @@ fun LedgerAuditScreen(
                 title = { Text("Blockchain Audit", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
@@ -90,30 +91,50 @@ fun LedgerAuditScreen(
 
 @Composable
 fun LedgerStatusCard(state: LedgerAuditState) {
+    val isEmpty = state.blocks.isEmpty()
+    val containerBg = when {
+        isEmpty -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+        state.isChainValid -> BalancePositive.copy(alpha = 0.12f)
+        else -> BalanceNegative.copy(alpha = 0.12f)
+    }
+    val statusColor = when {
+        isEmpty -> MaterialTheme.colorScheme.onSurfaceVariant
+        state.isChainValid -> BalancePositive
+        else -> BalanceNegative
+    }
+    val statusIcon = when {
+        isEmpty -> Icons.Default.Info
+        state.isChainValid -> Icons.Default.CheckCircle
+        else -> Icons.Default.Warning
+    }
+    val statusTitle = when {
+        isEmpty -> "Ledger Initialized"
+        state.isChainValid -> "Cryptographically Intact"
+        else -> "Tampering Detected"
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (state.isChainValid) BalancePositive.copy(alpha = 0.12f) else BalanceNegative.copy(alpha = 0.12f)
-        )
+        colors = CardDefaults.cardColors(containerColor = containerBg)
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                if (state.isChainValid) Icons.Default.CheckCircle else Icons.Default.Warning,
-                contentDescription = null,
-                tint = if (state.isChainValid) BalancePositive else BalanceNegative,
+                statusIcon,
+                contentDescription = statusTitle,
+                tint = statusColor,
                 modifier = Modifier.size(36.dp)
             )
             Spacer(modifier = Modifier.width(16.dp))
             Column {
                 Text(
-                    if (state.isChainValid) "Cryptographically Intact" else "Tampering Detected",
+                    statusTitle,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = if (state.isChainValid) BalancePositive else BalanceNegative
+                    color = statusColor
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
@@ -206,7 +227,7 @@ fun BlockExplorerCard(item: BlockAuditItem) {
 
             AnimatedVisibility(visible = isExpanded) {
                 Column(modifier = Modifier.padding(top = 12.dp)) {
-                    Divider()
+                    HorizontalDivider()
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         "Full Block Hash:",

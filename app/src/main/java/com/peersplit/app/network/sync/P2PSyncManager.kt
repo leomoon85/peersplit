@@ -110,6 +110,9 @@ class P2PSyncManager(
     private val _syncFailuresFlow = kotlinx.coroutines.flow.MutableSharedFlow<SyncFailureEvent>(replay = 5, extraBufferCapacity = 64)
     val syncFailuresFlow: kotlinx.coroutines.flow.SharedFlow<SyncFailureEvent> = _syncFailuresFlow
 
+    val isOnline: kotlinx.coroutines.flow.StateFlow<Boolean> get() = relayPool.isConnected
+    val isRelayConnected: Boolean get() = relayPool.isConnected()
+
     private fun savePendingSyncState() {
         try {
             val keysMap = pendingKeysByTransition.mapValues { synchronized(it.value) { it.value.toList() } }

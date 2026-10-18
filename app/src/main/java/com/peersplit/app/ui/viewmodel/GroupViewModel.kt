@@ -39,10 +39,14 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
     fun manualSync(onDone: () -> Unit = {}) {
         viewModelScope.launch {
             _isSyncing.value = true
-            syncManager.syncGroupNow(groupId, broadcastChain = true)
-            kotlinx.coroutines.delay(600)
-            _isSyncing.value = false
-            onDone()
+            try {
+                syncManager.syncGroupNow(groupId, broadcastChain = true)
+            } catch (e: Exception) {
+                // Keep UI informed on completion
+            } finally {
+                _isSyncing.value = false
+                onDone()
+            }
         }
     }
 
@@ -104,51 +108,60 @@ class GroupViewModel(private val groupId: String) : ViewModel() {
     fun importExpenses(
         expenses: List<com.peersplit.app.util.ParsedImportExpense>,
         onProgress: (Int, Int) -> Unit = { _, _ -> },
-        onComplete: (Int) -> Unit = {}
+        onComplete: (imported: Int, failed: Int) -> Unit = { _, _ -> }
     ) {
         viewModelScope.launch {
-            val detail = repository.getGroupDetail(groupId).first() ?: return@launch
-            val members = detail.members.toMutableList()
             var importedCount = 0
+            var failedCount = 0
+            try {
+                val detail = repository.getGroupDetail(groupId).first() ?: return@launch
+                val members = detail.members.toMutableList()
 
-            // Helper to get or create member pubkey
-            suspend fun getOrCreateMemberPubkey(payerName: String): String {
-                val clean = payerName.trim()
-                val existing = members.firstOrNull { it.displayName.equals(clean, ignoreCase = true) }
-                if (existing != null) return existing.pubkey
+                // Helper to get or create member pubkey
+                suspend fun getOrCreateMemberPubkey(payerName: String): String {
+                    val clean = payerName.trim()
+                    val existing = members.firstOrNull { it.displayName.equals(clean, ignoreCase = true) }
+                    if (existing != null) return existing.pubkey
 
-                // Auto-create offline member
-                repository.addOfflineMember(groupId, clean)
-                val updatedDetail = repository.getGroupDetail(groupId).first()
-                if (updatedDetail != null) {
-                    members.clear()
-                    members.addAll(updatedDetail.members)
-                    val created = members.firstOrNull { it.displayName.equals(clean, ignoreCase = true) }
-                    if (created != null) return created.pubkey
+                    // Auto-create offline member
+                    repository.addOfflineMember(groupId, clean)
+                    val updatedDetail = repository.getGroupDetail(groupId).first()
+                    if (updatedDetail != null) {
+                        members.clear()
+                        members.addAll(updatedDetail.members)
+                        val created = members.firstOrNull { it.displayName.equals(clean, ignoreCase = true) }
+                        if (created != null) return created.pubkey
+                    }
+                    return detail.group.creatorPubkey
                 }
-                return detail.group.creatorPubkey
-            }
 
-            for ((index, exp) in expenses.withIndex()) {
-                val payerPubkey = getOrCreateMemberPubkey(exp.payerName)
-                val splitShare = exp.amount / members.size.coerceAtLeast(1)
-                val splits = members.map { SplitItem(it.pubkey, splitShare) }
+                for ((index, exp) in expenses.withIndex()) {
+                    try {
+                        val payerPubkey = getOrCreateMemberPubkey(exp.payerName)
+                        val splitShare = exp.amount / members.size.coerceAtLeast(1)
+                        val splits = members.map { SplitItem(it.pubkey, splitShare) }
 
-                repository.addExpense(
-                    groupId = groupId,
-                    description = exp.description,
-                    amount = exp.amount,
-                    currency = detail.group.currency,
-                    payerPubkey = payerPubkey,
-                    splits = splits,
-                    category = exp.category,
-                    splitType = "EQUAL",
-                    note = if (exp.dateString.isNotBlank()) "Imported (${exp.dateString})" else "Imported"
-                )
-                importedCount++
-                onProgress(index + 1, expenses.size)
+                        repository.addExpense(
+                            groupId = groupId,
+                            description = exp.description,
+                            amount = exp.amount,
+                            currency = detail.group.currency,
+                            payerPubkey = payerPubkey,
+                            splits = splits,
+                            category = exp.category,
+                            splitType = "EQUAL",
+                            note = if (exp.dateString.isNotBlank()) "Imported (${exp.dateString})" else "Imported",
+                            expenseDateMillis = if (exp.timestamp > 0) exp.timestamp else null
+                        )
+                        importedCount++
+                    } catch (e: Exception) {
+                        failedCount++
+                    }
+                    onProgress(index + 1, expenses.size)
+                }
+            } finally {
+                onComplete(importedCount, failedCount)
             }
-            onComplete(importedCount)
         }
     }
 }
@@ -169,6 +182,9 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
     private val _submissionSuccess = MutableStateFlow(false)
     val submissionSuccess: StateFlow<Boolean> = _submissionSuccess.asStateFlow()
 
+    private val _submissionError = MutableStateFlow<String?>(null)
+    val submissionError: StateFlow<String?> = _submissionError.asStateFlow()
+
     fun submitExpense(
         description: String,
         amount: Double,
@@ -182,12 +198,14 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
         expenseDateMillis: Long? = null,
         editingExpenseId: String? = null,
         originalDescription: String? = null,
-        onComplete: () -> Unit = {}
+        onComplete: () -> Unit = {},
+        onError: (String) -> Unit = {}
     ) {
         if (amount <= 0 || description.isBlank() || splits.isEmpty()) return
 
         viewModelScope.launch {
             _isSubmitting.value = true
+            _submissionError.value = null
             try {
                 if (!editingExpenseId.isNullOrBlank()) {
                     repository.editExpense(
@@ -223,6 +241,10 @@ class AddExpenseViewModel(private val groupId: String) : ViewModel() {
                 _submissionSuccess.value = true
                 onComplete()
             } catch (e: Exception) {
+                val errorMsg = e.message ?: "Failed to save expense"
+                _submissionError.value = errorMsg
+                onError(errorMsg)
+            } finally {
                 _isSubmitting.value = false
             }
         }

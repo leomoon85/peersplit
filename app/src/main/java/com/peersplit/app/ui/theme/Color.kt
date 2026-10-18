@@ -19,7 +19,17 @@ val SurfaceLight = Color(0xFFFFFFFF)
 val BackgroundLight = Color(0xFFF8FAFC)
 val CardLight = Color(0xFFF1F5F9)
 
-val BalancePositive = Color(0xFF10B981)
-val BalanceNegative = Color(0xFFEF4444)
+val BalancePositiveDark = Color(0xFF10B981)
+val BalanceNegativeDark = Color(0xFFEF4444)
+val BalancePositiveLight = Color(0xFF047857) // WCAG AA 4.7:1 on light backgrounds
+val BalanceNegativeLight = Color(0xFFB91C1C) // WCAG AA 5.6:1 on light backgrounds
 val BalanceNeutral = Color(0xFF94A3B8)
 val BlockchainAccent = Color(0xFF6366F1)
+
+val BalancePositive: Color
+    @androidx.compose.runtime.Composable
+    get() = if (androidx.compose.foundation.isSystemInDarkTheme()) BalancePositiveDark else BalancePositiveLight
+
+val BalanceNegative: Color
+    @androidx.compose.runtime.Composable
+    get() = if (androidx.compose.foundation.isSystemInDarkTheme()) BalanceNegativeDark else BalanceNegativeLight

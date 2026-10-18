@@ -65,7 +65,7 @@ class LedgerAuditViewModel(private val groupId: String) : ViewModel() {
                 val auditItems = domainOps.sortedBy { it.logicalClock }.map { op ->
                     val hasValidHash = com.peersplit.app.protocol.OperationVerifier.hasValidOperationId(op)
                     val hasValidSig = com.peersplit.app.protocol.OperationVerifier.hasValidSignature(op)
-                    val isLinked = op.parents.isEmpty() || op.parents.any { p -> domainOps.any { it.operationId == p } }
+                    val isLinked = op.parents.isEmpty() || op.parents.all { p -> domainOps.any { it.operationId == p } }
 
                     val blockType = when (op.payload) {
                         is com.peersplit.app.protocol.OperationPayload.ExpenseCreated -> com.peersplit.app.blockchain.BlockType.EXPENSE
@@ -96,18 +96,20 @@ class LedgerAuditViewModel(private val groupId: String) : ViewModel() {
                     )
                 }
 
-                val allValid = auditItems.isNotEmpty() && auditItems.all { it.hasValidHash && it.hasValidSignature }
-                val message = if (allValid) {
-                    "V2 Authoritative Ledger verified. ${reconciliationResult.acceptedOperations.size} accepted operations, state digest: ${reconciliationResult.stateDigest.take(8)}."
-                } else if (auditItems.isEmpty()) {
-                    "V2 ledger initialized; awaiting initial operations."
-                } else {
-                    "Tamper Alert: One or more V2 operations failed cryptographic signature or hash verification."
+                val allAccepted = domainOps.isNotEmpty() && domainOps.all { it.operationId in acceptedIds } && reconciliationResult.rejectedOperations.isEmpty()
+                val allIntegrityValid = auditItems.isNotEmpty() && auditItems.all { it.hasValidHash && it.hasValidSignature && it.isPrevHashLinked }
+                val allValid = allIntegrityValid && allAccepted
+
+                val message = when {
+                    auditItems.isEmpty() -> "Ledger empty; awaiting initial operations."
+                    allValid -> "V2 Authoritative Ledger verified. ${reconciliationResult.acceptedOperations.size} accepted operations, state digest: ${reconciliationResult.stateDigest.take(8)}."
+                    reconciliationResult.rejectedOperations.isNotEmpty() -> "Tamper/Conflict Alert: ${reconciliationResult.rejectedOperations.size} operation(s) rejected during authoritative reconciliation."
+                    else -> "Tamper Alert: One or more V2 operations failed cryptographic signature, hash, or parent link verification."
                 }
 
                 _state.value = LedgerAuditState(
                     blocks = auditItems,
-                    isChainValid = allValid || auditItems.isEmpty(),
+                    isChainValid = allValid,
                     validationMessage = message,
                     isLoading = false
                 )
@@ -136,10 +138,12 @@ class LedgerAuditViewModel(private val groupId: String) : ViewModel() {
                 )
             }
 
-            val isValid = validation is ValidationResult.Valid
-            val message = when (validation) {
-                is ValidationResult.Valid -> "Cryptographic proof passed. All ${domainBlocks.size} blocks are immutable and tamper-free."
-                is ValidationResult.Invalid -> "Tamper Alert: Block #${validation.blockIndex} failed validation: ${validation.reason}"
+            val isValid = domainBlocks.isNotEmpty() && validation is ValidationResult.Valid
+            val message = when {
+                domainBlocks.isEmpty() -> "Ledger empty; awaiting initial operations."
+                validation is ValidationResult.Valid -> "Cryptographic proof passed. All ${domainBlocks.size} blocks are immutable and tamper-free."
+                validation is ValidationResult.Invalid -> "Tamper Alert: Block #${validation.blockIndex} failed validation: ${validation.reason}"
+                else -> "Ledger validation failed."
             }
 
             _state.value = LedgerAuditState(

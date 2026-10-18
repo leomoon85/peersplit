@@ -17,6 +17,7 @@ data class Group(
     val isPersonalSolo: Boolean = false,
     val monthlyBudget: Double = 0.0,
     val isArchived: Boolean = false,
+    val pendingSyncCount: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
 

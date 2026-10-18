@@ -241,12 +241,17 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                     )
                     Button(
                         onClick = {
-                            KeyManager.updateUpiId(context, upiId)
-                            Toast.makeText(context, "UPI ID saved!", Toast.LENGTH_SHORT).show()
+                            val clean = upiId.trim()
+                            if (clean.isNotBlank() && (!clean.contains("@") || clean.startsWith("@") || clean.endsWith("@"))) {
+                                Toast.makeText(context, "Please enter a valid UPI format (e.g. name@bank)", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                            KeyManager.updateUpiId(context, clean)
+                            Toast.makeText(context, if (clean.isBlank()) "UPI ID cleared" else "UPI ID saved!", Toast.LENGTH_SHORT).show()
                         },
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text("Save")
+                        Text(if (upiId.isBlank()) "Clear" else "Save")
                     }
                 }
                 val normPhone = KeyManager.normalizePhone(phone)

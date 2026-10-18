@@ -109,20 +109,25 @@ fun NavGraph(
             val context = LocalContext.current
             CreateGroupScreen(
                 onBackClick = { navController.popBackStack() },
-                onCreateGroup = { name, currency, isSecret, secretPin, isPersonalSolo, initialMembers ->
+                onCreateGroup = { name, currency, isSecret, secretPin, isPersonalSolo, initialMembers, onError ->
                     scope.launch {
-                        val groupId = repository.createGroup(
-                            name = name,
-                            currency = currency,
-                            isSecret = isSecret,
-                            secretPin = secretPin,
-                            isPersonalSolo = isPersonalSolo,
-                            initialMemberNames = initialMembers
-                        )
-                        com.peersplit.app.util.RewardsEngine.recordAction(context, xpEarned = 50)
-                        Toast.makeText(context, "🎉 Group created! +50 SplitPoints (XP)", Toast.LENGTH_SHORT).show()
-                        navController.popBackStack()
-                        navController.navigate(Screen.GroupDetail.createRoute(groupId))
+                        try {
+                            val groupId = repository.createGroup(
+                                name = name,
+                                currency = currency,
+                                isSecret = isSecret,
+                                secretPin = secretPin,
+                                isPersonalSolo = isPersonalSolo,
+                                initialMemberNames = initialMembers
+                            )
+                            com.peersplit.app.util.RewardsEngine.recordAction(context, xpEarned = 50)
+                            Toast.makeText(context, "🎉 Group created! +50 SplitPoints (XP)", Toast.LENGTH_SHORT).show()
+                            navController.popBackStack()
+                            navController.navigate(Screen.GroupDetail.createRoute(groupId))
+                        } catch (e: Exception) {
+                            Toast.makeText(context, e.message ?: "Failed to create group", Toast.LENGTH_LONG).show()
+                            onError()
+                        }
                     }
                 }
             )
@@ -232,20 +237,6 @@ fun NavGraph(
                 editingExpenseId = editingExpenseId,
                 onBackClick = { navController.popBackStack() },
                 onSubmitExpense = { desc, amount, currency, payer, splits, category, splitType, note, payers, expenseDateMillis, editId, origDesc ->
-                    val myPubkey = com.peersplit.app.crypto.KeyManager.getOrCreateIdentity(context).publicKeyHex
-                    val userPaid = payer == myPubkey || payers.any { it.userPubkey == myPubkey && it.amount > 0 }
-                    if (editId.isNullOrBlank()) {
-                        val xp = if (userPaid) 45 else 25
-                        com.peersplit.app.util.RewardsEngine.recordAction(
-                            context = context,
-                            xpEarned = xp,
-                            isExpense = true,
-                            userPaidBill = userPaid
-                        )
-                        Toast.makeText(context, "⚡ Expense logged! +$xp SplitPoints (XP)", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "✏️ Expense updated & synced!", Toast.LENGTH_SHORT).show()
-                    }
                     addExpenseViewModel.submitExpense(
                         description = desc,
                         amount = amount,
@@ -260,7 +251,24 @@ fun NavGraph(
                         editingExpenseId = editId,
                         originalDescription = origDesc,
                         onComplete = {
+                            val myPubkey = com.peersplit.app.crypto.KeyManager.getOrCreateIdentity(context).publicKeyHex
+                            val userPaid = payer == myPubkey || payers.any { it.userPubkey == myPubkey && it.amount > 0 }
+                            if (editId.isNullOrBlank()) {
+                                val xp = if (userPaid) 45 else 25
+                                com.peersplit.app.util.RewardsEngine.recordAction(
+                                    context = context,
+                                    xpEarned = xp,
+                                    isExpense = true,
+                                    userPaidBill = userPaid
+                                )
+                                Toast.makeText(context, "⚡ Expense logged! +$xp SplitPoints (XP)", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "✏️ Expense updated & synced!", Toast.LENGTH_SHORT).show()
+                            }
                             navController.popBackStack()
+                        },
+                        onError = { error ->
+                            Toast.makeText(context, "Error saving expense: $error", Toast.LENGTH_LONG).show()
                         }
                     )
                 }

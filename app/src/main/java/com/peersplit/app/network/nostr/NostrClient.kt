@@ -6,8 +6,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -45,6 +48,11 @@ class NostrClient(
 
     private var webSocket: WebSocket? = null
     @Volatile private var isConnected = false
+    private val _isConnectedFlow = MutableStateFlow(false)
+    val isConnectedFlow: StateFlow<Boolean> = _isConnectedFlow.asStateFlow()
+
+    fun isConnected(): Boolean = _isConnectedFlow.value
+
     private val scope = CoroutineScope(Dispatchers.IO + Job())
 
     // Map of subscriptionId to raw JSON REQ message
@@ -79,6 +87,7 @@ class NostrClient(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "Connected to relay: $relayUrl")
                 isConnected = true
+                _isConnectedFlow.value = true
 
                 // Re-send all active subscriptions to the relay
                 synchronized(activeSubscriptions) {
@@ -108,12 +117,14 @@ class NostrClient(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "Relay failure on $relayUrl: ${t.message}")
                 isConnected = false
+                _isConnectedFlow.value = false
                 reconnect()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "Relay closed: $relayUrl ($reason)")
                 isConnected = false
+                _isConnectedFlow.value = false
                 reconnect()
             }
         })
@@ -223,5 +234,6 @@ class NostrClient(
         webSocket?.close(1000, "Normal Closure")
         webSocket = null
         isConnected = false
+        _isConnectedFlow.value = false
     }
 }

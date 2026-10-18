@@ -49,6 +49,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.peersplit.app.crypto.KeyManager
 import com.peersplit.app.data.model.Group
 import com.peersplit.app.ui.theme.BalanceNegative
@@ -73,7 +75,7 @@ fun HomeScreen(
     onProfileClick: () -> Unit,
     onArchiveGroup: (groupId: String, isArchived: Boolean) -> Unit = { _, _ -> },
     onDeleteGroup: (groupId: String) -> Unit = {},
-    onUnlockVault: (String) -> Boolean = { true },
+    onUnlockVault: suspend (String) -> Boolean = { true },
     onLockVault: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -206,10 +208,14 @@ fun HomeScreen(
                             if (!isManualSyncing) {
                                 isManualSyncing = true
                                 coroutineScope.launch {
-                                    com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow(broadcastChains = true)
-                                    kotlinx.coroutines.delay(800)
-                                    isManualSyncing = false
-                                    Toast.makeText(context, "All groups synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                    try {
+                                        com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow(broadcastChains = true)
+                                        Toast.makeText(context, "All groups synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Sync completed with warnings", Toast.LENGTH_SHORT).show()
+                                    } finally {
+                                        isManualSyncing = false
+                                    }
                                 }
                             }
                         }
@@ -224,7 +230,10 @@ fun HomeScreen(
 
                     // 1-Tap Theme Mode Selector (Default: System Theme, switchable to Light or Dark)
                     Box {
-                        IconButton(onClick = { showThemeMenu = true }) {
+                        IconButton(
+                            onClick = { showThemeMenu = true },
+                            modifier = Modifier.semantics { contentDescription = "Theme Selector: ${currentThemeMode.title}" }
+                        ) {
                             Text(currentThemeMode.iconEmoji, fontSize = 16.sp)
                         }
                         DropdownMenu(
@@ -267,7 +276,9 @@ fun HomeScreen(
                     }
                     IconButton(
                         onClick = onProfileClick,
-                        modifier = Modifier.padding(end = 4.dp)
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .semantics { contentDescription = "Profile: ${currentIdentity.displayName.ifBlank { "User" }}" }
                     ) {
                         Box(
                             modifier = Modifier
@@ -461,10 +472,14 @@ fun HomeScreen(
                             if (!isManualSyncing) {
                                 isManualSyncing = true
                                 coroutineScope.launch {
-                                    com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow()
-                                    delay(800)
-                                    isManualSyncing = false
-                                    Toast.makeText(context, "All groups synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                    try {
+                                        com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow()
+                                        Toast.makeText(context, "All groups synced with peers ✓", Toast.LENGTH_SHORT).show()
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Sync completed with warnings", Toast.LENGTH_SHORT).show()
+                                    } finally {
+                                        isManualSyncing = false
+                                    }
                                 }
                             }
                         }
@@ -513,14 +528,16 @@ fun HomeScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val success = onUnlockVault(enteredPin)
-                        if (success) {
-                            showPinDialog = false
-                            enteredPin = ""
-                            pinError = false
-                            Toast.makeText(context, "Private Vault Unlocked!", Toast.LENGTH_SHORT).show()
-                        } else {
-                            pinError = true
+                        coroutineScope.launch {
+                            val success = onUnlockVault(enteredPin)
+                            if (success) {
+                                showPinDialog = false
+                                enteredPin = ""
+                                pinError = false
+                                Toast.makeText(context, "Private Vault Unlocked!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                pinError = true
+                            }
                         }
                     }
                 ) {
@@ -677,6 +694,7 @@ fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TotalBalanceCard(uiState: HomeUiState) {
     val balance = uiState.totalNetBalance
@@ -750,6 +768,41 @@ fun TotalBalanceCard(uiState: HomeUiState) {
                         color = BalanceNegative,
                         fontWeight = FontWeight.SemiBold
                     )
+                }
+            }
+
+            if (uiState.otherCurrencyBalances.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(14.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    "OTHER CURRENCIES",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    letterSpacing = 0.8.sp
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    uiState.otherCurrencyBalances.forEach { (curr, amt) ->
+                        val sign = if (amt > 0.01) "+" else if (amt < -0.01) "-" else ""
+                        val color = if (amt > 0.01) BalancePositive else if (amt < -0.01) BalanceNegative else MaterialTheme.colorScheme.onSurface
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                        ) {
+                            Text(
+                                text = "$curr: $sign${CurrencyUtil.formatAmount(if (amt < 0) -amt else amt, curr)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = color,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -873,26 +926,47 @@ fun GroupCard(
                 )
 
                 // Clean status indicator (simplified, non-technical)
+                val pending = group.pendingSyncCount
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .background(
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                            color = when {
+                                isArchived -> MaterialTheme.colorScheme.surfaceVariant
+                                pending > 0 -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
+                                else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                            },
                             shape = RoundedCornerShape(10.dp)
                         )
                         .padding(horizontal = 8.dp, vertical = 3.dp)
                 ) {
                     Icon(
-                        Icons.Default.CheckCircle,
-                        contentDescription = "Synced",
-                        tint = MaterialTheme.colorScheme.primary,
+                        when {
+                            isArchived -> Icons.Default.Archive
+                            pending > 0 -> Icons.Default.Sync
+                            else -> Icons.Default.CheckCircle
+                        },
+                        contentDescription = if (pending > 0) "Pending sync" else "Synced",
+                        tint = when {
+                            isArchived -> MaterialTheme.colorScheme.onSurfaceVariant
+                            pending > 0 -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.primary
+                        },
                         modifier = Modifier.size(13.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        if (isArchived) "Archived" else "Up to date",
+                        text = when {
+                            isArchived -> "Archived"
+                            pending > 0 -> "$pending pending"
+                            else -> "Up to date"
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = when {
+                            isArchived -> MaterialTheme.colorScheme.onSurfaceVariant
+                            pending > 0 -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.primary
+                        },
                         fontWeight = FontWeight.Medium
                     )
                 }
