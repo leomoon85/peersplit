@@ -35,7 +35,7 @@ Configure release signing privately using the project's Gradle signing configura
 - [Usage and data recovery notes](docs/USAGE_AND_RECOVERY.md).
 - [V2 protocol specification](docs/V2_PROTOCOL_SPEC.md) and [known limitations](docs/V2_KNOWN_LIMITATIONS.md).
 
-The in-app offline policy is generated from `PRIVACY_POLICY.md`. After changing the policy, run `python scripts/sync_privacy_policy.py`; use `--check` to detect a stale packaged copy. Privacy and support contact: [leo.moon85@gmail.com](mailto:leo.moon85@gmail.com).
+The in-app offline policy is generated from `PRIVACY_POLICY.md`. After changing the policy, run `python scripts/sync_privacy_policy.py`; use `--check` to detect a stale packaged copy. Privacy and support contact: [peerloomlabs@gmail.com](mailto:peerloomlabs@gmail.com).
 
 On October 18, 2026, the reviewed implementation passed 83 JVM tests, debug and minified release APK builds, and lint with zero errors and nine warnings; some custom navigation lint checks were skipped. Physical-device, accessibility, payment-handoff and multi-device acceptance remain necessary. These results are a dated verification snapshot, not production certification.
 

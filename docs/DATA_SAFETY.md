@@ -13,7 +13,7 @@ Reviewed October 18, 2026. This is a release-preparation worksheet, not a comple
 | Selected contact/image/file | Chosen contact details, receipt/QR image or imported statement | User-requested local import/recognition | Local processing alone is not collection. Resulting shared ledger fields must be considered separately. No broad address-book access or camera permission in current app manifest. |
 | Exports and Android sharing | CSV financial/member information, reminders, QR codes, invitations and encrypted backups to chosen apps/providers | Explicit user action | Consider the specific user-initiated sharing exception only where its conditions hold. CSV and reminders can disclose plaintext. An encrypted backup can contain private identity and group keys. |
 | UPI handoff | Recipient UPI address/name, amount and payment note passed to a selected payment app or QR recipient | User-requested payment handoff | Consider financial/payment information and user-initiated sharing rules. PeerSplit neither holds funds nor independently verifies the payment. |
-| Support enquiries | Support email content and attachments the user sends to leo.moon85@gmail.com, handled through Gmail | Support and privacy enquiries | The developer supplied this Gmail address for privacy/support. Define mailbox access and retention before launch; review support disclosures against the actual process. |
+| Support enquiries | Support email content and attachments the user sends to peerloomlabs@gmail.com, handled through Gmail | Support and privacy enquiries | The developer supplied this Gmail address for privacy/support. Define mailbox access and retention before launch; review support disclosures against the actual process. |
 
 ## Decisions before completing the form
 

@@ -6,7 +6,7 @@ Status snapshot: October 18, 2026. This checklist separates completed engineerin
 
 - [x] Replace inaccurate zero-telemetry, ephemeral-relay, camera-permission and global-deletion claims in root release documents.
 - [x] Prepare a consistent privacy policy, listing copy and Data Safety worksheet.
-- [x] Add the developer-supplied privacy/support contact, `leo.moon85@gmail.com`, and remove contact placeholders.
+- [x] Add the developer-supplied privacy/support contact, `peerloomlabs@gmail.com`, and remove contact placeholders.
 - [x] Verify the GitHub policy URL opens without signing in (HTTP 200 on October 18). Worldwide availability still depends on GitHub access.
 - [x] Add offline policy text under Profile > Privacy policy, generated from the root policy.
 - [ ] Verify policy access, scrolling and dismissal on a clean-install device.

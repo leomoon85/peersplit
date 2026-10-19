@@ -2,7 +2,7 @@
 
 Developer display name: **Peerloom Labs**
 
-Support and privacy email: `leo.moon85@gmail.com`
+Support and privacy email: `peerloomlabs@gmail.com`
 
 ## App title
 
@@ -40,4 +40,4 @@ Back up your identity and protect your backup password. Peerloom Labs cannot rec
 
 Use [the Data Safety worksheet](docs/DATA_SAFETY.md), not the former blanket “no data collected/shared” answers. Do not claim anonymous networking, ephemeral-only relay storage, encrypted local SQLite, guaranteed delivery, verified payments, independent security certification or open-source licensing without evidence.
 
-Validate title (30), short description (80) and full description (4,000) character limits before submission. Use screenshots from the final build. Enter `leo.moon85@gmail.com` as the support email and verify the public privacy-policy URL before publishing.
+Validate title (30), short description (80) and full description (4,000) character limits before submission. Use screenshots from the final build. Enter `peerloomlabs@gmail.com` as the support email and verify the public privacy-policy URL before publishing.

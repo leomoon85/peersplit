@@ -60,4 +60,4 @@ This policy may change when the app or its services change. Updates will be iden
 
 Developer: **Peerloom Labs**.
 
-For privacy questions, support, or requests about information you have sent directly to Peerloom Labs, email [leo.moon85@gmail.com](mailto:leo.moon85@gmail.com). Do not send private keys, backup passwords or UPI credentials. We cannot erase records held independently by group members or relay operators.
+For privacy questions, support, or requests about information you have sent directly to Peerloom Labs, email [peerloomlabs@gmail.com](mailto:peerloomlabs@gmail.com). Do not send private keys, backup passwords or UPI credentials. We cannot erase records held independently by group members or relay operators.

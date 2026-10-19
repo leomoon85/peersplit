@@ -21,3 +21,4 @@ build/
 *.jks
 *.keystore
 keystore.properties
+*.zip
