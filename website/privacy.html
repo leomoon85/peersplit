@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy - PeerSplit | Peerloom Labs</title>
+    <meta name="description" content="Official Privacy Policy for PeerSplit by Peerloom Labs. Learn about our local-first, zero-central-database, encrypted peer-to-peer expense sharing architecture.">
+    <link rel="icon" type="image/png" href="assets/logo.png">
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#ecfdf5',
+                            100: '#d1fae5',
+                            500: '#10b981',
+                            600: '#059669',
+                            700: '#047857'
+                        },
+                        dark: {
+                            bg: '#0A0E17',
+                            card: '#121826',
+                            border: '#1E293B',
+                            hover: '#1B2333'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #0A0E17;
+            color: #E2E8F0;
+        }
+        code, pre {
+            font-family: 'JetBrains Mono', monospace;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-[#0A0E17] text-slate-200 antialiased selection:bg-emerald-500 selection:text-white">
+
+    <!-- Top Navigation -->
+    <header class="sticky top-0 z-50 backdrop-blur-md bg-[#0A0E17]/80 border-b border-slate-800/80">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+            <a href="index.html" class="flex items-center gap-3 group">
+                <img src="assets/logo.png" alt="Peerloom Labs" class="w-9 h-9 rounded-xl shadow-lg shadow-emerald-500/20 group-hover:scale-105 transition-transform duration-200">
+                <div class="flex flex-col">
+                    <span class="font-bold text-base tracking-tight text-white flex items-center gap-1.5">
+                        Peerloom Labs
+                    </span>
+                    <span class="text-[11px] text-emerald-400 font-medium">Sovereign Software Studio</span>
+                </div>
+            </a>
+            <div class="flex items-center gap-6">
+                <a href="index.html" class="text-sm font-medium text-slate-400 hover:text-white transition-colors">Home</a>
+                <a href="index.html#features" class="text-sm font-medium text-slate-400 hover:text-white transition-colors">PeerSplit</a>
+                <a href="terms.html" class="text-sm font-medium text-slate-400 hover:text-white transition-colors">Terms</a>
+                <a href="mailto:leo.moon85@gmail.com" class="text-xs font-semibold px-3.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all">Support</a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="max-w-4xl mx-auto px-4 sm:px-6 py-12 sm:py-16">
+        
+        <!-- Header Badge -->
+        <div class="mb-8">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 mb-4">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                Legal Transparency & Compliance
+            </div>
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">Privacy Policy for PeerSplit</h1>
+            <p class="text-slate-400 text-sm mt-2 flex items-center gap-3">
+                <span>Last updated: October 19, 2026</span>
+                <span class="text-slate-600">•</span>
+                <span>Developer: Peerloom Labs</span>
+                <span class="text-slate-600">•</span>
+                <span class="font-mono text-xs text-slate-500">com.peersplit.app</span>
+            </p>
+        </div>
+
+        <!-- Highlight Callout Box -->
+        <div class="bg-gradient-to-r from-emerald-950/30 to-slate-900 border border-emerald-500/30 rounded-2xl p-6 mb-12 shadow-xl">
+            <h3 class="text-emerald-400 font-bold text-base flex items-center gap-2 mb-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                Privacy-First Architecture Summary
+            </h3>
+            <p class="text-slate-300 text-sm leading-relaxed">
+                PeerSplit is engineered from the ground up to operate <strong class="text-white">without a central company database or cloud server accounts</strong>. All expense ledgers, balance calculations, and private cryptographic keys are stored exclusively in your phone's local Android SQLite storage. Sync is performed end-to-end encrypted (E2EE) over public Nostr relays without revealing transaction contents, amounts, or receipts to relay operators.
+            </p>
+        </div>
+
+        <!-- Policy Body -->
+        <article class="prose prose-invert prose-emerald max-w-none text-slate-300 space-y-8 text-sm sm:text-base leading-relaxed">
+            
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">1. Overview</h2>
+                <p>
+                    Peerloom Labs develops PeerSplit (<code class="text-emerald-400 bg-slate-800/80 px-1.5 py-0.5 rounded text-xs">com.peersplit.app</code>), an Android application for recording and sharing group expenses. This policy describes the current app. PeerSplit is currently free, with no advertising, in-app purchases, or subscriptions.
+                </p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">2. Information Used by the App</h2>
+                <p>
+                    PeerSplit creates a local cryptographic identity instead of requiring email/password registration. This identity includes persistent public identifiers (Ed25519 public keys) and a private signing key stored in the Android KeyStore or app sandbox. Your local profile can include a display name, optional phone number, and UPI address.
+                </p>
+                <p class="mt-3">
+                    The app stores group names, member details, expenses, descriptions, notes, amounts, splits, balances, settlements, preferences, and signed operation history on your device. It uses these records to calculate balances, display history, synchronize groups, and provide exports and backups. Adding another person's information makes it available to the relevant group; only include information you are entitled to share.
+                </p>
+                <p class="mt-3">
+                    Peerloom Labs does not operate a central expense database for this app. This does not mean data never leaves your phone: group synchronization, SDK diagnostics, and actions you choose can transfer data as explained below.
+                </p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">3. Group Synchronization & Public Nostr Relays</h2>
+                <p>
+                    Group operation payloads are encrypted with group-scoped 256-bit AES-GCM keys before transmission through public Nostr relays. Group members with the necessary keys can decrypt shared records. Cryptographic signatures help verify authorship and detect changes; they do not establish that an expense or payment claim is truthful.
+                </p>
+                <p class="mt-3">
+                    Relay operators can observe connection information such as your IP address, public signing identifiers, event identifiers, timestamps, routing tags and other envelope metadata, as well as encrypted payloads. This service is not anonymous. Configured relays include <code class="text-xs bg-slate-800 px-1 py-0.5 rounded">relay.damus.io</code>, <code class="text-xs bg-slate-800 px-1 py-0.5 rounded">nos.lol</code>, <code class="text-xs bg-slate-800 px-1 py-0.5 rounded">relay.primal.net</code>, <code class="text-xs bg-slate-800 px-1 py-0.5 rounded">nostr.mom</code> and <code class="text-xs bg-slate-800 px-1 py-0.5 rounded">relay.snort.social</code>; the configured set may change with app updates.
+                </p>
+                <p class="mt-3">
+                    These independently operated services may store and replay events. Their retention, availability and handling of connection logs are controlled by their operators. Relays are not merely temporary routers, and Peerloom Labs cannot guarantee removal of their copies. Removing a member or rotating a key cannot revoke information or keys already obtained by that member.
+                </p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">4. Receipt Recognition & SDK Diagnostics</h2>
+                <p>
+                    When you select a receipt image, text recognition is performed directly on your device using Google's bundled ML Kit text-recognition SDK. PeerSplit does not upload your image to any cloud OCR service for recognition.
+                </p>
+                <p class="mt-3">
+                    ML Kit also collects technical information for diagnostics and usage analytics. Google's disclosure describes device and app information, installation identifiers, performance and error events, and recognition configuration and input/output size metadata. On-device recognition therefore does not mean the SDK sends no diagnostic data. Google documents HTTPS protection for this telemetry. See Google's <a href="https://developers.google.com/ml-kit/android-data-disclosure" class="text-emerald-400 hover:underline" target="_blank" rel="noopener">ML Kit data disclosure</a> and <a href="https://policies.google.com/privacy" class="text-emerald-400 hover:underline" target="_blank" rel="noopener">Google Privacy Policy</a>. SDK practices and retention are governed by Google; Peerloom Labs does not provide a deletion control for Google's independently handled diagnostics.
+                </p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">5. Files, Contacts & Sharing You Choose</h2>
+                <p>
+                    Android's system pickers let you choose receipt or QR images, import files, save exports and backups, or select a contact. Contact selection accesses the contact information you explicitly pick, rather than uploading your address book. The current app does not request camera, broad storage, contacts, SMS or location permissions. Internet and network-state access support synchronization; Android background-work components may use system scheduling permissions.
+                </p>
+                <p class="mt-3">
+                    CSV exports are not encrypted by PeerSplit. Exports, reminders, QR codes and invitations may reveal financial details, member information, payment addresses or group access information to the recipients you choose. Treat invitations and group keys as sensitive. Apps, messaging services and document/cloud providers you select handle their copies under their own policies.
+                </p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">6. UPI Payments & External Handoffs</h2>
+                <p>
+                    For INR payment handoffs, PeerSplit can open a compatible UPI app (such as Google Pay, PhonePe, or Paytm) or generate a payment QR code containing recipient and payment details. The payment provider receives those details.
+                </p>
+                <p class="mt-3">
+                    <strong class="text-white">PeerSplit does not hold or transfer funds, request your UPI PIN or OTP, or independently verify that a bank transfer succeeded.</strong> Recording a settlement in PeerSplit is an informational ledger entry, not proof of financial transfer. Confirm recipient details and payment status directly in your payment app.
+                </p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">7. Storage, Security & Backups</h2>
+                <p>
+                    Local records are stored in the app's Android sandbox. Network relay connections use secure WebSockets (WSS), and group payloads use application-level encryption. No security system can guarantee protection against a compromised device, leaked keys or an authorized group member copying records.
+                </p>
+                <p class="mt-3">
+                    Android automatic cloud backup is disabled in the app manifest. You can explicitly create password-encrypted PeerSplit backups. These contain your private signing identity, profile, group keys and group history. Anyone with the backup file and password may recover that identity and its data. Keep them secure; Peerloom Labs cannot recover a lost backup password or a lost identity.
+                </p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">8. Retention, Deletion & Your Choices</h2>
+                <p>
+                    Local information remains until removed through the app, cleared in Android settings, or removed when uninstalling. To remove this installation's data and local identity, use <code class="text-xs bg-slate-800 px-1 py-0.5 rounded">Android Settings > Apps > PeerSplit > Storage > Clear storage</code>, or uninstall the app. Delete exported files, backups and shared copies separately from their destinations.
+                </p>
+                <p class="mt-3">
+                    Deleting a local group does not erase other members' devices or public relay copies. Edits and voids update the ledger's effective state while retaining signed history. Peerloom Labs cannot perform a global deletion of this distributed history or recover copies held by others.
+                </p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">9. Children & Audience</h2>
+                <p>
+                    PeerSplit is intended for people aged 13 and above, with initial availability planned for India and global release tracks. The app does not verify a user's age. Peerloom Labs does not knowingly solicit children's personal information for marketing. Avoid entering children's personal information in shared group records. For concerns about a child's information submitted directly to Peerloom Labs, contact the privacy email below.
+                </p>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold text-white mb-3">10. Contact Information</h2>
+                <p>
+                    For questions about this privacy policy, data practices, or support requests, please contact:
+                </p>
+                <div class="mt-4 p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                    <p class="font-bold text-white">Peerloom Labs</p>
+                    <p class="text-slate-400">Attn: Privacy & Developer Support</p>
+                    <p>Email: <a href="mailto:leo.moon85@gmail.com" class="text-emerald-400 hover:underline font-mono">leo.moon85@gmail.com</a></p>
+                    <p>Website: <a href="https://peerloomlabs.com" class="text-emerald-400 hover:underline">https://peerloomlabs.com</a></p>
+                    <p>Repository: <a href="https://github.com/leomoon85/peersplit" class="text-emerald-400 hover:underline" target="_blank" rel="noopener">github.com/leomoon85/peersplit</a></p>
+                </div>
+            </section>
+
+        </article>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-800/80 bg-[#080B12] py-8 text-xs text-slate-500">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div class="flex items-center gap-2">
+                <img src="assets/logo.png" alt="Peerloom Labs" class="w-5 h-5 rounded">
+                <span>&copy; 2026 Peerloom Labs. All rights reserved.</span>
+            </div>
+            <div class="flex items-center gap-6">
+                <a href="index.html" class="hover:text-slate-400 transition-colors">Home</a>
+                <a href="privacy.html" class="text-emerald-400 font-medium">Privacy Policy</a>
+                <a href="terms.html" class="hover:text-slate-400 transition-colors">Terms of Service</a>
+                <a href="mailto:leo.moon85@gmail.com" class="hover:text-slate-400 transition-colors">Contact</a>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
