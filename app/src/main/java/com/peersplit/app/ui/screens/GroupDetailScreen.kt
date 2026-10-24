@@ -456,7 +456,7 @@ fun GroupDetailScreen(
                         value = editPhoneInput,
                         onValueChange = { editPhoneInput = it },
                         label = { Text("Phone Number (Optional)") },
-                        placeholder = { Text("e.g. 9876543210") },
+                        placeholder = { Text("Include country code, e.g. +971 50 123 4567") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
@@ -471,8 +471,8 @@ fun GroupDetailScreen(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp)
                     )
-                    val normEditPhone = KeyManager.normalizePhone(editPhoneInput)
-                    if (normEditPhone.length == 10) {
+                    val normEditPhone = com.peersplit.app.util.PhoneNumbers.indianMobile(editPhoneInput)
+                    if (normEditPhone != null) {
                         Text(
                             "Quick-fill UPI ID from phone:",
                             style = MaterialTheme.typography.labelSmall,
@@ -561,7 +561,7 @@ fun GroupDetailScreen(
                         value = newMemberPhone,
                         onValueChange = { newMemberPhone = it },
                         label = { Text("Phone Number (Optional)") },
-                        placeholder = { Text("e.g. 9876543210") },
+                        placeholder = { Text("Include country code, e.g. +971 50 123 4567") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
@@ -574,8 +574,8 @@ fun GroupDetailScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    val normNewPhone = KeyManager.normalizePhone(newMemberPhone)
-                    if (normNewPhone.length == 10) {
+                    val normNewPhone = com.peersplit.app.util.PhoneNumbers.indianMobile(newMemberPhone)
+                    if (normNewPhone != null) {
                         Text(
                             "Quick-fill UPI ID from phone:",
                             style = MaterialTheme.typography.labelSmall,

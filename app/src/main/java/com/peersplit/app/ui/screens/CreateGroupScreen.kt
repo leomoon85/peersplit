@@ -64,8 +64,9 @@ fun CreateGroupScreen(
 ) {
     val context = LocalContext.current
     var groupName by rememberSaveable { mutableStateOf("") }
-    val currencies = listOf("INR", "USD", "EUR", "GBP", "CAD", "AUD", "JPY")
+    val currencies = com.peersplit.app.protocol.ProtocolVersion.SUPPORTED_CURRENCIES.toList()
     var selectedCurrency by rememberSaveable { mutableStateOf("INR") }
+    var showCurrencyMenu by remember { mutableStateOf(false) }
     var isSecret by rememberSaveable { mutableStateOf(false) }
     var secretPin by remember { mutableStateOf("") }
     var isPersonalSolo by rememberSaveable { mutableStateOf(false) }
@@ -324,15 +325,25 @@ fun CreateGroupScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(currencies) { curr ->
-                        FilterChip(
-                            selected = selectedCurrency == curr,
-                            onClick = { selectedCurrency = curr },
-                            label = { Text("$curr (${CurrencyUtil.getSymbol(curr)})") }
-                        )
+                Box {
+                    OutlinedButton(onClick = { showCurrencyMenu = true }) {
+                        Text("$selectedCurrency (${CurrencyUtil.getSymbol(selectedCurrency)}) — Change currency")
+                    }
+                    DropdownMenu(
+                        expanded = showCurrencyMenu,
+                        onDismissRequest = { showCurrencyMenu = false },
+                        modifier = Modifier.heightIn(max = 320.dp)
+                    ) {
+                        currencies.forEach { currency ->
+                            DropdownMenuItem(
+                                text = { Text("$currency (${CurrencyUtil.getSymbol(currency)})") },
+                                onClick = { selectedCurrency = currency; showCurrencyMenu = false }
+                            )
+                        }
                     }
                 }
+                Text("Includes EUR (€), AED and more. One currency per group; no currency conversion.",
+                    style = MaterialTheme.typography.bodySmall)
             }
 
             // Mode Selector: Group vs Solo/Personal

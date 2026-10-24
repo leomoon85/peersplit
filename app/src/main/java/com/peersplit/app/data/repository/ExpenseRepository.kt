@@ -171,7 +171,7 @@ class ExpenseRepository(
     /**
      * Builds a comprehensive map of [ghostPubkey -> realMemberPubkey] from:
      * 1. Explicit `claimedGhostPubkey` recorded in MEMBER_JOIN blocks on the chain.
-     * 2. Matching normalized 10-digit phone number between an offline ghost member and a real member.
+     * 2. Matching complete normalized phone number between an offline ghost member and a real member.
      * 3. Matching displayName between an offline ghost member and a real member.
      */
     private fun buildAliasMap(
@@ -194,7 +194,7 @@ class ExpenseRepository(
             }
         }
 
-        // 2. Real members claiming ghost members by 10-digit phone number FIRST, then by displayName
+        // 2. Real members claiming ghost members by complete phone number FIRST, then by displayName
         val realMembers = memberEntities.filter { !isGhostPubkey(groupId, it.pubkey, it.displayName) }
         val ghostMembers = memberEntities.filter { isGhostPubkey(groupId, it.pubkey, it.displayName) }
         val normMyPhone = KeyManager.normalizePhone(currentIdentityPhone)
@@ -202,7 +202,7 @@ class ExpenseRepository(
         for (ghost in ghostMembers) {
             if (ghost.pubkey in aliasMap) continue
             val normGhostPhone = KeyManager.normalizePhone(ghost.phone)
-            if (normGhostPhone.length == 10) {
+            if (com.peersplit.app.util.PhoneNumbers.canMatch(normGhostPhone)) {
                 val matchingByPhone = realMembers.firstOrNull {
                     KeyManager.normalizePhone(it.phone) == normGhostPhone
                 }
@@ -1877,8 +1877,8 @@ class ExpenseRepository(
                     explicitClaimGhostPubkey == "NONE" -> null
                     !explicitClaimGhostPubkey.isNullOrBlank() -> unclaimedGhosts.firstOrNull { it.pubkey == explicitClaimGhostPubkey }
                     else -> {
-                        // 1. Match by normalized 10-digit phone number first
-                        val byPhone = if (normMyPhone.length == 10) {
+                        // 1. Match by complete normalized phone number first
+                        val byPhone = if (com.peersplit.app.util.PhoneNumbers.canMatch(normMyPhone)) {
                             unclaimedGhosts.firstOrNull { KeyManager.normalizePhone(it.phone) == normMyPhone }
                         } else null
                         // 2. Match by displayName

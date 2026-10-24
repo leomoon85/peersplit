@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -82,14 +83,24 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val currentIdentity = remember { KeyManager.getOrCreateIdentity(context) }
-    var showWelcomeDialog by remember {
-        mutableStateOf(currentIdentity.displayName.isBlank() || currentIdentity.displayName == "My Phone")
+    val introPreferences = remember(context) {
+        context.getSharedPreferences("peersplit_onboarding", android.content.Context.MODE_PRIVATE)
     }
-    var welcomeNameInput by remember {
+    var showWelcomeDialog by rememberSaveable {
+        mutableStateOf(!introPreferences.getBoolean("intro_overlay_seen_v2", false))
+    }
+    var welcomeNameInput by rememberSaveable {
         mutableStateOf(if (currentIdentity.displayName == "My Phone") "" else currentIdentity.displayName)
     }
-    var welcomePhoneInput by remember { mutableStateOf(currentIdentity.phone ?: "") }
-    var welcomeUpiInput by remember { mutableStateOf(currentIdentity.upiId ?: "") }
+    var showHowItWorks by rememberSaveable { mutableStateOf(false) }
+
+    fun finishIntro(saveName: Boolean) {
+        if (saveName && welcomeNameInput.isNotBlank()) {
+            KeyManager.updateDisplayName(context, welcomeNameInput.trim())
+        }
+        introPreferences.edit().putBoolean("intro_overlay_seen_v2", true).apply()
+        showWelcomeDialog = false
+    }
 
     var showPinDialog by remember { mutableStateOf(false) }
     var enteredPin by remember { mutableStateOf("") }
@@ -326,15 +337,16 @@ fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
                 item {
-                    Spacer(modifier = Modifier.height(4.dp))
+                    TextButton(onClick = { showHowItWorks = true }) {
+                        Text("🔒 100% Local on Your Phone • Tap for Visual Guide ↗")
+                    }
                     TotalBalanceCard(uiState)
                 }
 
                 item {
-                    SplitPointsProgressCard(
-                        rewardProfile = rewardProfile,
-                        onClick = { showRewardsSheet = true }
-                    )
+                    TextButton(onClick = { showRewardsSheet = true }) {
+                        Text("SplitPoints and activity")
+                    }
                 }
 
                 // Secret Vault Section (Visible only when unlocked)
@@ -590,102 +602,17 @@ fun HomeScreen(
         )
     }
 
-    // First Launch Welcome Onboarding Dialog
     if (showWelcomeDialog) {
-        AlertDialog(
-            onDismissRequest = { /* force setup or require skip */ },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Welcome to PeerSplit")
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        "Set your display name so friends can recognize who you are in shared expense groups.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = welcomeNameInput,
-                        onValueChange = { welcomeNameInput = it },
-                        label = { Text("Your Name") },
-                        placeholder = { Text("e.g. Rajesh Balakrishnan") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    OutlinedTextField(
-                        value = welcomePhoneInput,
-                        onValueChange = { welcomePhoneInput = it },
-                        label = { Text("Phone Number (Optional)") },
-                        placeholder = { Text("10-digit mobile for member matching & UPI") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    OutlinedTextField(
-                        value = welcomeUpiInput,
-                        onValueChange = { welcomeUpiInput = it },
-                        label = { Text("UPI ID (Optional for Direct Settlements)") },
-                        placeholder = { Text("e.g. yourname@okhdfcbank") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    val normWelcomePhone = KeyManager.normalizePhone(welcomePhoneInput)
-                    if (normWelcomePhone.length == 10) {
-                        Text(
-                            "Quick-fill UPI ID from phone:",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("@ybl", "@okaxis", "@paytm", "@upi").forEach { suffix ->
-                                SuggestionChip(
-                                    onClick = { welcomeUpiInput = "$normWelcomePhone$suffix" },
-                                    label = { Text(suffix, style = MaterialTheme.typography.labelSmall) }
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val finalName = if (welcomeNameInput.isNotBlank()) welcomeNameInput.trim() else "My Phone"
-                        KeyManager.updateDisplayName(context, finalName)
-                        if (welcomePhoneInput.isNotBlank()) {
-                            KeyManager.updatePhone(context, welcomePhoneInput.trim())
-                        }
-                        if (welcomeUpiInput.isNotBlank()) {
-                            KeyManager.updateUpiId(context, welcomeUpiInput.trim())
-                        }
-                        showWelcomeDialog = false
-                        Toast.makeText(context, "Profile saved!", Toast.LENGTH_SHORT).show()
-                    },
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text("Get Started")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        showWelcomeDialog = false
-                    }
-                ) {
-                    Text("Later")
-                }
-            }
+        PeerSplitGuideDialog(
+            showNameField = true,
+            displayName = welcomeNameInput,
+            onNameChange = { welcomeNameInput = it },
+            onDone = { finishIntro(saveName = true) },
+            onSkip = { finishIntro(saveName = false) }
         )
+    }
+    if (showHowItWorks) {
+        PeerSplitGuideDialog(onDone = { showHowItWorks = false })
     }
 
     if (showRewardsSheet) {

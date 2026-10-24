@@ -221,7 +221,7 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                     OutlinedTextField(
                         value = phone,
                         onValueChange = { phone = it },
-                        placeholder = { Text("e.g. 9876543210") },
+                        placeholder = { Text("Include country code, e.g. +971 50 123 4567") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp),
@@ -269,8 +269,8 @@ fun ProfileScreen(onBackClick: () -> Unit) {
                         Text(if (upiId.isBlank()) "Clear" else "Save")
                     }
                 }
-                val normPhone = KeyManager.normalizePhone(phone)
-                if (normPhone.length == 10) {
+                val normPhone = com.peersplit.app.util.PhoneNumbers.indianMobile(phone)
+                if (normPhone != null) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         "Quick-fill UPI ID from your phone number:",

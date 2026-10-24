@@ -144,8 +144,8 @@ object UpiUtil {
     ) {
         val formattedAmt = CurrencyUtil.formatAmount(amount, currency)
         val isUpiEligible = currency.equals("INR", ignoreCase = true) && !creditorUpiId.isNullOrBlank()
-        val cleanCreditorPhone = KeyManager.normalizePhone(creditorPhone)
-        val cleanDebtorPhone = KeyManager.normalizePhone(debtorPhone)
+        val cleanCreditorPhone = PhoneNumbers.indianMobile(creditorPhone)
+        val whatsappNumber = PhoneNumbers.whatsappNumber(debtorPhone)
 
         val sb = StringBuilder()
         sb.append("Hi $debtorName! 👋\n\n")
@@ -160,18 +160,18 @@ object UpiUtil {
                 sb.append("• Or scan the attached QR code with any UPI app (GPay, PhonePe, Paytm)\n")
             }
         }
-        if (cleanCreditorPhone.length == 10) {
+        if (isUpiEligible && cleanCreditorPhone != null) {
             sb.append("• GPay / PhonePe Number: $cleanCreditorPhone\n")
         }
 
         sb.append("\nThanks! 🙏")
         val messageText = sb.toString()
 
-        // If we have a 10-digit debtor phone number and no QR image attachment is required,
+        // Only target a chat when an international country code is present.
         // try jumping straight into their WhatsApp chat!
-        if (cleanDebtorPhone.length == 10 && qrBitmap == null) {
+        if (whatsappNumber != null && qrBitmap == null) {
             try {
-                val waUri = Uri.parse("https://wa.me/91$cleanDebtorPhone?text=${Uri.encode(messageText)}")
+                val waUri = Uri.parse("https://wa.me/$whatsappNumber?text=${Uri.encode(messageText)}")
                 val waIntent = Intent(Intent.ACTION_VIEW, waUri).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }

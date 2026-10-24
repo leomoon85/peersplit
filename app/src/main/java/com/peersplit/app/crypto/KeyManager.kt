@@ -53,15 +53,8 @@ object KeyManager {
         _identityVersion.value = System.currentTimeMillis()
     }
 
-    /**
-     * Normalizes a phone number to its canonical 10-digit suffix (e.g. "+91 98765-43210" -> "9876543210")
-     * so matching works seamlessly regardless of country code or formatting.
-     */
-    fun normalizePhone(raw: String?): String {
-        if (raw.isNullOrBlank()) return ""
-        val digits = raw.filter { it.isDigit() }
-        return if (digits.length >= 10) digits.takeLast(10) else digits
-    }
+    /** Preserve full international numbers; compare complete normalized digits. */
+    fun normalizePhone(raw: String?): String = com.peersplit.app.util.PhoneNumbers.normalize(raw)
 
     data class KeyPair(
         val privateKey: ByteArray,
