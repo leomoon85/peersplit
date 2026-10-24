@@ -36,7 +36,7 @@ private val OverlayBackdrop = Color(0xD9070B14)
 
 /**
  * Full-screen semi-transparent coach-mark overlay with hand-drawn rings, curved arrows,
- * comic/sketch-style callouts, a clear "What is PeerSplit?" intro, and a local-only privacy explanation.
+ * comic/sketch-style callouts, a clear "What is PeerSplit?" intro, and a local-first privacy explanation.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -54,7 +54,7 @@ fun PeerSplitGuideDialog(
             decorFitsSystemWindows = false
         )
     ) {
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .background(OverlayBackdrop)
@@ -176,7 +176,7 @@ fun PeerSplitGuideDialog(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 136.dp)
+                    .padding(horizontal = 18.dp, vertical = if (maxHeight >= 720.dp) 136.dp else 12.dp)
                     .heightIn(max = 520.dp),
                 shape = RoundedCornerShape(24.dp),
                 color = Color(0xF2111827),
@@ -209,7 +209,7 @@ fun PeerSplitGuideDialog(
                                 color = ChalkWhite
                             )
                             Text(
-                                text = "Private Group Expense Tracker • Zero Servers",
+                                text = "Split shared bills and track group balances",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = ChalkEmerald,
                                 fontWeight = FontWeight.SemiBold
@@ -259,13 +259,13 @@ fun PeerSplitGuideDialog(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
-                                    text = "🔒 100% Local on Your Phone (No Central Server!)",
+                                    text = "🔒 Stored on your phone, shared with your group",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = ChalkEmerald
                                 )
                                 Text(
-                                    text = "Peerloom Labs runs no central database. Your records live locally on your phone! When you share a group, encrypted updates sync peer-to-peer through public relays when devices can connect. Back up your identity in Profile (lost keys or passwords cannot be recovered by support).",
+                                    text = "Peerloom Labs runs no central database. Records are stored on your phone. Group members can read shared records, and public relays can retain encrypted updates and see connection metadata. Receipt recognition uses ML Kit, which collects technical diagnostics. Back up your identity in Profile (lost keys or passwords cannot be recovered by support).",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = ChalkWhite.copy(alpha = 0.92f)
                                 )
@@ -291,7 +291,7 @@ fun PeerSplitGuideDialog(
                                 color = ChalkWhite
                             )
                             Text(
-                                text = "3. Settle Up: Record repayments anytime. INR groups can open a UPI app directly (verify payment status in your payment app).",
+                                text = "3. Settle Up: Open a supported installed app with Pay externally and complete payment there, then record it here. INR groups also offer UPI links. Verify payment status in your payment app.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = ChalkWhite
                             )

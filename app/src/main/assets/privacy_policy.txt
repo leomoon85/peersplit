@@ -1,6 +1,6 @@
 Privacy Policy for PeerSplit
 
-Last updated: October 19, 2026
+Last updated: October 25, 2026
 
 Peerloom Labs develops PeerSplit (com.peersplit.app), an Android application for recording and sharing group expenses. This policy describes the current app. PeerSplit is currently free, with no advertising, in-app purchases, or subscriptions.
 
@@ -31,6 +31,12 @@ Files, contacts and sharing you choose
 Android's system pickers let you choose receipt or QR images, import files, save exports and backups, or select a contact. Contact selection accesses the contact information you choose, rather than uploading your address book. The current app does not request camera, broad storage, contacts, SMS or location permissions. Internet and network-state access support synchronization; Android background-work components may use system scheduling permissions.
 
 CSV exports are not encrypted by PeerSplit. Exports, reminders, QR codes and invitations may reveal financial details, member information, payment addresses or group access information to the recipients you choose. Treat invitations and group keys as sensitive. Apps, messaging services and document/cloud providers you select handle their copies under their own policies.
+
+Opening external payment apps
+
+The optional "Pay externally" picker checks a limited list of supported apps on your device and shows those available to open. These checks and the resulting list stay in memory on your device; PeerSplit does not persist or upload this list. Opening an app from this picker sends no recipient, amount, currency or payment note. It does not let PeerSplit read the other app's accounts, balances, credentials or transaction history, and it does not confirm payment success.
+
+If you explicitly tap "Copy amount", the settlement amount is placed on Android's clipboard for you to paste. Android and apps that receive your pasted content handle it under their own rules. No payment details are copied automatically when selecting an app. Enter and verify payment details in your chosen app, then return to PeerSplit to record a settlement yourself. Some wallet apps do not offer peer transfers in every region.
 
 UPI payments
 

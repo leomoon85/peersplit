@@ -277,10 +277,15 @@ fun SettleUpScreen(
                 )
             }
 
+            item {
+                ExternalPaymentCard(amount, currency, canCopyAmount = validation.isValid)
+            }
+
             // UPI Deep Link & QR Payment Options (Enabled only for INR currency when payee has a UPI ID or Phone)
             if (currency.equals("INR", ignoreCase = true)) {
                 val payeeName = payeeMember?.displayName ?: "Payee"
                 val payeePhone = payeeMember?.phone?.takeIf { it.isNotBlank() }
+                val payeeIndianMobile = com.peersplit.app.util.PhoneNumbers.indianMobile(payeePhone)
 
                 item {
                     Card(
@@ -297,7 +302,7 @@ fun SettleUpScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Default.Payment, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Instant UPI Settlement", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                                    Text("UPI payment options", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                                 }
                                 if (payeeUpiId.isNotBlank()) {
                                     AssistChip(
@@ -320,7 +325,7 @@ fun SettleUpScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        "📱 GPay / PhonePe Number: $payeePhone",
+                                        "Phone number: $payeePhone",
                                         style = MaterialTheme.typography.bodySmall,
                                         fontWeight = FontWeight.SemiBold,
                                         color = MaterialTheme.colorScheme.primary
@@ -350,9 +355,9 @@ fun SettleUpScreen(
                                 supportingText = {
                                     if (payeeUpiId.isBlank()) {
                                         Text(
-                                            if (payeePhone != null) "Tap a handle below to auto-fill ${payeePhone}@... or enter UPI ID."
-                                            else "⚠️ Enter $payeeName's UPI ID or phone number to enable QR & UPI payment.",
-                                            color = if (payeePhone != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                            if (payeeIndianMobile != null) "Tap a handle below to suggest ${payeeIndianMobile}@...; verify the UPI ID before paying."
+                                            else "Enter and verify $payeeName's UPI ID to enable QR & UPI payment.",
+                                            color = if (payeeIndianMobile != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                                             fontSize = 12.sp
                                         )
                                     } else {
@@ -379,7 +384,7 @@ fun SettleUpScreen(
                                 Spacer(modifier = Modifier.height(4.dp))
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     items(commonHandles) { handle ->
-                                        val base = payeeUpiId.trim().substringBefore("@").ifBlank { payeePhone.orEmpty() }
+                                        val base = payeeUpiId.trim().substringBefore("@").ifBlank { payeeIndianMobile.orEmpty() }
                                         val chipLabel = if (base.isNotBlank()) "$base$handle" else handle
                                         SuggestionChip(
                                             onClick = {
@@ -402,7 +407,7 @@ fun SettleUpScreen(
                                 Button(
                                     onClick = {
                                         if (payeeUpiId.isBlank()) {
-                                            dialogUpiInput = payeePhone ?: ""
+                                            dialogUpiInput = payeeIndianMobile ?: ""
                                             pendingActionAfterUpi = "PAY"
                                             showEnterUpiDialog = true
                                         } else {
@@ -421,7 +426,7 @@ fun SettleUpScreen(
                                 OutlinedButton(
                                     onClick = {
                                         if (payeeUpiId.isBlank()) {
-                                            dialogUpiInput = payeePhone ?: ""
+                                            dialogUpiInput = payeeIndianMobile ?: ""
                                             pendingActionAfterUpi = "QR"
                                             showEnterUpiDialog = true
                                         } else {

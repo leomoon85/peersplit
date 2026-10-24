@@ -27,3 +27,9 @@ Group deletion, clearing storage and uninstalling do not erase other members' co
 ## Connectivity and availability
 
 You can record local changes while offline. Other devices receive them only when synchronization succeeds. Queued or requested synchronization does not mean every member has received the changes. Public relays may be offline or prune stored events; keep your own backup rather than relying on them for permanent archival.
+
+## Pay externally
+
+In Settle Up, choose Pay externally > Select app to open a supported app already installed on your phone. Enter the recipient, amount and currency in that app. Optionally tap Copy amount before opening it; copying is never automatic. If your app is not listed, open it from your home screen. The picker currently recognizes Google Wallet, Samsung Wallet/Pay, Google Pay, PhonePe, Paytm, PayPal, Revolut and Cash App; actual transfer capabilities depend on each app and region.
+
+Opening or returning from an external app never records a payment in PeerSplit. Confirm the actual payment in that app, then explicitly record the settlement here. INR groups retain the separate Pay with UPI and UPI QR options, which do pass payment details as disclosed in the privacy policy.

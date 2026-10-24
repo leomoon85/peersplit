@@ -28,6 +28,9 @@ No email/password registration is required. The app creates a local cryptographi
 EVERYDAY TOOLS
 Import or export CSV statements, recognize text from selected receipt images on your device, and create password-encrypted backups. ML Kit, used for receipt recognition, also collects technical diagnostics and usage metrics as explained in the privacy policy.
 
+PAY EXTERNALLY
+Open a supported payment app already installed on your phone and enter payment details there. Copy the amount only if you choose, then return to record the settlement. This action does not pass payment details or verify payment success. Available transfer features vary by app and region.
+
 UPI HANDOFFS FOR INR GROUPS
 Open a compatible UPI app or share a payment QR code. PeerSplit does not process or hold money, and recording a settlement does not confirm a bank transfer. Verify payment details and status in your payment app.
 
