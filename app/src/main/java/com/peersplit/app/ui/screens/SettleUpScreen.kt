@@ -9,6 +9,7 @@ import androidx.compose.ui.semantics.Role
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import com.peersplit.app.util.UpiAddress
+import com.peersplit.app.util.AmountInput
 import com.peersplit.app.util.AmountInputValidator
 import com.peersplit.app.util.AmountValidationResult
 import androidx.compose.foundation.layout.*
@@ -263,7 +264,10 @@ fun SettleUpScreen(
                 Spacer(modifier = Modifier.height(4.dp))
                 OutlinedTextField(
                     value = amountText,
-                    onValueChange = { amountText = it; userEdited = true },
+                    onValueChange = {
+                        amountText = AmountInput.filterAmountInput(it, amountText)
+                        userEdited = true
+                    },
                     enabled = !isSubmitting && !isSavingUpi,
                     isError = validation is AmountValidationResult.Invalid,
                     supportingText = { (validation as? AmountValidationResult.Invalid)?.let { Text(it.error) } },

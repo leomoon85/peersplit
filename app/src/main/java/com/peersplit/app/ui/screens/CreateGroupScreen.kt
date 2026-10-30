@@ -325,25 +325,78 @@ fun CreateGroupScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                Box {
-                    OutlinedButton(onClick = { showCurrencyMenu = true }) {
-                        Text("$selectedCurrency (${CurrencyUtil.getSymbol(selectedCurrency)}) — Change currency")
+                ExposedDropdownMenuBox(
+                    expanded = showCurrencyMenu,
+                    onExpandedChange = { showCurrencyMenu = !showCurrencyMenu },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    val currName = when (selectedCurrency) {
+                        "INR" -> "Indian Rupee"
+                        "USD" -> "US Dollar"
+                        "EUR" -> "Euro"
+                        "GBP" -> "British Pound"
+                        "AED" -> "UAE Dirham"
+                        "CAD" -> "Canadian Dollar"
+                        "AUD" -> "Australian Dollar"
+                        "JPY" -> "Japanese Yen"
+                        "CNY" -> "Chinese Yuan"
+                        "CHF" -> "Swiss Franc"
+                        "SGD" -> "Singapore Dollar"
+                        "BRL" -> "Brazilian Real"
+                        "KRW" -> "South Korean Won"
+                        "RUB" -> "Russian Ruble"
+                        else -> selectedCurrency
                     }
-                    DropdownMenu(
+                    OutlinedTextField(
+                        value = "${CurrencyUtil.getSymbol(selectedCurrency)}  $selectedCurrency — $currName",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Group Currency") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = showCurrencyMenu) },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    ExposedDropdownMenu(
                         expanded = showCurrencyMenu,
                         onDismissRequest = { showCurrencyMenu = false },
                         modifier = Modifier.heightIn(max = 320.dp)
                     ) {
                         currencies.forEach { currency ->
+                            val name = when (currency) {
+                                "INR" -> "Indian Rupee"
+                                "USD" -> "US Dollar"
+                                "EUR" -> "Euro"
+                                "GBP" -> "British Pound"
+                                "AED" -> "UAE Dirham"
+                                "CAD" -> "Canadian Dollar"
+                                "AUD" -> "Australian Dollar"
+                                "JPY" -> "Japanese Yen"
+                                "CNY" -> "Chinese Yuan"
+                                "CHF" -> "Swiss Franc"
+                                "SGD" -> "Singapore Dollar"
+                                "BRL" -> "Brazilian Real"
+                                "KRW" -> "South Korean Won"
+                                "RUB" -> "Russian Ruble"
+                                else -> currency
+                            }
                             DropdownMenuItem(
-                                text = { Text("$currency (${CurrencyUtil.getSymbol(currency)})") },
-                                onClick = { selectedCurrency = currency; showCurrencyMenu = false }
+                                text = { Text("${CurrencyUtil.getSymbol(currency)}  $currency — $name") },
+                                onClick = {
+                                    selectedCurrency = currency
+                                    showCurrencyMenu = false
+                                }
                             )
                         }
                     }
                 }
-                Text("Includes EUR (€), AED and more. One currency per group; no currency conversion.",
-                    style = MaterialTheme.typography.bodySmall)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "One currency per group. Tap to select from EUR (€), USD ($), INR (₹), AED, etc.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             // Mode Selector: Group vs Solo/Personal

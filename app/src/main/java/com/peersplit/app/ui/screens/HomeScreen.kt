@@ -109,7 +109,7 @@ fun HomeScreen(
     var groupToDelete by remember { mutableStateOf<Group?>(null) }
     var showArchivedSection by remember { mutableStateOf(false) }
     var showRewardsSheet by remember { mutableStateOf(false) }
-    var showThemeMenu by remember { mutableStateOf(false) }
+    // theme menu moved to Profile
     var isManualSyncing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
@@ -132,6 +132,13 @@ fun HomeScreen(
         )
     }
 
+    val totalPendingSync = remember(uiState.visibleGroups, uiState.archivedGroups, uiState.secretGroups) {
+        (uiState.visibleGroups + uiState.archivedGroups + uiState.secretGroups).sumOf { it.pendingSyncCount }
+    }
+    val totalFailedSync = remember(uiState.visibleGroups, uiState.archivedGroups, uiState.secretGroups) {
+        (uiState.visibleGroups + uiState.archivedGroups + uiState.secretGroups).sumOf { it.failedSyncCount }
+    }
+
     // Start-up enter animation trigger & daily streak touch
     var isVisible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
@@ -144,24 +151,33 @@ fun HomeScreen(
             TopAppBar(
                 title = {
                     Column(
-                        modifier = Modifier.combinedClickable(
-                            onClick = {},
-                            onLongClick = {
-                                if (uiState.secretGroups.isNotEmpty()) {
-                                    if (uiState.isSecretVaultUnlocked) {
-                                        onLockVault()
-                                        Toast.makeText(context, "Private Vault Locked", Toast.LENGTH_SHORT).show()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = {
+                                    if (uiState.secretGroups.isNotEmpty()) {
+                                        if (uiState.isSecretVaultUnlocked) {
+                                            onLockVault()
+                                            Toast.makeText(context, "Private Vault Locked", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            showPinDialog = true
+                                        }
                                     } else {
-                                        showPinDialog = true
+                                        Toast.makeText(context, "No private groups created yet", Toast.LENGTH_SHORT).show()
                                     }
-                                } else {
-                                    Toast.makeText(context, "No private groups created yet", Toast.LENGTH_SHORT).show()
                                 }
-                            }
-                        )
+                            )
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("PeerSplit", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                text = "PeerSplit",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleLarge,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
                             if (uiState.isSecretVaultUnlocked) {
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Icon(Icons.Default.LockOpen, contentDescription = "Vault Unlocked", tint = BlockchainAccent, modifier = Modifier.size(16.dp))
@@ -172,13 +188,16 @@ fun HomeScreen(
                                 modifier = Modifier
                                     .size(7.dp)
                                     .clip(CircleShape)
-                                    .background(BalancePositive)
+                                    .background(if (uiState.isOnline) BalancePositive else MaterialTheme.colorScheme.outline)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                if (uiState.isOnline) "Connected to relay" else "Offline — changes stay on this device",
+                                text = if (uiState.isOnline) "Online" else "Offline · changes saved on this phone",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -189,85 +208,57 @@ fun HomeScreen(
                         NameUtil.getInitials(KeyManager.getOrCreateIdentity(context).displayName)
                     }
 
-                    // Gamified XP & Streak Pill in TopBar
-                    Surface(
-                        onClick = { showRewardsSheet = true },
-                        shape = RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-                        modifier = Modifier.padding(end = 4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "🔥${rewardProfile.streakDays}d • ⚡${rewardProfile.totalXp} XP",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                    }
-
-                    // 1-Tap Sync Now button
-                    val syncRotation by animateFloatAsState(
+                    // 1-Tap Sync Now button with live pending animation & badge
+                    val infiniteTransition = rememberInfiniteTransition(label = "syncPendingInfinite")
+                    val pendingPulseRotation by infiniteTransition.animateFloat(
+                        initialValue = 0f,
+                        targetValue = 360f,
+                        animationSpec = infiniteRepeatable(tween(2500, easing = LinearEasing)),
+                        label = "pendingRotation"
+                    )
+                    val manualSyncRotation by animateFloatAsState(
                         targetValue = if (isManualSyncing) 360f else 0f,
                         animationSpec = if (isManualSyncing) infiniteRepeatable(tween(750, easing = LinearEasing)) else tween(300),
-                        label = "syncRotation"
+                        label = "manualSyncRotation"
                     )
-                    IconButton(
-                        onClick = {
-                            if (!isManualSyncing) {
-                                isManualSyncing = true
-                                coroutineScope.launch {
-                                    try {
-                                        com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow(broadcastChains = true)
-                                        Toast.makeText(context, "Sync requested. Updates will be delivered when connected.", Toast.LENGTH_SHORT).show()
-                                    } catch (e: Exception) {
-                                        Toast.makeText(context, "Could not request sync. Try again.", Toast.LENGTH_SHORT).show()
-                                    } finally {
-                                        isManualSyncing = false
-                                    }
+                    val activeRotation = if (isManualSyncing) manualSyncRotation else if (totalPendingSync > 0) pendingPulseRotation else 0f
+
+                    BadgedBox(
+                        badge = {
+                            if (totalFailedSync > 0) {
+                                Badge(containerColor = MaterialTheme.colorScheme.error) {
+                                    Text("!", fontWeight = FontWeight.Bold)
+                                }
+                            } else if (totalPendingSync > 0) {
+                                Badge(containerColor = MaterialTheme.colorScheme.primary) {
+                                    Text("$totalPendingSync")
                                 }
                             }
                         }
                     ) {
-                        Icon(
-                            Icons.Default.Sync,
-                            contentDescription = "Sync All Groups",
-                            modifier = Modifier.graphicsLayer { rotationZ = syncRotation },
-                            tint = if (isManualSyncing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    // 1-Tap Theme Mode Selector (Default: System Theme, switchable to Light or Dark)
-                    Box {
                         IconButton(
-                            onClick = { showThemeMenu = true },
-                            modifier = Modifier.semantics { contentDescription = "Theme Selector: ${currentThemeMode.title}" }
-                        ) {
-                            Text(currentThemeMode.iconEmoji, fontSize = 16.sp)
-                        }
-                        DropdownMenu(
-                            expanded = showThemeMenu,
-                            onDismissRequest = { showThemeMenu = false }
-                        ) {
-                            ThemeMode.entries.forEach { mode ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "${mode.iconEmoji}  ${mode.title}",
-                                            fontWeight = if (currentThemeMode == mode) FontWeight.Bold else FontWeight.Normal
-                                        )
-                                    },
-                                    onClick = {
-                                        ThemeManager.setThemeMode(context, mode)
-                                        showThemeMenu = false
-                                        Toast.makeText(context, "Theme set to ${mode.title}", Toast.LENGTH_SHORT).show()
+                            onClick = {
+                                if (!isManualSyncing) {
+                                    isManualSyncing = true
+                                    coroutineScope.launch {
+                                        try {
+                                            com.peersplit.app.PeerSplitApp.instance.syncManager.syncAllGroupsNow(broadcastChains = true)
+                                            Toast.makeText(context, "Sync requested. Updates will be delivered when connected.", Toast.LENGTH_SHORT).show()
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Could not request sync. Try again.", Toast.LENGTH_SHORT).show()
+                                        } finally {
+                                            isManualSyncing = false
+                                        }
                                     }
-                                )
+                                }
                             }
+                        ) {
+                            Icon(
+                                Icons.Default.Sync,
+                                contentDescription = if (totalPendingSync > 0) "Sync – $totalPendingSync pending" else "Sync All Groups",
+                                modifier = Modifier.graphicsLayer { rotationZ = activeRotation },
+                                tint = if (isManualSyncing || totalPendingSync > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
 

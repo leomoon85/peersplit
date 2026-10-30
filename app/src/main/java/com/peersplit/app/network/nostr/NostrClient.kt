@@ -1,5 +1,6 @@
 package com.peersplit.app.network.nostr
 
+import com.peersplit.app.protocol.ProtocolVersion
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -141,6 +142,10 @@ class NostrClient(
 
     private fun handleMessage(text: String) {
         try {
+            if (text.length > ProtocolVersion.MAX_WIRE_MESSAGE_BYTES) {
+                Log.w(TAG, "Dropping oversized wire frame from $relayUrl: ${text.length} bytes")
+                return
+            }
             val element = json.parseToJsonElement(text)
             if (element is JsonArray && element.size >= 2) {
                 val messageType = element[0].jsonPrimitive.content

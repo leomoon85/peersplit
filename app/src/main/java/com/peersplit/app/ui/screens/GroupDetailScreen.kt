@@ -1398,24 +1398,26 @@ fun BalancesAndDebtsTab(
                                                         debtorPhone = debtorMember?.phone
                                                     )
                                                 },
-                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                                shape = RoundedCornerShape(8.dp)
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.defaultMinSize(minHeight = 44.dp)
                                             ) {
                                                 Icon(
                                                     Icons.Default.NotificationsActive,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(14.dp)
+                                                    contentDescription = "Send reminder",
+                                                    modifier = Modifier.size(16.dp)
                                                 )
                                                 Spacer(modifier = Modifier.width(4.dp))
-                                                Text("Remind", fontSize = 11.sp)
+                                                Text("Remind", style = MaterialTheme.typography.labelMedium)
                                             }
                                         }
                                         Button(
                                             onClick = { onSettleUpClick(stl.fromPubkey, stl.toPubkey, stl.amount) },
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                            shape = RoundedCornerShape(8.dp)
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.defaultMinSize(minHeight = 44.dp)
                                         ) {
-                                            Text(if (userIsDebtor) "Pay" else "Settle", fontSize = 11.sp)
+                                            Text(if (userIsDebtor) "Settle Up" else "Record Settle", style = MaterialTheme.typography.labelMedium)
                                         }
                                     }
                                 }

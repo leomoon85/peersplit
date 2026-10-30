@@ -1,5 +1,6 @@
 package com.peersplit.app.ui.screens
 
+import com.peersplit.app.util.AmountInput
 import android.app.DatePickerDialog
 import android.net.Uri
 import android.widget.Toast
@@ -543,7 +544,7 @@ fun AddExpenseScreen(
                 OutlinedTextField(
                     value = amountText,
                     onValueChange = {
-                        amountText = it
+                        amountText = AmountInput.filterAmountInput(it, amountText)
                     },
                     label = { Text("Total Amount ($currency)") },
                     prefix = { Text("$sym ") },
@@ -702,7 +703,8 @@ fun AddExpenseScreen(
                         OutlinedTextField(
                             value = multiPayerAmounts[member.pubkey] ?: "",
                             onValueChange = {
-                                multiPayerAmounts[member.pubkey] = it
+                                val current = multiPayerAmounts[member.pubkey] ?: ""
+                                multiPayerAmounts[member.pubkey] = AmountInput.filterAmountInput(it, current)
                                 hasUserModifiedPayers = true
                             },
                             placeholder = { Text("0.00") },
@@ -815,7 +817,8 @@ fun AddExpenseScreen(
                             OutlinedTextField(
                                 value = exactAmounts[member.pubkey] ?: "",
                                 onValueChange = {
-                                    exactAmounts[member.pubkey] = it
+                                    val current = exactAmounts[member.pubkey] ?: ""
+                                    exactAmounts[member.pubkey] = AmountInput.filterAmountInput(it, current)
                                     hasUserModifiedSplits = true
                                 },
                                 placeholder = { Text("0.00") },
@@ -853,7 +856,8 @@ fun AddExpenseScreen(
                             OutlinedTextField(
                                 value = percentageInputs[member.pubkey] ?: "",
                                 onValueChange = {
-                                    percentageInputs[member.pubkey] = it
+                                    val current = percentageInputs[member.pubkey] ?: ""
+                                    percentageInputs[member.pubkey] = AmountInput.filterRatioInput(it, current)
                                     hasUserModifiedSplits = true
                                 },
                                 placeholder = { Text("0") },
@@ -892,7 +896,8 @@ fun AddExpenseScreen(
                             OutlinedTextField(
                                 value = sharesInputs[member.pubkey] ?: "",
                                 onValueChange = {
-                                    sharesInputs[member.pubkey] = it
+                                    val current = sharesInputs[member.pubkey] ?: ""
+                                    sharesInputs[member.pubkey] = AmountInput.filterRatioInput(it, current)
                                     hasUserModifiedSplits = true
                                 },
                                 placeholder = { Text("1") },

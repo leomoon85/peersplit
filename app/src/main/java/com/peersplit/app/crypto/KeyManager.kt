@@ -167,22 +167,15 @@ object KeyManager {
      * Computes a salted, stretched hash for Secret Vault PINs (backwards-compatible check available).
      */
     fun hashSecretPin(pin: String): String {
-        var digest = HashUtil.sha256((PIN_KDF_SALT + pin.trim()).toByteArray(Charsets.UTF_8))
-        repeat(4096) {
-            digest = HashUtil.sha256(digest)
-        }
-        return HashUtil.toHex(digest)
+        return VaultPinKdf.hashPinV2(pin)
     }
 
     /**
-     * Verifies a Secret Vault PIN against a stored hash (supports both v2 salted stretched hash and legacy SHA-256).
+     * Verifies a Secret Vault PIN against a stored hash using constant-time comparison
+     * and supporting v2 PBKDF2 (210k iterations), v1 stretched salt, and legacy SHA-256.
      */
     fun verifySecretPin(pin: String, storedHash: String?): Boolean {
-        if (storedHash.isNullOrBlank()) return true
-        val saltedHash = hashSecretPin(pin)
-        if (saltedHash == storedHash) return true
-        // Legacy fallback for previously created groups
-        return HashUtil.sha256Hex(pin.trim()) == storedHash
+        return VaultPinKdf.verifyPin(pin, storedHash)
     }
 
     /**

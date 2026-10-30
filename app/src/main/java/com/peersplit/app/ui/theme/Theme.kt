@@ -25,7 +25,8 @@ private val DarkColorScheme = darkColorScheme(
     tertiary = BlockchainAccent,
     background = BackgroundDark,
     surface = SurfaceDark,
-    surfaceVariant = CardDark
+    surfaceVariant = CardDark,
+    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFFC4CBD4)
 )
 
 private val LightColorScheme = lightColorScheme(
