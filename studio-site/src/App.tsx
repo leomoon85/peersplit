@@ -5,21 +5,21 @@ import { Services } from './components/Services';
 import { PeerSplitSpotlight } from './components/PeerSplitSpotlight';
 import { Portfolio } from './components/Portfolio';
 import { Process } from './components/Process';
-import { Estimator, type EstimatorPrefill } from './components/Estimator';
+import { Estimator, type ScopePrefill } from './components/Estimator';
 import { ContactForm } from './components/ContactForm';
 import { Footer } from './components/Footer';
 
 export default function App() {
-  const [prefill, setPrefill] = useState<EstimatorPrefill | null>(null);
+  const [prefill, setPrefill] = useState<ScopePrefill | null>(null);
 
-  const handleApplyEstimate = (data: EstimatorPrefill) => {
+  const handleApplyScope = (data: ScopePrefill) => {
     setPrefill({ ...data });
     const contactEl = document.getElementById('contact');
     contactEl?.scrollIntoView({ behavior: 'smooth' });
   };
 
   return (
-    <div className="min-h-screen bg-ink-950 text-slate-100 selection:bg-brand-500 selection:text-white">
+    <div className="min-h-screen bg-slate-50 text-slate-800 selection:bg-blue-600 selection:text-white">
       <Navbar />
       <main>
         <Hero />
@@ -27,7 +27,7 @@ export default function App() {
         <PeerSplitSpotlight />
         <Portfolio />
         <Process />
-        <Estimator onApplyToForm={handleApplyEstimate} />
+        <Estimator onApplyToForm={handleApplyScope} />
         <ContactForm prefill={prefill} />
       </main>
       <Footer />

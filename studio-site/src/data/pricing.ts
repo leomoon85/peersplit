@@ -2,32 +2,80 @@ export type AppTypeId = 'mobile' | 'web' | 'automation' | 'suite';
 export type IntegrationId = 'upi' | 'cloud' | 'admin';
 export type SupportId = 'launch' | 'retainer';
 
-export interface PriceOption<T extends string> {
+export interface ScopeOption<T extends string> {
   id: T;
   label: string;
   description: string;
-  cost: number; // INR
-  weeks: number;
+  sprintWeeks: number;
+  complexity: 'Standard' | 'Medium' | 'Advanced';
 }
 
-/** All prices in INR. Edit here to change the estimator everywhere. */
-export const APP_TYPES: PriceOption<AppTypeId>[] = [
-  { id: 'mobile', label: 'Mobile App', description: 'Android & iOS (Flutter / React Native)', cost: 150000, weeks: 6 },
-  { id: 'web', label: 'Web Portal', description: 'Customer or staff portal, responsive web', cost: 90000, weeks: 4 },
-  { id: 'automation', label: 'Automation Tool', description: 'Billing, ledgers, inventory workflows', cost: 60000, weeks: 3 },
-  { id: 'suite', label: 'Full Suite', description: 'Mobile app + web portal + admin', cost: 300000, weeks: 10 },
+export const APP_TYPES: ScopeOption<AppTypeId>[] = [
+  {
+    id: 'mobile',
+    label: 'Custom Mobile App',
+    description: 'Android & iOS cross-platform native app (Flutter / React Native)',
+    sprintWeeks: 6,
+    complexity: 'Advanced',
+  },
+  {
+    id: 'web',
+    label: 'Custom Web Portal',
+    description: 'Customer or internal web portal with role-based access & reports',
+    sprintWeeks: 4,
+    complexity: 'Medium',
+  },
+  {
+    id: 'automation',
+    label: 'Business Automation Tool',
+    description: 'Automated billing, party ledger tracking & daily workflow tools',
+    sprintWeeks: 3,
+    complexity: 'Standard',
+  },
+  {
+    id: 'suite',
+    label: 'Full Platform Suite',
+    description: 'Mobile App + Web Portal + Executive Admin Operations Suite',
+    sprintWeeks: 10,
+    complexity: 'Advanced',
+  },
 ];
 
-export const INTEGRATIONS: PriceOption<IntegrationId>[] = [
-  { id: 'upi', label: 'UPI Payments', description: 'Dynamic QR, intent flows, reconciliation', cost: 35000, weeks: 1.5 },
-  { id: 'cloud', label: 'Database / Cloud', description: 'Managed backend, auth, backups', cost: 25000, weeks: 1 },
-  { id: 'admin', label: 'Custom Admin Dashboard', description: 'Reports, roles, exports', cost: 45000, weeks: 2 },
+export const INTEGRATIONS: ScopeOption<IntegrationId>[] = [
+  {
+    id: 'upi',
+    label: 'UPI & Payment Flows',
+    description: 'Dynamic UPI QR codes, intent deep-links & settlement logs',
+    sprintWeeks: 1.5,
+    complexity: 'Standard',
+  },
+  {
+    id: 'cloud',
+    label: 'Cloud & Database Sync',
+    description: 'Multi-device sync, secure authentication & automated backups',
+    sprintWeeks: 1,
+    complexity: 'Standard',
+  },
+  {
+    id: 'admin',
+    label: 'Admin & Role Management',
+    description: 'Staff permissions, audit trails, CSV/PDF report exports',
+    sprintWeeks: 2,
+    complexity: 'Medium',
+  },
 ];
 
-export const SUPPORT: { id: SupportId; label: string; description: string; monthly: number }[] = [
-  { id: 'launch', label: 'Launch Only', description: '30-day post-launch bug-fix warranty', monthly: 0 },
-  { id: 'retainer', label: 'Monthly Maintenance Retainer', description: 'Updates, monitoring, store releases', monthly: 12000 },
+export const SUPPORT: { id: SupportId; label: string; description: string; tag: string }[] = [
+  {
+    id: 'launch',
+    label: 'Standard Launch Warranty',
+    description: '30-day post-launch bug fixes, handover & deployment sign-off',
+    tag: 'Included',
+  },
+  {
+    id: 'retainer',
+    label: 'Dedicated Engineering Retainer',
+    description: 'Ongoing OS updates, feature sprints, uptime monitoring & priority support',
+    tag: 'Recommended for Active Operations',
+  },
 ];
-
-/** ±15% band around the computed point estimate. */
-export const RANGE_BAND = 0.15;

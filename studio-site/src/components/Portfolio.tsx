@@ -27,7 +27,7 @@ const ITEMS: PortfolioItem[] = [
     description:
       'Offline-first expense splitting and multi-party ledger with native UPI deep-link reconciliation, QR generation, and tamper-evident local audit logs.',
     metrics: ['100% On-Device Privacy', '2-Tap UPI Settle', 'Zero Ad Telemetry'],
-    stack: ['Android', 'Offline Ledger', 'UPI Intent / QR', 'Material Dark UI'],
+    stack: ['Android', 'Offline Ledger', 'UPI Intent / QR', 'Material 3 UI'],
     image: '/assets/screen_dashboard.png',
     liveUrl: 'https://play.google.com/store/apps/details?id=com.peersplit.app',
     liveLabel: 'View on Google Play',
@@ -69,23 +69,23 @@ export function Portfolio() {
     <section
       id="portfolio"
       aria-labelledby="portfolio-heading"
-      className="border-b border-white/[0.07] py-20 sm:py-28"
+      className="border-b border-slate-200 bg-white py-20 sm:py-28"
     >
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex flex-col justify-between gap-6 lg:flex-row lg:items-end">
           <div>
-            <span className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-cyan-400">
-              Our Work · Apps, Games &amp; B2B Systems
+            <span className="font-mono text-xs font-semibold uppercase tracking-wider text-blue-600">
+              Our Work · Applications, Games &amp; Enterprise Tools
             </span>
             <h2
               id="portfolio-heading"
-              className="mt-3 text-3xl font-extrabold tracking-tight text-white sm:text-4xl"
+              className="mt-2 text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl"
             >
-              Shipped Products &amp; Engineering Blueprints
+              Shipped Products &amp; Custom Deployments
             </h2>
-            <p className="mt-3 max-w-2xl text-base text-slate-300">
-              Explore our in-house Apps and Games divisions alongside the custom B2B architectures
-              we deploy for local businesses.
+            <p className="mt-3 max-w-2xl text-base text-slate-600">
+              Explore our in-house Apps and Games divisions alongside custom B2B architectures
+              we build for regional businesses.
             </p>
           </div>
 
@@ -93,7 +93,7 @@ export function Portfolio() {
           <div
             role="tablist"
             aria-label="Filter portfolio by division"
-            className="inline-flex flex-wrap gap-2 rounded-xl border border-white/10 bg-ink-900/90 p-1.5"
+            className="inline-flex flex-wrap gap-1.5 rounded-xl border border-slate-200 bg-slate-100 p-1.5"
           >
             {[
               { id: 'all', label: 'All Work', icon: Layers },
@@ -111,8 +111,8 @@ export function Portfolio() {
                   onClick={() => setFilter(id as Category)}
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                     active
-                      ? 'bg-gradient-to-r from-brand-500 to-cyan-400 text-ink-950 shadow'
-                      : 'text-slate-300 hover:text-white'
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <Icon className="h-3.5 w-3.5" />
@@ -127,41 +127,45 @@ export function Portfolio() {
           {visible.map((item) => (
             <article
               key={item.id}
-              className="glass flex flex-col justify-between overflow-hidden rounded-2xl transition duration-300 hover:-translate-y-1 hover:border-brand-400/40"
+              className="card-base card-hover flex flex-col justify-between overflow-hidden"
             >
               <div>
-                <div className="relative h-48 overflow-hidden border-b border-white/10 bg-ink-950">
+                <div className="relative h-48 overflow-hidden border-b border-slate-100 bg-slate-900">
                   <img
                     src={item.image}
                     alt={item.title}
-                    className="h-full w-full object-cover object-top opacity-90 transition duration-500 hover:scale-105"
+                    className="h-full w-full object-cover object-top opacity-95 transition duration-500 hover:scale-105"
                   />
-                  <span className="absolute left-3 top-3 rounded-full border border-white/15 bg-ink-950/85 px-3 py-1 font-mono text-[11px] font-semibold text-cyan-300 backdrop-blur-md">
+                  <span className="absolute left-3 top-3 rounded-full border border-slate-200/40 bg-white/90 px-3 py-1 font-mono text-[11px] font-bold text-slate-800 shadow-sm backdrop-blur-sm">
                     {item.divisionBadge}
                   </span>
                 </div>
 
                 <div className="p-6">
-                  <div className="text-xs font-medium text-slate-400">{item.subtitle}</div>
-                  <h3 className="mt-1 text-xl font-bold text-white">{item.title}</h3>
-                  <p className="mt-3 text-sm leading-relaxed text-slate-300">{item.description}</p>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-blue-600">
+                    {item.subtitle}
+                  </div>
+                  <h3 className="mt-1 text-xl font-bold text-slate-900">{item.title}</h3>
+                  <p className="mt-2.5 text-sm leading-relaxed text-slate-600">
+                    {item.description}
+                  </p>
 
                   <div className="mt-4 flex flex-wrap gap-2">
                     {item.metrics.map((m) => (
                       <span
                         key={m}
-                        className="rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-300"
+                        className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-emerald-700"
                       >
                         {m}
                       </span>
                     ))}
                   </div>
 
-                  <div className="mt-4 flex flex-wrap gap-1.5 border-t border-white/10 pt-4">
+                  <div className="mt-4 flex flex-wrap gap-1.5 border-t border-slate-100 pt-4">
                     {item.stack.map((tech) => (
                       <span
                         key={tech}
-                        className="rounded bg-white/[0.05] px-2 py-0.5 font-mono text-[11px] text-slate-300"
+                        className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-700"
                       >
                         {tech}
                       </span>
@@ -170,13 +174,13 @@ export function Portfolio() {
                 </div>
               </div>
 
-              <div className="border-t border-white/10 bg-ink-950/50 px-6 py-4">
+              <div className="border-t border-slate-100 bg-slate-50/70 px-6 py-4">
                 {item.liveUrl ? (
                   <a
                     href={item.liveUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-xs font-bold text-cyan-300 hover:text-white"
+                    className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-600 hover:text-blue-800"
                   >
                     {item.liveLabel}
                     <ExternalLink className="h-3.5 w-3.5" />
@@ -184,9 +188,9 @@ export function Portfolio() {
                 ) : (
                   <a
                     href="#contact"
-                    className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-300 hover:text-white"
+                    className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 hover:text-blue-600"
                   >
-                    Request a Custom Demo
+                    Request Custom Architecture Demo
                     <ArrowUpRight className="h-3.5 w-3.5" />
                   </a>
                 )}
